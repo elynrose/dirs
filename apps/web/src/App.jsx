@@ -30,7 +30,6 @@ import {
 } from "./lib/api.js";
 import {
   DIRECTOR_UI_SESSION_KEY,
-  PENDING_CHECKOUT_PLAN_KEY,
   FAL_CATALOG_MIN_REFRESH_MS,
   STUDIO_MEDIA_JOB_TYPES,
   EXPORT_COMPILE_JOB_TYPES,
@@ -64,6 +63,7 @@ import {
   SkeletonMediaCanvas,
 } from "./components/LoadingSkeleton.jsx";
 import { StudioAuthPanel } from "./components/StudioAuthPanel.jsx";
+import { StudioUpgradeModal } from "./components/StudioUpgradeModal.jsx";
 import { StudioPanelErrorBoundary } from "./components/StudioPanelErrorBoundary.jsx";
 import { ChatStudioPage } from "./components/ChatStudioPage.jsx";
 import { StudioAccountPage } from "./components/StudioAccountPage.jsx";
@@ -946,6 +946,7 @@ export default function App() {
   /** From GET /v1/auth/me (entitlements + billing) for gating and Account page */
   const [accountProfile, setAccountProfile] = useState(null);
   const [eventAuthKey, setEventAuthKey] = useState(0);
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const authModeRef = useRef("legacy");
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const [celeryStatus, setCeleryStatus] = useState("unknown");
@@ -1077,9 +1078,18 @@ export default function App() {
           }
           return;
         }
-        const r2 = await api("/v1/auth/me");
-        const me = await parseJson(r2);
+        let r2 = await api("/v1/auth/me");
+        let me = await parseJson(r2);
         if (cancelled) return;
+        // Race with Firebase redirect: first /auth/me may 401 before session is stored; retry once if token exists now.
+        if (!r2.ok && getDirectorAuthToken().trim()) {
+          const r3 = await api("/v1/auth/me");
+          const me3 = await parseJson(r3);
+          if (r3.ok && me3.data?.email) {
+            r2 = r3;
+            me = me3;
+          }
+        }
         if (r2.ok && me.data?.email) {
           authModeRef.current = "saas";
           setSaasTenants(Array.isArray(me.data.tenants) ? me.data.tenants : []);
@@ -1151,46 +1161,6 @@ export default function App() {
       /* ignore */
     }
   }, [refreshAccountProfile, showToast]);
-
-  /**
-   * After login (or session restore), resume Stripe Checkout when the user chose a plan on pricing.
-   * Do not use an effect cleanup that cancels the async work: in React Strict Mode (dev) the effect
-   * runs twice — the first run removes the pending key; a cancelled in-flight request would never
-   * redirect.
-   */
-  useEffect(() => {
-    if (!studioReady || authBootstrap.mode !== "saas" || authBootstrap.needLogin) return;
-    let planSlug = "";
-    try {
-      planSlug = String(localStorage.getItem(PENDING_CHECKOUT_PLAN_KEY) || "").trim();
-    } catch {
-      return;
-    }
-    if (!planSlug) return;
-    try {
-      localStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
-    } catch {
-      /* ignore */
-    }
-    void (async () => {
-      try {
-        const r = await api("/v1/billing/checkout-session", {
-          method: "POST",
-          body: JSON.stringify({ plan_slug: planSlug }),
-        });
-        const body = await parseJson(r);
-        if (!r.ok) {
-          showToast(apiErrorMessage(body) || "Could not start checkout", { type: "error", durationMs: 8000 });
-          return;
-        }
-        const url = body.data?.url;
-        if (url) window.location.href = url;
-        else showToast("No checkout URL returned", { type: "error" });
-      } catch (e) {
-        showToast(formatUserFacingError(e), { type: "error", durationMs: 8000 });
-      }
-    })();
-  }, [studioReady, authBootstrap.mode, authBootstrap.needLogin, eventAuthKey, showToast]);
 
   useEffect(() => {
     const ent = accountProfile?.entitlements;
@@ -1267,11 +1237,6 @@ export default function App() {
   const signOutSaas = useCallback(() => {
     clearDirectorAuthSession();
     resetWorkspaceForTenantBoundary();
-    try {
-      localStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
-    } catch {
-      /* ignore */
-    }
     setSaasTenants([]);
     setAccountProfile(null);
     setAuthBootstrap((s) => ({ ...s, needLogin: true }));
@@ -1289,11 +1254,6 @@ export default function App() {
       if (authModeRef.current !== "saas") return;
       clearDirectorAuthSession();
       resetWorkspaceForTenantBoundary();
-      try {
-        localStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
-      } catch {
-        /* ignore */
-      }
       setSaasTenants([]);
       setAccountProfile(null);
       setAuthBootstrap((s) => ({
@@ -5119,6 +5079,9 @@ export default function App() {
         </div>
         {authBootstrap.mode === "saas" ? (
           <div className="topbar-actions">
+            <button type="button" className="secondary" onClick={() => setUpgradeModalOpen(true)}>
+              Upgrade
+            </button>
             <button
               type="button"
               className="secondary"
@@ -5134,6 +5097,12 @@ export default function App() {
           </div>
         ) : null}
       </header>
+
+      <StudioUpgradeModal
+        open={upgradeModalOpen}
+        onClose={() => setUpgradeModalOpen(false)}
+        showToast={showToast}
+      />
 
       {headerProgressBanner ? (
         <div className="pipeline-progress-alert panel" role="status" aria-live="polite" aria-atomic="true">

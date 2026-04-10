@@ -22,6 +22,9 @@ export function viteFirebaseWebConfig() {
 /** @type {import("firebase/auth").Auth | null} */
 let _auth = null;
 
+/** Single-flight so React Strict Mode does not call ``getRedirectResult`` twice (second call is empty). */
+let _redirectIdTokenPromise = null;
+
 /**
  * Initialize Firebase for the browser (idempotent). `config` matches GET /v1/auth/config `data.firebase`.
  * @param {{ api_key: string, auth_domain: string, project_id: string, app_id: string }} config
@@ -59,9 +62,14 @@ export async function startGoogleRedirectSignIn() {
  */
 export async function completeGoogleRedirectIdToken() {
   if (!_auth) return null;
-  const result = await getRedirectResult(_auth);
-  if (!result?.user) return null;
-  return result.user.getIdToken();
+  if (!_redirectIdTokenPromise) {
+    _redirectIdTokenPromise = (async () => {
+      const result = await getRedirectResult(_auth);
+      if (!result?.user) return null;
+      return result.user.getIdToken();
+    })();
+  }
+  return _redirectIdTokenPromise;
 }
 
 /**
