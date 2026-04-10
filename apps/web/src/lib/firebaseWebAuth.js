@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+import { getAuth, getRedirectResult, GoogleAuthProvider, signInWithRedirect } from "firebase/auth";
 
 /**
  * Optional: set in `apps/web/.env.development` so the Google button appears even if the API
@@ -42,15 +42,26 @@ export function initFirebaseWeb(config) {
 }
 
 /**
- * Google sign-in popup; returns a Firebase ID token for POST /v1/auth/firebase.
- * @returns {Promise<string>}
+ * Start Google OAuth via full-page redirect (avoids popup + Cross-Origin-Opener-Policy issues on
+ * production sites). The page navigates to Google; on return, call {@link completeGoogleRedirectIdToken}.
  */
-export async function signInWithGoogleIdToken() {
+export async function startGoogleRedirectSignIn() {
   if (!_auth) throw new Error("Firebase Auth is not initialized");
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
-  const cred = await signInWithPopup(_auth, provider);
-  return cred.user.getIdToken();
+  await signInWithRedirect(_auth, provider);
+}
+
+/**
+ * After redirect back to this app, returns an ID token if the user completed Google sign-in.
+ * Safe to call on every load; returns `null` when there was no redirect pending.
+ * @returns {Promise<string | null>}
+ */
+export async function completeGoogleRedirectIdToken() {
+  if (!_auth) return null;
+  const result = await getRedirectResult(_auth);
+  if (!result?.user) return null;
+  return result.user.getIdToken();
 }
 
 /**
@@ -68,7 +79,7 @@ export function describeFirebaseAuthError(err) {
     return `Firebase Authentication is not enabled for this project (${code || "configuration-not-found"}). ${setup}`;
   }
   if (code === "auth/unauthorized-domain" || /unauthorized-domain/i.test(msg)) {
-    return `This domain is not allowed for Firebase sign-in. ${setup}`;
+    return `This domain is not allowed for Firebase sign-in. In Firebase Console → Authentication → Settings → Authorized domains, add your production host (e.g. directely.com). ${setup}`;
   }
   return msg || "Google sign-in failed.";
 }

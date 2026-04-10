@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiPath } from "../lib/api.js";
 import { parseJson } from "../lib/apiHelpers.js";
 import {
+  completeGoogleRedirectIdToken,
   describeFirebaseAuthError,
   initFirebaseWeb,
-  signInWithGoogleIdToken,
+  startGoogleRedirectSignIn,
   viteFirebaseWebConfig,
 } from "../lib/firebaseWebAuth.js";
 import { setDirectorAuthSession } from "../lib/directorAuthSession.js";
@@ -69,31 +70,92 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
   const [firebaseOffered, setFirebaseOffered] = useState(false);
   const firebaseCfgRef = useRef(null);
 
+  const postFirebaseIdToken = useCallback(
+    async (idToken) => {
+      const r = await fetch(apiPath("/v1/auth/firebase"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id_token: idToken,
+          tenant_name: tenantName.trim() || "My workspace",
+        }),
+      });
+      const raw = await parseJson(r);
+      if (!r.ok) {
+        if (r.status === 404) {
+          setErr(
+            "Google sign-in is not enabled on the API. Set DIRECTOR_FIREBASE_CREDENTIALS_PATH to your Firebase service account JSON file and restart the API.",
+          );
+          return false;
+        }
+        const msg =
+          raw?.error?.message ||
+          raw?.detail?.message ||
+          (typeof raw?.detail === "string" ? raw.detail : null) ||
+          `HTTP ${r.status}`;
+        setErr(String(msg));
+        return false;
+      }
+      const d = raw.data;
+      if (!d?.access_token || !d?.tenant_id) {
+        setErr("Unexpected response from server.");
+        return false;
+      }
+      setDirectorAuthSession({ accessToken: d.access_token, tenantId: d.tenant_id });
+      onLoggedIn?.(d);
+      return true;
+    },
+    [tenantName, onLoggedIn],
+  );
+
   useEffect(() => {
     let cancelled = false;
+
+    const tryCompleteGoogleRedirect = async (fb) => {
+      if (!fb?.api_key || !fb?.project_id) return;
+      try {
+        initFirebaseWeb(fb);
+      } catch {
+        return;
+      }
+      let idToken = null;
+      try {
+        idToken = await completeGoogleRedirectIdToken();
+      } catch (re) {
+        if (!cancelled) setErr(describeFirebaseAuthError(re));
+        return;
+      }
+      if (!idToken || cancelled) return;
+      setBusy(true);
+      try {
+        await postFirebaseIdToken(idToken);
+      } catch (x) {
+        if (!cancelled) setErr(String(x?.message || x));
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    };
+
     (async () => {
+      let fb = null;
       try {
         const r = await fetch(apiPath("/v1/auth/config"));
         const raw = await parseJson(r);
         const fromApi = raw?.data?.firebase;
-        const fb =
-          fromApi?.api_key && fromApi?.project_id ? fromApi : viteFirebaseWebConfig();
-        firebaseCfgRef.current = fb;
-        if (!cancelled && fb?.api_key && fb?.project_id) {
-          setFirebaseOffered(true);
-        }
+        fb = fromApi?.api_key && fromApi?.project_id ? fromApi : viteFirebaseWebConfig();
       } catch {
-        const v = viteFirebaseWebConfig();
-        firebaseCfgRef.current = v;
-        if (!cancelled && v?.api_key && v?.project_id) {
-          setFirebaseOffered(true);
-        }
+        fb = viteFirebaseWebConfig();
       }
+      if (cancelled) return;
+      firebaseCfgRef.current = fb;
+      if (fb?.api_key && fb?.project_id) setFirebaseOffered(true);
+      await tryCompleteGoogleRedirect(fb);
     })();
+
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [postFirebaseIdToken]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -149,38 +211,7 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
         setErr(String(initErr?.message || initErr));
         return;
       }
-      const idToken = await signInWithGoogleIdToken();
-      const r = await fetch(apiPath("/v1/auth/firebase"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id_token: idToken,
-          tenant_name: tenantName.trim() || "My workspace",
-        }),
-      });
-      const raw = await parseJson(r);
-      if (!r.ok) {
-        if (r.status === 404) {
-          setErr(
-            "Google sign-in is not enabled on the API. Set DIRECTOR_FIREBASE_CREDENTIALS_PATH to your Firebase service account JSON file and restart the API.",
-          );
-          return;
-        }
-        const msg =
-          raw?.error?.message ||
-          raw?.detail?.message ||
-          (typeof raw?.detail === "string" ? raw.detail : null) ||
-          `HTTP ${r.status}`;
-        setErr(String(msg));
-        return;
-      }
-      const d = raw.data;
-      if (!d?.access_token || !d?.tenant_id) {
-        setErr("Unexpected response from server.");
-        return;
-      }
-      setDirectorAuthSession({ accessToken: d.access_token, tenantId: d.tenant_id });
-      onLoggedIn?.(d);
+      await startGoogleRedirectSignIn();
     } catch (x) {
       const code = x?.code;
       const msg =
