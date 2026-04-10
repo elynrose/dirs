@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseJson, apiErrorMessage, formatUserFacingError } from "../lib/apiHelpers.js";
 import { apiPath } from "../lib/api.js";
 import { adminFetch, getAdminKey, setAdminKey } from "../lib/adminApi.js";
+import { getDirectorTenantId } from "../lib/directorAuthSession.js";
 
 const TABS = [
   { id: "dashboard", label: "Dashboard" },
@@ -222,7 +223,8 @@ export function StudioAdminPage({ showToast }) {
   );
   const [budgetRuntime, setBudgetRuntime] = useState("5");
   const [budgetMode, setBudgetMode] = useState("hands-off");
-  const [budgetTenant, setBudgetTenant] = useState("");
+  /** Prefill with the Studio session workspace so entitlements/billing overrides match (empty = API DEFAULT_TENANT_ID). */
+  const [budgetTenant, setBudgetTenant] = useState(() => getDirectorTenantId().trim());
   const [budgetBusy, setBudgetBusy] = useState(false);
   const [budgetErr, setBudgetErr] = useState("");
   const [budgetLast, setBudgetLast] = useState(null);
@@ -620,7 +622,9 @@ export function StudioAdminPage({ showToast }) {
                   </select>
                 </label>
                 <label className="subtle">
-                  Workspace id (optional; empty = default tenant){" "}
+                  Workspace id — empty uses server <code className="mono">DEFAULT_TENANT_ID</code>, which may{" "}
+                  <strong>not</strong> be the workspace where you set billing overrides. Pre-filled from your Studio session
+                  when logged in.
                   <input
                     value={budgetTenant}
                     onChange={(e) => setBudgetTenant(e.target.value)}
