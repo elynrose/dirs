@@ -1012,6 +1012,17 @@ export default function App() {
     [authBootstrap.mode, accountProfile],
   );
 
+  /** When the Studio is served over HTTPS on a real host, API webhooks use the same origin + `/v1/...` (nginx → API). */
+  const telegramWebhookPublicUrl = useMemo(() => {
+    const path = apiPath("/v1/integrations/telegram/webhook");
+    if (path.startsWith("http://") || path.startsWith("https://")) return path;
+    if (typeof window === "undefined") return "";
+    const { protocol, hostname } = window.location;
+    if (protocol !== "https:") return "";
+    if (hostname === "localhost" || hostname === "127.0.0.1") return "";
+    return `${window.location.origin}${path}`;
+  }, []);
+
   const refreshAccountProfile = useCallback(async () => {
     try {
       const r = await api("/v1/auth/config");
@@ -6617,6 +6628,13 @@ export default function App() {
                       <code>setWebhook</code>. Set <strong>webhook secret</strong> here to match Telegram&apos;s{" "}
                       <code>secret_token</code>.
                     </p>
+                    {telegramWebhookPublicUrl ? (
+                      <p className="subtle" style={{ marginTop: 8, fontSize: "0.92rem" }}>
+                        <strong>This site (HTTPS):</strong> use{" "}
+                        <code style={{ wordBreak: "break-all" }}>{telegramWebhookPublicUrl}</code> as the webhook{" "}
+                        <code>url</code> (nginx should proxy <code>/v1/</code> to your API).
+                      </p>
+                    ) : null}
                     <details className="subtle" style={{ marginTop: 10, marginBottom: 12 }}>
                       <summary style={{ cursor: "pointer", fontWeight: 600 }}>
                         Local API: use a tunnel (ngrok, Cloudflare Tunnel, …)
@@ -6644,7 +6662,11 @@ export default function App() {
                           lineHeight: 1.4,
                         }}
                       >
-                        {`curl -sS -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \\
+                        {telegramWebhookPublicUrl
+                          ? `curl -sS -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \\
+  --data-urlencode "url=${telegramWebhookPublicUrl}" \\
+  --data-urlencode "secret_token=<same as webhook secret above>"`
+                          : `curl -sS -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \\
   --data-urlencode "url=https://YOUR_TUNNEL_HOST${apiPath("/v1/integrations/telegram/webhook")}" \\
   --data-urlencode "secret_token=<same as webhook secret above>"`}
                       </pre>
