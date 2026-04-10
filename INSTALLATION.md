@@ -153,6 +153,33 @@ cd /path/to/director && docker compose down
 - Prefer **not** exposing Postgres, Redis, MinIO, or the raw API port to the public internet.
 - Put **nginx** or **Caddy** in front on **80/443**, proxy to `127.0.0.1:8000`, and use TLS (e.g. Let’s Encrypt).
 
+### Custom domain (e.g. `directely.com`)
+
+1. **DNS at your registrar (Hostinger)**  
+   Point the domain to **this server’s public IPv4**:
+   - **A** record `@` → `YOUR_SERVER_IP`
+   - **A** or **CNAME** for `www` → same host (or CNAME `www` → `directely.com.` depending on the panel)  
+   Wait until `dig +short directely.com A` shows that IP (propagation can take minutes to hours).
+
+2. **Web build** (same-origin `/v1` — do **not** set `VITE_API_BASE_URL` unless the API is on another hostname):
+
+   ```bash
+   cd apps/web && npm ci && npm run build
+   ```
+
+3. **nginx** — example site file: [`scripts/nginx/directely.com.conf`](scripts/nginx/directely.com.conf). It serves `apps/web/dist` and proxies `/v1/` to `127.0.0.1:8000`.  
+   Install: copy to `/etc/nginx/sites-available/`, enable under `sites-enabled`, `sudo nginx -t && sudo systemctl reload nginx`.
+
+4. **TLS** (after DNS is correct):
+
+   ```bash
+   sudo certbot --nginx -d directely.com -d www.directely.com
+   ```
+
+5. **Optional:** In repo `.env`, `CORS_EXTRA_ORIGINS` can include `https://directely.com` and `https://www.directely.com` if the UI ever calls the API from another origin. Same-origin via nginx usually does not need extra CORS.
+
+6. **Firebase / Google sign-in:** Add `directely.com` (and `www` if used) under Firebase **Authorized domains**.
+
 ## 8. Web UI (Vite)
 
 The Studio lives in **`apps/web`** (Vite + React). With **`director-vite.service`** enabled, the dev server listens on **port 5173** on all interfaces (`--host 0.0.0.0`). Open **`http://YOUR_SERVER:5173`** in a browser (open the port in your firewall if needed).
