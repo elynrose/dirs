@@ -1,0 +1,864 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { api, apiCompiledVideoUrl } from "../lib/api.js";
+import { parseJson, apiErrorMessage, formatUserFacingError } from "../lib/apiHelpers.js";
+import {
+  DEFAULT_NARRATION_PRESET_ID,
+  RUN_STEP_LABEL,
+  agentRunAutoGenerateSceneVideos,
+  briefPreferredMediaProvidersFromAppConfig,
+} from "../lib/constants.js";
+
+const CHAT_RUN_STORAGE_PREFIX = "director_chat_agent_run:";
+const CHAT_STUDIO_STATE_PREFIX = "director_chat_studio_state:";
+const CHAT_STUDIO_LAST_PROJECT_KEY = "director_chat_studio_last_project_id";
+const CHAT_STUDIO_STATE_VERSION = 1;
+
+function storageKeyForProject(projectId) {
+  return `${CHAT_RUN_STORAGE_PREFIX}${projectId}`;
+}
+
+function chatStudioStateKey(projectId) {
+  return `${CHAT_STUDIO_STATE_PREFIX}${projectId}`;
+}
+
+/** Drop bulky step payloads from localStorage (lines are enough for UI). */
+function messageForStorage(m) {
+  if (!m || typeof m !== "object") return m;
+  const { raw: _r, ...rest } = m;
+  return rest;
+}
+
+function maxSuffixFromIds(rows, letter) {
+  let max = 0;
+  const re = new RegExp(`^${letter}-(\\d+)$`);
+  for (const row of rows || []) {
+    const id = String(row?.id || "");
+    const mm = id.match(re);
+    if (mm) max = Math.max(max, parseInt(mm[1], 10));
+  }
+  return max;
+}
+
+function readChatStudioPersistedState(projectId, agentRunIdFromLs) {
+  try {
+    const raw = localStorage.getItem(chatStudioStateKey(projectId));
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data.v !== CHAT_STUDIO_STATE_VERSION || !Array.isArray(data.setupMessages)) return null;
+    const runInLs = String(agentRunIdFromLs || "").trim();
+    const runInBlob = String(data.agentRunId || "").trim();
+    const runMismatch = runInLs && runInBlob && runInLs !== runInBlob;
+    const runBlobWithoutLs = !runInLs && runInBlob;
+    if (runMismatch || runBlobWithoutLs) {
+      return { setupOnly: true, setupMessages: data.setupMessages, setupInput: data.setupInput, setupMsgIdSeq: data.setupMsgIdSeq };
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function writeChatStudioPersistedState(projectId, payload) {
+  try {
+    localStorage.setItem(chatStudioStateKey(projectId), JSON.stringify(payload));
+  } catch {
+    /* quota or private mode */
+  }
+}
+
+function friendlyStepLine(ev) {
+  if (!ev || typeof ev !== "object") return "Update";
+  const step = ev.step != null ? String(ev.step) : "pipeline";
+  const status = ev.status != null ? String(ev.status) : "";
+  const label = RUN_STEP_LABEL[step] || step.replace(/_/g, " ");
+  if (status === "running") return `${label}…`;
+  if (status === "succeeded") return `${label} — done`;
+  if (status === "failed") return `${label} — failed`;
+  if (status === "blocked") return `${label} — needs attention`;
+  if (status === "retry") return `${label} — retrying`;
+  if (status === "skipped") return `${label} — skipped`;
+  if (status === "cancelled") return `${label} — stopped`;
+  return `${label}${status ? ` — ${status}` : ""}`;
+}
+
+/**
+ * Hands-off-only Studio page: project list + setup guide chat + chat-style progress for autonomous runs.
+ */
+export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProjects }) {
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [title, setTitle] = useState("");
+  const [topic, setTopic] = useState("");
+  const [runtime, setRuntime] = useState(10);
+  /** Per-production overrides; empty string = fall back to workspace defaults in `buildBriefPayload`. */
+  const [narrationStyleRef, setNarrationStyleRef] = useState("");
+  const [visualStyleRef, setVisualStyleRef] = useState("");
+  const [audience, setAudience] = useState("general");
+  const [tone, setTone] = useState("documentary");
+  const [factualStrictness, setFactualStrictness] = useState(null);
+  const [musicPreference, setMusicPreference] = useState("");
+  const [researchMinSources, setResearchMinSources] = useState("");
+  const [setupMessages, setSetupMessages] = useState([]);
+  const [setupInput, setSetupInput] = useState("");
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupErr, setSetupErr] = useState("");
+  const [pendingCharacterDrafts, setPendingCharacterDrafts] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [agentRunId, setAgentRunId] = useState("");
+  const [runStatus, setRunStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [timelineVersionId, setTimelineVersionId] = useState("");
+  const [finalVideoReady, setFinalVideoReady] = useState(false);
+  /** Bumped after project load so persist effect runs once skipPersistRef clears. */
+  const [persistVersion, setPersistVersion] = useState(0);
+
+  const lastStepsLenRef = useRef(0);
+  const messageIdRef = useRef(0);
+  const setupMsgIdRef = useRef(0);
+  const setupThreadRef = useRef(null);
+  const doneAnnouncedRef = useRef(false);
+  /** Skip persisting while switching projects so we don't clobber saved transcript with empty state. */
+  const skipPersistRef = useRef(false);
+
+  const appendMessage = useCallback((role, text, extra = {}) => {
+    const id = `m-${++messageIdRef.current}`;
+    setMessages((prev) => [...prev, { id, role, text, ...extra }]);
+  }, []);
+
+  const resetThread = useCallback(() => {
+    lastStepsLenRef.current = 0;
+    doneAnnouncedRef.current = false;
+    setMessages([]);
+    setSetupMessages([]);
+    setSetupInput("");
+    setSetupErr("");
+    setPendingCharacterDrafts([]);
+    setAgentRunId("");
+    setRunStatus("");
+    setTimelineVersionId("");
+    setFinalVideoReady(false);
+    setError("");
+  }, []);
+
+  const loadProjectIntoComposer = useCallback(
+    async (pid) => {
+      if (!pid) {
+        setSelectedProjectId("");
+        setTitle("");
+        setTopic("");
+        setRuntime(10);
+        setNarrationStyleRef("");
+        setVisualStyleRef("");
+        setAudience("general");
+        setTone("documentary");
+        setFactualStrictness(null);
+        setMusicPreference("");
+        setResearchMinSources("");
+        resetThread();
+        return;
+      }
+      skipPersistRef.current = true;
+      setSelectedProjectId(pid);
+      resetThread();
+      try {
+        const r = await api(`/v1/projects/${encodeURIComponent(pid)}`);
+        const b = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+        const p = b.data;
+        setTitle(String(p.title || ""));
+        setTopic(String(p.topic || ""));
+        setRuntime(Number(p.target_runtime_minutes) || 10);
+        setNarrationStyleRef(p.narration_style != null ? String(p.narration_style) : "");
+        setVisualStyleRef(p.visual_style != null ? String(p.visual_style) : "");
+        setAudience(p.audience != null && String(p.audience).trim() ? String(p.audience) : "general");
+        setTone(p.tone != null && String(p.tone).trim() ? String(p.tone) : "documentary");
+        setFactualStrictness(
+          p.factual_strictness === "strict" || p.factual_strictness === "balanced" || p.factual_strictness === "creative" ?
+            p.factual_strictness
+          : null,
+        );
+        setMusicPreference(p.music_preference != null ? String(p.music_preference) : "");
+        setResearchMinSources(
+          p.research_min_sources != null && p.research_min_sources !== "" ? Number(p.research_min_sources) : "",
+        );
+        const stored = (() => {
+          try {
+            return localStorage.getItem(storageKeyForProject(pid)) || "";
+          } catch {
+            return "";
+          }
+        })();
+        const lsRun = stored && /^[0-9a-f-]{36}$/i.test(stored.trim()) ? stored.trim() : "";
+        if (lsRun) setAgentRunId(lsRun);
+
+        const persisted = readChatStudioPersistedState(pid, lsRun);
+        if (persisted?.setupOnly) {
+          setSetupMessages(Array.isArray(persisted.setupMessages) ? persisted.setupMessages : []);
+          if (typeof persisted.setupInput === "string") setSetupInput(persisted.setupInput);
+          setupMsgIdRef.current =
+            Number.isFinite(Number(persisted.setupMsgIdSeq)) && Number(persisted.setupMsgIdSeq) > 0 ?
+              Number(persisted.setupMsgIdSeq)
+            : maxSuffixFromIds(persisted.setupMessages, "s");
+          setMessages([]);
+          lastStepsLenRef.current = 0;
+          doneAnnouncedRef.current = false;
+        } else if (persisted && !persisted.setupOnly) {
+          setSetupMessages(Array.isArray(persisted.setupMessages) ? persisted.setupMessages : []);
+          if (typeof persisted.setupInput === "string") setSetupInput(persisted.setupInput || "");
+          setMessages(Array.isArray(persisted.messages) ? persisted.messages : []);
+          if (Array.isArray(persisted.pendingCharacterDrafts) && persisted.pendingCharacterDrafts.length > 0) {
+            setPendingCharacterDrafts(persisted.pendingCharacterDrafts);
+          }
+          lastStepsLenRef.current =
+            Number.isFinite(Number(persisted.lastStepsLen)) && Number(persisted.lastStepsLen) >= 0 ?
+              Number(persisted.lastStepsLen)
+            : 0;
+          doneAnnouncedRef.current = Boolean(persisted.doneAnnounced);
+          messageIdRef.current =
+            Number.isFinite(Number(persisted.messageIdSeq)) && Number(persisted.messageIdSeq) > 0 ?
+              Number(persisted.messageIdSeq)
+            : maxSuffixFromIds(persisted.messages, "m");
+          setupMsgIdRef.current =
+            Number.isFinite(Number(persisted.setupMsgIdSeq)) && Number(persisted.setupMsgIdSeq) > 0 ?
+              Number(persisted.setupMsgIdSeq)
+            : maxSuffixFromIds(persisted.setupMessages, "s");
+          if (typeof persisted.runStatus === "string" && persisted.runStatus) setRunStatus(persisted.runStatus);
+          if (typeof persisted.timelineVersionId === "string" && persisted.timelineVersionId) {
+            setTimelineVersionId(persisted.timelineVersionId);
+          }
+          if (typeof persisted.finalVideoReady === "boolean") setFinalVideoReady(persisted.finalVideoReady);
+        }
+
+        try {
+          localStorage.setItem(CHAT_STUDIO_LAST_PROJECT_KEY, pid);
+        } catch {
+          /* ignore */
+        }
+      } catch (e) {
+        setError(formatUserFacingError(e));
+      } finally {
+        queueMicrotask(() => {
+          skipPersistRef.current = false;
+          setPersistVersion((n) => n + 1);
+        });
+      }
+    },
+    [resetThread],
+  );
+
+  const pollPipeline = useCallback(async (pid) => {
+    if (!pid) return;
+    try {
+      const r = await api(`/v1/projects/${encodeURIComponent(pid)}/pipeline-status`);
+      const b = await parseJson(r);
+      if (!r.ok || !b.data) return;
+      const lid = b.data.latest_timeline_version_id;
+      if (lid) setTimelineVersionId(String(lid));
+      const steps = Array.isArray(b.data.steps) ? b.data.steps : [];
+      const fc = steps.find((s) => s && s.id === "final_cut");
+      setFinalVideoReady(Boolean(fc && fc.status === "done" && lid));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!agentRunId) return;
+    doneAnnouncedRef.current = false;
+    let cancelled = false;
+    const tick = async () => {
+      const r = await api(`/v1/agent-runs/${encodeURIComponent(agentRunId)}`);
+      const b = await parseJson(r);
+      if (cancelled || !r.ok) return;
+      const row = b.data;
+      setRunStatus(String(row.status || ""));
+      const steps = Array.isArray(row.steps_json) ? row.steps_json : [];
+      const prev = lastStepsLenRef.current;
+      if (steps.length > prev) {
+        const chunk = steps.slice(prev);
+        lastStepsLenRef.current = steps.length;
+        chunk.forEach((ev) => {
+          const line = friendlyStepLine(ev);
+          appendMessage("assistant", line, { kind: "step", raw: ev });
+        });
+      }
+      if (row.status === "succeeded" && !doneAnnouncedRef.current) {
+        doneAnnouncedRef.current = true;
+        appendMessage(
+          "assistant",
+          "Pipeline run finished. If the final cut step completed, you can play or download the video below.",
+          { kind: "done" },
+        );
+      }
+      if (row.project_id && selectedProjectId === String(row.project_id)) {
+        try {
+          localStorage.setItem(storageKeyForProject(String(row.project_id)), String(agentRunId));
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    void tick();
+    const id = setInterval(() => void tick(), 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [agentRunId, appendMessage, selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    void pollPipeline(selectedProjectId);
+    const id = setInterval(() => void pollPipeline(selectedProjectId), 4000);
+    return () => clearInterval(id);
+  }, [selectedProjectId, pollPipeline]);
+
+  /** Persist setup + run transcript and generation snapshot so reload keeps state. */
+  useEffect(() => {
+    if (!selectedProjectId || skipPersistRef.current) return;
+    const payload = {
+      v: CHAT_STUDIO_STATE_VERSION,
+      agentRunId: String(agentRunId || ""),
+      setupMessages,
+      setupInput,
+      messages: messages.map(messageForStorage),
+      lastStepsLen: lastStepsLenRef.current,
+      doneAnnounced: doneAnnouncedRef.current,
+      messageIdSeq: messageIdRef.current,
+      setupMsgIdSeq: setupMsgIdRef.current,
+      runStatus: String(runStatus || ""),
+      timelineVersionId: String(timelineVersionId || ""),
+      finalVideoReady: Boolean(finalVideoReady),
+      pendingCharacterDrafts,
+    };
+    writeChatStudioPersistedState(selectedProjectId, payload);
+    try {
+      localStorage.setItem(CHAT_STUDIO_LAST_PROJECT_KEY, selectedProjectId);
+    } catch {
+      /* ignore */
+    }
+  }, [
+    selectedProjectId,
+    setupMessages,
+    setupInput,
+    messages,
+    runStatus,
+    agentRunId,
+    timelineVersionId,
+    finalVideoReady,
+    pendingCharacterDrafts,
+    persistVersion,
+  ]);
+
+  const restoredSelectionRef = useRef(false);
+  useEffect(() => {
+    if (restoredSelectionRef.current || !Array.isArray(projects) || projects.length === 0) return;
+    let last = "";
+    try {
+      last = localStorage.getItem(CHAT_STUDIO_LAST_PROJECT_KEY) || "";
+    } catch {
+      return;
+    }
+    const pid = last.trim();
+    if (!pid || !/^[0-9a-f-]{36}$/i.test(pid)) return;
+    if (!projects.some((p) => String(p.id) === pid)) return;
+    restoredSelectionRef.current = true;
+    void loadProjectIntoComposer(pid);
+  }, [projects, loadProjectIntoComposer]);
+
+  useEffect(() => {
+    const el = setupThreadRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [setupMessages]);
+
+  const currentBriefSnapshot = useMemo(
+    () => ({
+      title: String(title || "").trim(),
+      topic: String(topic || "").trim(),
+      target_runtime_minutes: Math.min(120, Math.max(2, Number(runtime) || 10)),
+      audience: String(audience || "").trim() || "general",
+      tone: String(tone || "").trim() || "documentary",
+      narration_style: String(narrationStyleRef || "").trim() || undefined,
+      visual_style: String(visualStyleRef || "").trim() || undefined,
+      factual_strictness: factualStrictness || undefined,
+      music_preference: String(musicPreference || "").trim() || undefined,
+      research_min_sources:
+        researchMinSources !== "" && Number.isFinite(Number(researchMinSources)) ? Number(researchMinSources) : undefined,
+    }),
+    [title, topic, runtime, audience, tone, narrationStyleRef, visualStyleRef, factualStrictness, musicPreference, researchMinSources],
+  );
+
+  const applyBriefPatchToState = useCallback((patch) => {
+    if (!patch || typeof patch !== "object") return;
+    if (typeof patch.title === "string") setTitle(patch.title);
+    if (typeof patch.topic === "string") setTopic(patch.topic);
+    if (patch.target_runtime_minutes != null) {
+      const n = Number(patch.target_runtime_minutes);
+      if (Number.isFinite(n)) setRuntime(Math.min(120, Math.max(2, n)));
+    }
+    if (typeof patch.narration_style === "string") setNarrationStyleRef(patch.narration_style);
+    if (typeof patch.visual_style === "string") setVisualStyleRef(patch.visual_style);
+    if (typeof patch.audience === "string") setAudience(patch.audience);
+    if (typeof patch.tone === "string") setTone(patch.tone);
+    if (patch.factual_strictness === "strict" || patch.factual_strictness === "balanced" || patch.factual_strictness === "creative") {
+      setFactualStrictness(patch.factual_strictness);
+    }
+    if (typeof patch.music_preference === "string") setMusicPreference(patch.music_preference);
+    if (patch.research_min_sources != null) {
+      const n = Number(patch.research_min_sources);
+      if (Number.isFinite(n) && n >= 1 && n <= 100) setResearchMinSources(n);
+    }
+  }, []);
+
+  const postCharacterDrafts = useCallback(async (projectId, drafts) => {
+      if (!projectId || !Array.isArray(drafts) || drafts.length === 0) return;
+      for (const d of drafts) {
+        if (!d || typeof d.name !== "string" || !d.name.trim()) continue;
+        try {
+          const r = await api(`/v1/projects/${encodeURIComponent(projectId)}/characters`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: d.name.trim().slice(0, 256),
+              role_in_story: typeof d.role_in_story === "string" ? d.role_in_story : "",
+              visual_description: typeof d.visual_description === "string" ? d.visual_description : "",
+              time_place_scope_notes:
+                d.time_place_scope_notes != null && d.time_place_scope_notes !== "" ? String(d.time_place_scope_notes) : null,
+            }),
+          });
+          await parseJson(r);
+        } catch {
+          /* ignore individual failures */
+        }
+      }
+  }, []);
+
+  const sendSetupGuide = async () => {
+    const text = String(setupInput || "").trim();
+    if (!text) return;
+    setSetupBusy(true);
+    setSetupErr("");
+    const apiMessages = [
+      ...setupMessages.map((m) => ({ role: m.role, content: m.text })),
+      { role: "user", content: text },
+    ];
+    const userBubble = { id: `s-${++setupMsgIdRef.current}`, role: "user", text };
+    setSetupMessages((prev) => [...prev, userBubble]);
+    setSetupInput("");
+    try {
+      const r = await api("/v1/chat-studio/setup-guide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: apiMessages,
+          current_brief: currentBriefSnapshot,
+          project_id: selectedProjectId || undefined,
+        }),
+      });
+      const res = await parseJson(r);
+      if (!r.ok) throw new Error(apiErrorMessage(res) || `HTTP ${r.status}`);
+      const data = res.data || {};
+      const replyText = [data.reply, data.notes_for_user].filter(Boolean).join("\n\n");
+      setSetupMessages((prev) => [...prev, { id: `s-${++setupMsgIdRef.current}`, role: "assistant", text: replyText }]);
+      const patch = data.brief_patch && typeof data.brief_patch === "object" ? data.brief_patch : {};
+      applyBriefPatchToState(patch);
+      if (Array.isArray(data.character_drafts) && data.character_drafts.length > 0) {
+        if (selectedProjectId) {
+          await postCharacterDrafts(selectedProjectId, data.character_drafts);
+          setPendingCharacterDrafts([]);
+        } else {
+          setPendingCharacterDrafts(data.character_drafts);
+        }
+      } else {
+        setPendingCharacterDrafts([]);
+      }
+      if (selectedProjectId && Object.keys(patch).length > 0) {
+        const body = { ...patch };
+        const patchR = await api(`/v1/projects/${encodeURIComponent(selectedProjectId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const patchB = await parseJson(patchR);
+        if (!patchR.ok) throw new Error(apiErrorMessage(patchB) || `HTTP ${patchR.status}`);
+      }
+      onReloadProjects?.();
+    } catch (e) {
+      setSetupErr(formatUserFacingError(e));
+    } finally {
+      setSetupBusy(false);
+    }
+  };
+
+  const handsOffPipelineOptions = useMemo(() => {
+    return {
+      through: "full_video",
+      unattended: true,
+      narration_granularity: "scene",
+      auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(appConfig),
+    };
+  }, [appConfig]);
+
+  const buildBriefPayload = useCallback(() => {
+    const narPresetFallback = String(
+      appConfig.narration_style_preset || stylePresets?.defaults?.narration_style_preset || DEFAULT_NARRATION_PRESET_ID,
+    ).trim();
+    const overrideNar = String(narrationStyleRef || "").trim();
+    let narration_style;
+    if (overrideNar) {
+      narration_style = overrideNar;
+    } else {
+      const narRefRaw = String(appConfig.default_narration_style_ref || "").trim();
+      narration_style =
+        narRefRaw && (narRefRaw.startsWith("preset:") || narRefRaw.startsWith("user:"))
+          ? narRefRaw
+          : `preset:${narPresetFallback || DEFAULT_NARRATION_PRESET_ID}`;
+    }
+    const visFallback = String(
+      appConfig.visual_style_preset || stylePresets?.defaults?.visual_style_preset || "cinematic_documentary",
+    ).trim();
+    const overrideVis = String(visualStyleRef || "").trim();
+    let visual_style;
+    if (overrideVis) {
+      visual_style =
+        overrideVis.startsWith("preset:") || overrideVis.startsWith("user:") ? overrideVis : `preset:${overrideVis}`;
+    } else {
+      visual_style = `preset:${visFallback || "cinematic_documentary"}`;
+    }
+    const payload = {
+      title: String(title || "").trim() || "Untitled production",
+      topic: String(topic || "").trim(),
+      target_runtime_minutes: Math.min(120, Math.max(2, Number(runtime) || 10)),
+      audience: String(audience || "").trim() || "general",
+      tone: String(tone || "").trim() || "documentary",
+      narration_style,
+      visual_style,
+      ...briefPreferredMediaProvidersFromAppConfig(appConfig),
+    };
+    if (factualStrictness === "strict" || factualStrictness === "balanced" || factualStrictness === "creative") {
+      payload.factual_strictness = factualStrictness;
+    }
+    const mp = String(musicPreference || "").trim();
+    if (mp) payload.music_preference = mp;
+    if (researchMinSources !== "" && Number.isFinite(Number(researchMinSources))) {
+      const n = Number(researchMinSources);
+      if (n >= 1 && n <= 100) payload.research_min_sources = n;
+    }
+    return payload;
+  }, [
+    appConfig,
+    stylePresets,
+    title,
+    topic,
+    runtime,
+    audience,
+    tone,
+    narrationStyleRef,
+    visualStyleRef,
+    factualStrictness,
+    musicPreference,
+    researchMinSources,
+  ]);
+
+  const onGenerate = async () => {
+    const topicTrim = String(topic || "").trim();
+    if (topicTrim.length < 8) {
+      setError("Enter a description (topic) of at least 8 characters.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      if (selectedProjectId) {
+        const patchBody = {
+          title: String(title || "").trim() || undefined,
+          topic: topicTrim,
+          target_runtime_minutes: Math.min(120, Math.max(2, Number(runtime) || 10)),
+          audience: String(audience || "").trim() || undefined,
+          tone: String(tone || "").trim() || undefined,
+        };
+        const nar = String(narrationStyleRef || "").trim();
+        if (nar) patchBody.narration_style = nar;
+        const vis = String(visualStyleRef || "").trim();
+        if (vis) patchBody.visual_style = vis;
+        if (factualStrictness === "strict" || factualStrictness === "balanced" || factualStrictness === "creative") {
+          patchBody.factual_strictness = factualStrictness;
+        }
+        const mp = String(musicPreference || "").trim();
+        if (mp) patchBody.music_preference = mp;
+        if (researchMinSources !== "" && Number.isFinite(Number(researchMinSources))) {
+          const n = Number(researchMinSources);
+          if (n >= 1 && n <= 100) patchBody.research_min_sources = n;
+        }
+        const patchR = await api(`/v1/projects/${encodeURIComponent(selectedProjectId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patchBody),
+        });
+        const patchB = await parseJson(patchR);
+        if (!patchR.ok) throw new Error(apiErrorMessage(patchB) || `HTTP ${patchR.status}`);
+      }
+
+      appendMessage("user", `Generate hands-off run:\n${topicTrim.slice(0, 2000)}${topicTrim.length > 2000 ? "…" : ""}`);
+
+      const body =
+        selectedProjectId ?
+          {
+            project_id: selectedProjectId,
+            pipeline_options: {
+              continue_from_existing: true,
+              ...handsOffPipelineOptions,
+            },
+          }
+        : {
+            brief: buildBriefPayload(),
+            pipeline_options: handsOffPipelineOptions,
+          };
+
+      const r = await api("/v1/agent-runs", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const res = await parseJson(r);
+      if (!r.ok) throw new Error(apiErrorMessage(res) || `HTTP ${r.status}`);
+      const ar = res.data?.agent_run;
+      const proj = res.data?.project;
+      if (proj?.id) {
+        const pid = String(proj.id);
+        setSelectedProjectId(pid);
+        try {
+          localStorage.setItem(storageKeyForProject(pid), String(ar?.id || ""));
+        } catch {
+          /* ignore */
+        }
+        if (pendingCharacterDrafts.length > 0) {
+          await postCharacterDrafts(pid, pendingCharacterDrafts);
+          setPendingCharacterDrafts([]);
+        }
+      }
+      if (ar?.id) {
+        lastStepsLenRef.current = 0;
+        setAgentRunId(String(ar.id));
+        appendMessage("assistant", "Run queued — tracking progress below.", { kind: "system" });
+      }
+      onReloadProjects?.();
+    } catch (e) {
+      setError(formatUserFacingError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onStop = async () => {
+    if (!agentRunId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api(`/v1/agent-runs/${encodeURIComponent(agentRunId)}/control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+      const b = await parseJson(r);
+      if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+      appendMessage("assistant", "Stop requested — worker will cancel when safe.", { kind: "system" });
+    } catch (e) {
+      setError(formatUserFacingError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const activeRun = runStatus === "running" || runStatus === "queued" || runStatus === "paused";
+  const videoSrc =
+    selectedProjectId && timelineVersionId ?
+      apiCompiledVideoUrl(selectedProjectId, timelineVersionId, { cacheBust: timelineVersionId })
+    : "";
+  const videoDownload =
+    selectedProjectId && timelineVersionId ?
+      apiCompiledVideoUrl(selectedProjectId, timelineVersionId, { download: true, cacheBust: timelineVersionId })
+    : "";
+
+  return (
+    <div className="chat-studio" data-testid="chat-studio-root">
+      <aside className="chat-studio__sidebar panel" aria-label="Projects">
+        <div className="chat-studio__sidebar-head">
+          <h2 className="chat-studio__title">Chat</h2>
+          <p className="subtle chat-studio__subtitle">Hands-off runs only on this page.</p>
+          <button
+            type="button"
+            className="secondary chat-studio__new"
+            onClick={() => {
+              setSelectedProjectId("");
+              setTitle("");
+              setTopic("");
+              setRuntime(10);
+              setNarrationStyleRef("");
+              setVisualStyleRef("");
+              setAudience("general");
+              setTone("documentary");
+              setFactualStrictness(null);
+              setMusicPreference("");
+              setResearchMinSources("");
+              resetThread();
+              try {
+                localStorage.removeItem(CHAT_STUDIO_LAST_PROJECT_KEY);
+              } catch {
+                /* ignore */
+              }
+            }}
+          >
+            New production
+          </button>
+          <button type="button" className="secondary chat-studio__reload" onClick={() => onReloadProjects?.()}>
+            Reload list
+          </button>
+        </div>
+        <ul className="chat-studio__project-list">
+          {(projects || []).map((p) => (
+            <li key={p.id}>
+              <button
+                type="button"
+                className={`chat-studio__project-row${selectedProjectId === p.id ? " is-active" : ""}`}
+                onClick={() => void loadProjectIntoComposer(String(p.id))}
+              >
+                <span className="chat-studio__project-title">{p.title || "Untitled"}</span>
+                <span className="subtle chat-studio__project-meta">{p.workflow_phase || p.status}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="chat-studio__roadmap subtle">
+          <strong>Project setup</strong>
+          <p className="chat-studio__roadmap-text">
+            Use the setup chat in the main panel to tune title, description, runtime, narration and visual style, and
+            characters before you press Generate.
+          </p>
+        </div>
+      </aside>
+
+      <main className="chat-studio__main panel">
+        <header className="chat-studio__main-head">
+          <h2 className="chat-studio__main-title">Hands-off chat</h2>
+          {runStatus ? (
+            <span className="subtle">
+              Run: <code>{agentRunId ? agentRunId.slice(0, 8) : "—"}</code> · {runStatus}
+            </span>
+          ) : null}
+        </header>
+
+        {error ? (
+          <p className="err chat-studio__err" role="alert">
+            {error}
+          </p>
+        ) : null}
+
+        <div className="chat-studio__split">
+          <section className="chat-studio__setup chat-studio__split-col" aria-labelledby="chat-studio-setup-heading">
+            <h3 id="chat-studio-setup-heading" className="chat-studio__section-title">
+              Project setup
+            </h3>
+            <p className="subtle chat-studio__section-hint">
+              Chat with the guide to set title, description, length, narration and visual style, and characters. This uses
+              your workspace text model (same as the rest of Director).
+            </p>
+            {setupErr ? (
+              <p className="err chat-studio__err" role="alert">
+                {setupErr}
+              </p>
+            ) : null}
+            <div
+              ref={setupThreadRef}
+              className="chat-studio__setup-thread"
+              role="log"
+              aria-live="polite"
+              data-testid="chat-studio-setup-thread"
+            >
+              {setupMessages.length === 0 ? (
+                <p className="subtle chat-studio__setup-empty">
+                  Example: “10-minute film on urban beekeeping for a general audience, warm tone, archival look, two main
+                  characters.”
+                </p>
+              ) : null}
+              {setupMessages.map((m) => (
+                <div key={m.id} className={`chat-bubble chat-bubble--${m.role}`}>
+                  <div className="chat-bubble__text">{m.text}</div>
+                </div>
+              ))}
+            </div>
+            <label className="subtle chat-studio__sr-only" htmlFor="chat-studio-setup-input">
+              Setup chat message
+            </label>
+            <textarea
+              id="chat-studio-setup-input"
+              data-testid="chat-studio-setup-input"
+              className="chat-studio__setup-input"
+              rows={3}
+              value={setupInput}
+              onChange={(e) => setSetupInput(e.target.value)}
+              placeholder="Ask questions or describe your production…"
+              disabled={setupBusy || busy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (!setupBusy && !busy) void sendSetupGuide();
+                }
+              }}
+              spellCheck
+            />
+            <div className="chat-studio__setup-actions">
+              <button type="button" disabled={setupBusy || busy} onClick={() => void sendSetupGuide()}>
+                {setupBusy ? "Thinking…" : "Send"}
+              </button>
+            </div>
+          </section>
+
+          <section className="chat-studio__run chat-studio__split-col" aria-labelledby="chat-studio-run-heading">
+            <h3 id="chat-studio-run-heading" className="chat-studio__section-title">
+              Run activity
+            </h3>
+            <div className="chat-studio__thread" role="log" aria-live="polite" aria-relevant="additions">
+              {messages.length === 0 ? (
+                <p className="subtle chat-studio__empty">
+                  After you press <strong>Generate</strong>, pipeline progress appears here. Open a project on the left to
+                  continue an existing hands-off run.
+                </p>
+              ) : null}
+              {messages.map((m) => (
+                <div key={m.id} className={`chat-bubble chat-bubble--${m.role}`}>
+                  <div className="chat-bubble__text">{m.text}</div>
+                </div>
+              ))}
+              {finalVideoReady && videoSrc ? (
+                <div className="chat-bubble chat-bubble--assistant chat-bubble--video">
+                  <div className="chat-bubble__text">Final video</div>
+                  <video className="chat-studio__video" controls src={videoSrc} playsInline />
+                  <a className="chat-studio__download" href={videoDownload} download>
+                    Download MP4
+                  </a>
+                </div>
+              ) : null}
+            </div>
+
+            <p className="chat-studio__sr-summary" aria-live="polite">
+              Brief: {title || "Untitled"} · {topic.trim().length} characters in description · {runtime} minutes target.
+            </p>
+
+            <div className="chat-studio__composer chat-studio__composer--run">
+              <div className="chat-studio__actions">
+                <button type="button" disabled={busy} onClick={() => void onGenerate()}>
+                  {busy ? "Working…" : "Generate"}
+                </button>
+                <button type="button" className="secondary" disabled={busy || !activeRun} onClick={() => void onStop()}>
+                  Stop run
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  );
+}

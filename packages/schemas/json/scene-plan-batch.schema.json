@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://director.local/schemas/scene-plan-batch/v1",
+  "title": "Scene plan batch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "scenes"],
+  "properties": {
+    "schema_id": { "type": "string", "const": "scene-plan-batch/v1" },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 48,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "order_index",
+          "purpose",
+          "planned_duration_sec",
+          "narration_text",
+          "visual_type",
+          "prompt_package_json",
+          "continuity_tags_json"
+        ],
+        "properties": {
+          "order_index": { "type": "integer", "minimum": 0 },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "planned_duration_sec": { "type": "integer", "minimum": 3, "maximum": 600 },
+          "narration_text": { "type": "string", "minLength": 1, "maxLength": 12000 },
+          "visual_type": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "prompt_package_json": { "type": "object" },
+          "continuity_tags_json": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 256 },
+            "maxItems": 32
+          },
+          "preferred_image_provider": { "type": "string", "maxLength": 64 },
+          "preferred_video_provider": { "type": "string", "maxLength": 64 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "name": "director-electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Director studio — Electron desktop shell",
+  "author": "Director",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:web": "cd ../web && npm run build",
+    "predist": "npm run build:web",
+    "dist": "node ./node_modules/electron-builder/cli.js",
+    "pack": "npm run build:web && node ./node_modules/electron-builder/cli.js --dir"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "get-port": "^7.1.0",
+    "http-proxy-middleware": "^3.0.3",
+    "tree-kill": "^1.2.2"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.director.studio",
+    "productName": "Director",
+    "copyright": "Copyright © 2025 Director",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build-assets"
+    },
+    "files": [
+      "main.js",
+      "lib/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist",
+        "to": "web-dist",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../../docker-compose.yml",
+        "to": "docker-compose.yml"
+      },
+      {
+        "from": "../../.env.example",
+        "to": ".env.example"
+      },
+      {
+        "from": "../api",
+        "to": "apps/api",
+        "filter": [
+          "**/*",
+          "!**/.venv/**",
+          "!**/.venv-win/**",
+          "!**/.pytest_cache/**",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.pyo",
+          "!**/.ruff_cache/**",
+          "!**/node_modules/**",
+          "!**/tests/**",
+          "!**/.git/**",
+          "!**/dist/**",
+          "!**/*.egg-info/**"
+        ]
+      },
+      {
+        "from": "../../packages/ffmpeg-pipelines",
+        "to": "packages/ffmpeg-pipelines",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/.pytest_cache/**",
+          "!**/.ruff_cache/**",
+          "!**/*.egg-info/**"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] },
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ],
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build-assets/entitlements.mac.plist",
+      "entitlementsInherit": "build-assets/entitlements.mac.plist",
+      "notarize": false
+    },
+    "dmg": {
+      "title": "Director ${version}",
+      "window": { "width": 540, "height": 380 },
+      "contents": [
+        { "x": 140, "y": 200, "type": "file" },
+        { "x": 400, "y": 200, "type": "link", "path": "/Applications" }
+      ],
+      "iconSize": 100
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "zip",  "arch": ["x64"] }
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Director",
+      "installerHeaderIcon": "build-assets/icon.ico",
+      "deleteAppDataOnUninstall": false
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] }
+      ],
+      "category": "Office"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["schema_id", "characters"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_id": { "const": "character-bible/v1" },
+    "characters": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["sort_order", "name", "role_in_story", "visual_description"],
+        "additionalProperties": false,
+        "properties": {
+          "sort_order": { "type": "integer", "minimum": 0 },
+          "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "role_in_story": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "visual_description": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "time_place_scope_notes": { "type": "string", "maxLength": 2000 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://director.local/schemas/documentary-brief/1",
+  "title": "DocumentaryBrief",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "topic", "target_runtime_minutes"],
+  "properties": {
+    "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "topic": { "type": "string", "minLength": 1, "maxLength": 8000 },
+    "target_runtime_minutes": { "type": "integer", "minimum": 2, "maximum": 120 },
+    "audience": { "type": "string" },
+    "tone": { "type": "string" },
+    "visual_style": { "type": "string" },
+    "narration_style": { "type": "string" },
+    "factual_strictness": {
+      "type": "string",
+      "enum": ["strict", "balanced", "creative"]
+    },
+    "music_preference": { "type": "string" },
+    "preferred_text_provider": { "type": "string" },
+    "preferred_image_provider": { "type": "string" },
+    "preferred_video_provider": { "type": "string" },
+    "preferred_speech_provider": { "type": "string" },
+    "research_min_sources": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "budget_limit": { "type": "number" }
+  }
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Director Celery worker
+After=director-infra.service network-online.target
+Requires=director-infra.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/director
+ExecStart=/root/director/scripts/systemd/run-worker.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

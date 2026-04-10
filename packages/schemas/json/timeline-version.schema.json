@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://director.local/schemas/timeline-version.schema.json",
+  "title": "TimelineVersion document (v1–v2)",
+  "type": "object",
+  "required": ["schema_version", "clips"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "enum": [1, 2]
+    },
+    "clips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["order_index", "source"],
+        "properties": {
+          "order_index": { "type": "integer", "minimum": 0 },
+          "source": {
+            "type": "object",
+            "required": ["kind", "asset_id"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["asset"] },
+              "asset_id": { "type": "string", "minLength": 32, "maxLength": 40 }
+            },
+            "additionalProperties": false
+          },
+          "duration_sec": { "type": "number", "minimum": 0 },
+          "trim_start_sec": { "type": "number", "minimum": 0 },
+          "trim_end_sec": { "type": "number", "minimum": 0 }
+        },
+        "additionalProperties": true
+      }
+    },
+    "narration_track_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 32, "maxLength": 40 }
+    },
+    "music_bed_id": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "minLength": 32, "maxLength": 40 }
+      ]
+    },
+    "mix_music_volume": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Background music gain in final mux (0 = mute)."
+    },
+    "mix_narration_volume": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 4,
+      "description": "Narration gain before loudnorm (1 = unity)."
+    },
+    "clip_crossfade_sec": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2,
+      "description": "Dissolve duration (seconds) between consecutive stills when rough-cut batches images; 0 = hard cuts."
+    },
+    "final_cut_narration_mode": {
+      "type": "string",
+      "enum": ["auto", "chapter", "scene_timeline"],
+      "description": "Always resolved to scene_timeline (per-scene VO). Legacy values auto/chapter are accepted but treated as scene_timeline."
+    },
+    "cut_kind": {
+      "type": "string",
+      "enum": ["rough", "fine"],
+      "description": "Product sense: rough_cut vs fine_cut (graphics/overlays)."
+    },
+    "overlays": {
+      "type": "array",
+      "description": "Timed overlays burned in fine_cut (local FFmpeg drawtext/drawbox).",
+      "items": {
+        "type": "object",
+        "required": ["type", "start_sec", "end_sec"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["title_card", "lower_third", "map_placeholder"]
+          },
+          "start_sec": { "type": "number", "minimum": 0 },
+          "end_sec": { "type": "number", "minimum": 0 },
+          "text": { "type": "string", "maxLength": 500 },
+          "subtext": { "type": "string", "maxLength": 300 },
+          "label": { "type": "string", "maxLength": 200 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

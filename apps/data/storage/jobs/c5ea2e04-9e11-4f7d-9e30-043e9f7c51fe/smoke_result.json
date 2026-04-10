@@ -1,0 +1,7 @@
+{
+  "configured": true,
+  "provider": "fal",
+  "model": "fal-ai/fast-sdxl",
+  "error": "http_422",
+  "body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"prompt\"],\"msg\":\"Field required\",\"input\":{\"input\":{\"prompt\":\"smoke test, abstract gradient, no text, tiny detail\"}}}]}"
+}

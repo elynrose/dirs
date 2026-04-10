@@ -1,0 +1,1 @@
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-director.ps1

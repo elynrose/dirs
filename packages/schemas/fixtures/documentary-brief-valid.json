@@ -1,0 +1,15 @@
+{
+  "title": "Fixture brief",
+  "topic": "Minimal valid topic string for schema CI.",
+  "target_runtime_minutes": 15,
+  "audience": "General",
+  "tone": "Neutral",
+  "visual_style": "Archival",
+  "narration_style": "Single narrator",
+  "factual_strictness": "strict",
+  "music_preference": "Royalty-free ambient",
+  "preferred_text_provider": "openai",
+  "preferred_image_provider": "fal",
+  "preferred_video_provider": "fal",
+  "preferred_speech_provider": "cosyvoice_local"
+}

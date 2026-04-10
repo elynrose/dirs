@@ -1,0 +1,13 @@
+{
+  "configured": true,
+  "provider": "fal",
+  "model": "fal-ai/fast-sdxl",
+  "response_keys": [
+    "images",
+    "timings",
+    "seed",
+    "has_nsfw_concepts",
+    "prompt"
+  ],
+  "raw_preview": "{'images': [{'url': 'https://v3b.fal.media/files/b/0a9344d7/foZHzCGRst_KvKyzSzIAK.jpg', 'width': 1024, 'height': 1024, 'content_type': 'image/jpeg'}], 'timings': {'inference': 1.2174878330115462}, 'seed': 2643365656232659984, 'has_nsfw_concepts': [False], 'prompt': 'smoke test, abstract gradient, no text, tiny detail'}"
+}

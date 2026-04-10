@@ -1,0 +1,16 @@
+[Unit]
+Description=Director web UI (Vite dev server)
+After=director-api.service network-online.target
+Wants=director-api.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/director
+ExecStart=/root/director/scripts/systemd/run-vite.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

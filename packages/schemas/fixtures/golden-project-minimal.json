@@ -1,0 +1,36 @@
+{
+  "project": {
+    "title": "Golden Fixture: Arctic Cable",
+    "topic": "History of undersea telegraph cables in the Arctic region (fixture only).",
+    "target_runtime_minutes": 12,
+    "audience": "General educated viewers",
+    "tone": "Documentary, neutral",
+    "visual_style": "Archival + maps",
+    "narration_style": "Single narrator, calm",
+    "factual_strictness": "strict",
+    "music_preference": "Ambient orchestral, royalty-free catalog id TBD",
+    "preferred_text_provider": "openai",
+    "preferred_image_provider": "fal",
+    "preferred_video_provider": "fal",
+    "preferred_speech_provider": "cosyvoice_local"
+  },
+  "chapters": [
+    {
+      "order_index": 0,
+      "title": "Opening",
+      "target_duration_sec": 120,
+      "summary": "Hook and thesis (fixture)."
+    }
+  ],
+  "scenes": [
+    {
+      "chapter_order_index": 0,
+      "order_index": 0,
+      "purpose": "Establish map of region",
+      "planned_duration_sec": 30,
+      "narration_text": "The Arctic has long challenged engineers.",
+      "visual_type": "map",
+      "continuity_tags": ["palette_cool", "era_modern_map"]
+    }
+  ]
+}

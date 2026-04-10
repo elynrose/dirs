@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://director.local/schemas/chapter-scripts-batch/v1",
+  "title": "Chapter narration scripts batch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "scripts"],
+  "properties": {
+    "schema_id": { "type": "string", "const": "chapter-scripts-batch/v1" },
+    "scripts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["order_index", "script_text"],
+        "properties": {
+          "order_index": { "type": "integer", "minimum": 0 },
+          "script_text": { "type": "string", "minLength": 1, "maxLength": 120000 },
+          "transition_to_next": { "type": "string", "maxLength": 2000 }
+        }
+      }
+    }
+  }
+}

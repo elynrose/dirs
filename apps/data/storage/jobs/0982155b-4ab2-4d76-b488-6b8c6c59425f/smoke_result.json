@@ -1,0 +1,5 @@
+{
+  "configured": false,
+  "provider": "openrouter",
+  "error": "OPENROUTER_API_KEY not set"
+}

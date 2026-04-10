@@ -1,0 +1,5 @@
+{
+  "configured": false,
+  "provider": "openai",
+  "error": "OPENAI_API_KEY not set"
+}

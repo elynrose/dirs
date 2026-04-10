@@ -1,0 +1,52 @@
+# Local-first dev stack: Postgres + Redis + optional MinIO (localhost S3 API).
+# Assets default to LOCAL_STORAGE_ROOT on disk; MinIO is optional per docs/local-first-storage.md
+
+services:
+  postgres:
+    restart: unless-stopped
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-director}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-director_dev_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-director}
+    ports:
+      # Host 5433 avoids conflict with a local Postgres on 5432 (common on macOS).
+      - "5433:5432"
+    volumes:
+      - director_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-director} -d ${POSTGRES_DB:-director}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    restart: unless-stopped
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - director_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    restart: unless-stopped
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_change_me}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - director_minio:/data
+
+volumes:
+  director_pg:
+  director_redis:
+  director_minio:

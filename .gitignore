@@ -1,0 +1,40 @@
+.env
+.env.*.local
+!.env.example
+# Firebase / Google service accounts (paths often appear in .env)
+*firebase-adminsdk*.json
+*-firebase-adminsdk*.json
+# Windows-only venv copied onto Linux by mistake
+apps/api/.venv-win/
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+dist/
+build/
+.next/
+*.egg-info/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+*.log
+.run/
+.venv/
+venv/
+apps/api/.venv/
+apps/electron/release/
+/data/
+# Pip / build scratch
+.tmp_wheel/
+# Celery beat local schedule (runtime)
+apps/api/celerybeat-schedule.bak
+apps/api/celerybeat-schedule.dat
+apps/api/celerybeat-schedule.dir
+# Cursor / Claude local settings
+.claude/
+# Local scratch / pipeline dumps (do not publish)
+tmp/

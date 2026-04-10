@@ -1,0 +1,5 @@
+{
+  "configured": false,
+  "provider": "fal",
+  "error": "FAL_KEY not set"
+}

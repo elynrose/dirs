@@ -1,0 +1,15 @@
+[Unit]
+Description=Director infrastructure (Postgres, Redis, MinIO via Docker)
+After=docker.service
+Requires=docker.service
+Before=director-api.service director-worker.service director-beat.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/root/director
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+# Intentionally no ExecStop: keep data volumes; use `docker compose down` in the repo to tear down.
+
+[Install]
+WantedBy=multi-user.target
