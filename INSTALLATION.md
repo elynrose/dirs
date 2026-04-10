@@ -167,18 +167,26 @@ cd /path/to/director && docker compose down
    cd apps/web && npm ci && npm run build
    ```
 
-3. **nginx** — example site file: [`scripts/nginx/directely.com.conf`](scripts/nginx/directely.com.conf). It serves `apps/web/dist` and proxies `/v1/` to `127.0.0.1:8000`.  
-   Install: copy to `/etc/nginx/sites-available/`, enable under `sites-enabled`, `sudo nginx -t && sudo systemctl reload nginx`.
+3. **Publish static files** — nginx runs as `www-data` and **cannot read** paths under `/root` (you would get HTTP 500). Copy the build to e.g. `/var/www/directely`:
 
-4. **TLS** (after DNS is correct):
+   ```bash
+   sudo mkdir -p /var/www/directely
+   sudo rsync -a --delete apps/web/dist/ /var/www/directely/
+   sudo chown -R www-data:www-data /var/www/directely
+   ```
+
+4. **nginx** — example site file: [`scripts/nginx/directely.com.conf`](scripts/nginx/directely.com.conf). It serves `/var/www/directely` and proxies `/v1/` to `127.0.0.1:8000`.  
+   Install: copy to `/etc/nginx/sites-available/`, enable under `sites-enabled`, `sudo nginx -t && sudo systemctl restart nginx` (use **restart** after changing `root`, not only `reload`, if workers keep old config).
+
+5. **TLS** (after DNS is correct):
 
    ```bash
    sudo certbot --nginx -d directely.com -d www.directely.com
    ```
 
-5. **Optional:** In repo `.env`, `CORS_EXTRA_ORIGINS` can include `https://directely.com` and `https://www.directely.com` if the UI ever calls the API from another origin. Same-origin via nginx usually does not need extra CORS.
+6. **Optional:** In repo `.env`, `CORS_EXTRA_ORIGINS` can include `https://directely.com` and `https://www.directely.com` if the UI ever calls the API from another origin. Same-origin via nginx usually does not need extra CORS.
 
-6. **Firebase / Google sign-in:** Add `directely.com` (and `www` if used) under Firebase **Authorized domains**.
+7. **Firebase / Google sign-in:** Add `directely.com` (and `www` if used) under Firebase **Authorized domains**.
 
 ## 8. Web UI (Vite)
 
