@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth, getRedirectResult, GoogleAuthProvider, signInWithRedirect } from "firebase/auth";
+import { getAuth, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
 
 /**
  * Optional: set in `apps/web/.env.development` so the Google button appears even if the API
@@ -22,9 +22,6 @@ export function viteFirebaseWebConfig() {
 /** @type {import("firebase/auth").Auth | null} */
 let _auth = null;
 
-/** Single-flight so React Strict Mode does not call ``getRedirectResult`` twice (second call is empty). */
-let _redirectIdTokenPromise = null;
-
 /**
  * Initialize Firebase for the browser (idempotent). `config` matches GET /v1/auth/config `data.firebase`.
  * @param {{ api_key: string, auth_domain: string, project_id: string, app_id: string }} config
@@ -45,31 +42,16 @@ export function initFirebaseWeb(config) {
 }
 
 /**
- * Start Google OAuth via full-page redirect (avoids popup + Cross-Origin-Opener-Policy issues on
- * production sites). The page navigates to Google; on return, call {@link completeGoogleRedirectIdToken}.
+ * Opens the Google OAuth popup and returns a Firebase ID token on success.
+ * @returns {Promise<string | null>}
  */
-export async function startGoogleRedirectSignIn() {
+export async function signInWithGooglePopup() {
   if (!_auth) throw new Error("Firebase Auth is not initialized");
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
-  await signInWithRedirect(_auth, provider);
-}
-
-/**
- * After redirect back to this app, returns an ID token if the user completed Google sign-in.
- * Safe to call on every load; returns `null` when there was no redirect pending.
- * @returns {Promise<string | null>}
- */
-export async function completeGoogleRedirectIdToken() {
-  if (!_auth) return null;
-  if (!_redirectIdTokenPromise) {
-    _redirectIdTokenPromise = (async () => {
-      const result = await getRedirectResult(_auth);
-      if (!result?.user) return null;
-      return result.user.getIdToken();
-    })();
-  }
-  return _redirectIdTokenPromise;
+  const result = await signInWithPopup(_auth, provider);
+  if (!result?.user) return null;
+  return result.user.getIdToken();
 }
 
 /**

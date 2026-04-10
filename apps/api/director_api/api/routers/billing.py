@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,6 +25,16 @@ from director_api.services.tenant_entitlements import billing_summary_for_tenant
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 log = structlog.get_logger(__name__)
+
+
+def _stripe_to_plain_dict(obj: Any) -> dict[str, Any]:
+    """Convert Stripe SDK objects to nested dicts. ``dict(stripe_obj)`` is not reliable; ``.get`` is unavailable on ``StripeObject``."""
+    if isinstance(obj, dict):
+        return obj
+    to_d = getattr(obj, "to_dict", None)
+    if callable(to_d):
+        return to_d()
+    raise TypeError(f"expected Stripe object with to_dict(), got {type(obj)!r}")
 
 
 @router.get("/plans")
@@ -138,6 +149,79 @@ def create_checkout_session(
     return {"data": {"url": url, "session_id": sid}, "meta": meta}
 
 
+def _billing_portal_return_url(eff: dict[str, Any], gs: Settings) -> str:
+    """Return URL after Stripe Customer Portal — derived from checkout success URL without query (avoids success toasts)."""
+    raw = (eff.get("billing_success_url") or gs.billing_success_url or "").strip()
+    if not raw:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "BILLING_URL_NOT_CONFIGURED",
+                "message": "Set billing_success_url (Admin → Stripe or env) so users can return from the billing portal.",
+            },
+        )
+    p = urlparse(raw)
+    if not p.netloc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "INVALID_BILLING_URL",
+                "message": "billing_success_url must be a full URL (https://…).",
+            },
+        )
+    path = p.path if p.path else "/"
+    return urlunparse((p.scheme or "https", p.netloc, path, "", "", ""))
+
+
+@router.post("/customer-portal")
+def create_customer_portal_session(
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict[str, Any]:
+    """Open Stripe Customer Portal (cancel subscription, update payment method, invoices)."""
+    if not get_settings().director_auth_enabled:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "not found"})
+    gs = get_settings()
+    eff = resolve_effective_stripe_settings(db, gs)
+    sk = (eff.get("stripe_secret_key") or "").strip()
+    if not sk:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "STRIPE_NOT_CONFIGURED", "message": "Stripe secret key is not configured on the server"},
+        )
+
+    bill = db.get(TenantBilling, auth.tenant_id)
+    cid = (bill.stripe_customer_id or "").strip() if bill else ""
+    if not cid:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "NO_STRIPE_CUSTOMER",
+                "message": "No Stripe customer for this workspace yet. Subscribe via Checkout first, or wait for billing sync.",
+            },
+        )
+
+    import stripe
+
+    stripe.api_key = sk
+    return_url = _billing_portal_return_url(eff, gs)
+    try:
+        session = stripe.billing_portal.Session.create(customer=cid, return_url=return_url)
+    except Exception as exc:
+        log.warning("stripe_portal_failed", error=str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "STRIPE_ERROR", "message": str(exc)},
+        ) from exc
+
+    url = getattr(session, "url", None) or (session.get("url") if isinstance(session, dict) else None)
+    if not url:
+        raise HTTPException(status_code=502, detail={"code": "STRIPE_ERROR", "message": "no portal url returned"})
+    return {"data": {"url": url}, "meta": meta}
+
+
 @router.get("/subscription")
 def get_subscription(
     db: Session = Depends(get_db),
@@ -202,16 +286,61 @@ def _audit_stripe_event(db: Session, event: dict[str, Any]) -> None:
     db.flush()
 
 
+def _merge_tenant_metadata_into_subscription(
+    sub: dict[str, Any],
+    *,
+    checkout_session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Ensure ``tenant_id`` is present — Checkout may omit it on the Subscription even when the Session has it."""
+    meta = dict(sub.get("metadata") or {}) if isinstance(sub.get("metadata"), dict) else {}
+    if (meta.get("tenant_id") or "").strip():
+        out = dict(sub)
+        out["metadata"] = meta
+        return out
+    cref = ""
+    smeta: dict[str, Any] = {}
+    if checkout_session:
+        cref = str(checkout_session.get("client_reference_id") or "").strip()
+        raw = checkout_session.get("metadata")
+        if isinstance(raw, dict):
+            smeta = raw
+    tid = (cref or smeta.get("tenant_id") or meta.get("tenant_id") or "").strip()
+    if tid:
+        meta = {**meta, "tenant_id": tid}
+        log.info(
+            "stripe_subscription_tenant_from_session",
+            subscription_id=sub.get("id"),
+            tenant_id=tid[:8] + "…" if len(tid) > 12 else tid,
+        )
+    out = dict(sub)
+    out["metadata"] = meta
+    return out
+
+
 def _sync_stripe_subscription(db: Session, sub: dict[str, Any]) -> None:
     meta = sub.get("metadata") or {}
+    if not isinstance(meta, dict):
+        meta = {}
     tid = (meta.get("tenant_id") or "").strip()
+    if not tid:
+        sid = str(sub.get("id") or "").strip()
+        if sid:
+            existing = db.scalar(select(TenantBilling).where(TenantBilling.stripe_subscription_id == sid))
+            if existing:
+                tid = str(existing.tenant_id).strip()
+                meta = {**meta, "tenant_id": tid}
     if not tid:
         log.warning("stripe_subscription_no_tenant", subscription_id=sub.get("id"))
         return
     items = (sub.get("items") or {}).get("data") or []
     price_id = None
     if items:
-        price_id = (items[0].get("price") or {}).get("id")
+        first = items[0]
+        price = first.get("price") if isinstance(first, dict) else None
+        if isinstance(price, dict):
+            price_id = price.get("id")
+        elif price is not None and hasattr(price, "id"):
+            price_id = str(getattr(price, "id", "") or "")
     plan = None
     if price_id:
         plan = db.scalar(select(SubscriptionPlan).where(SubscriptionPlan.stripe_price_id == price_id))
@@ -253,22 +382,28 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         log.warning("stripe_webhook_verify_failed", error=str(exc))
         raise HTTPException(status_code=400, detail={"code": "INVALID_SIGNATURE", "message": "invalid signature"}) from exc
 
+    ed = _stripe_to_plain_dict(event)
+
     try:
-        _audit_stripe_event(db, dict(event))
+        _audit_stripe_event(db, ed)
         db.flush()
     except Exception:
         log.exception("stripe_audit_record_failed")
 
-    et = event.get("type")
-    obj = event.get("data", {}).get("object") or {}
+    et = ed.get("type")
+    obj = (ed.get("data") or {}).get("object") or {}
+    if not isinstance(obj, dict):
+        obj = _stripe_to_plain_dict(obj)
 
     try:
         if et == "checkout.session.completed" and obj.get("mode") == "subscription":
             sub_id = obj.get("subscription")
             if sub_id:
                 stripe.api_key = sk
-                sub = stripe.Subscription.retrieve(str(sub_id))
-                _sync_stripe_subscription(db, dict(sub))
+                sub_rec = stripe.Subscription.retrieve(str(sub_id))
+                sub_d = _stripe_to_plain_dict(sub_rec)
+                sub_d = _merge_tenant_metadata_into_subscription(sub_d, checkout_session=dict(obj))
+                _sync_stripe_subscription(db, sub_d)
         elif et in ("customer.subscription.updated", "customer.subscription.deleted"):
             if et.endswith("deleted"):
                 meta = obj.get("metadata") or {}
@@ -289,7 +424,8 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)) -> dic
                         row.plan_id = None
                         row.current_period_end = None
             else:
-                _sync_stripe_subscription(db, obj)
+                merged = _merge_tenant_metadata_into_subscription(obj, checkout_session=None)
+                _sync_stripe_subscription(db, merged)
         db.commit()
     except Exception:
         db.rollback()

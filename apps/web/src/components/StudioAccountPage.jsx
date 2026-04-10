@@ -53,6 +53,7 @@ export function StudioAccountPage({
   showToast,
 }) {
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [portalBusy, setPortalBusy] = useState(false);
   const [plans, setPlans] = useState([]);
   const [plansErr, setPlansErr] = useState("");
   const [profileBusy, setProfileBusy] = useState(false);
@@ -101,6 +102,25 @@ export function StudioAccountPage({
       setPlansErr(formatUserFacingError(e));
     }
   }, []);
+
+  const openCustomerPortal = useCallback(async () => {
+    setPortalBusy(true);
+    try {
+      const r = await api("/v1/billing/customer-portal", { method: "POST" });
+      const body = await parseJson(r);
+      if (!r.ok) {
+        showToast?.(apiErrorMessage(body) || "Could not open billing portal", { type: "error", durationMs: 8000 });
+        return;
+      }
+      const url = body.data?.url;
+      if (url) window.location.href = url;
+      else showToast?.("No portal URL returned", { type: "error" });
+    } catch (e) {
+      showToast?.(formatUserFacingError(e), { type: "error", durationMs: 8000 });
+    } finally {
+      setPortalBusy(false);
+    }
+  }, [showToast]);
 
   const startCheckout = useCallback(
     async (slug) => {
@@ -273,9 +293,24 @@ export function StudioAccountPage({
         >
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Subscription</div>
           {subStatusLabel === "none" ? (
-            <p className="subtle" style={{ margin: 0 }}>
-              No active subscription on this workspace.
-            </p>
+            <>
+              <p className="subtle" style={{ margin: 0 }}>
+                No active subscription on this workspace.
+              </p>
+              {billing.stripe_customer_id ? (
+                <div style={{ marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="secondary"
+                    style={{ width: "100%" }}
+                    disabled={portalBusy}
+                    onClick={() => void openCustomerPortal()}
+                  >
+                    {portalBusy ? "Opening…" : "Billing portal (invoices & history)"}
+                  </button>
+                </div>
+              ) : null}
+            </>
           ) : (
             <>
               <p style={{ margin: "0 0 4px", lineHeight: 1.45 }}>
@@ -295,6 +330,19 @@ export function StudioAccountPage({
                 <p className="subtle" style={{ margin: "6px 0 0", fontSize: "0.8rem" }}>
                   Renews / ends {formatPeriodEnd(billing.current_period_end)}
                 </p>
+              ) : null}
+              {billing.stripe_customer_id ? (
+                <div style={{ marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="secondary"
+                    style={{ width: "100%" }}
+                    disabled={portalBusy}
+                    onClick={() => void openCustomerPortal()}
+                  >
+                    {portalBusy ? "Opening…" : "Manage or cancel"}
+                  </button>
+                </div>
               ) : null}
             </>
           )}
@@ -431,8 +479,20 @@ export function StudioAccountPage({
         <h3 style={h3Style}>Subscription</h3>
         <p className="subtle" style={subStyle}>
           Status for the <strong>current</strong> workspace (see table above). Stripe Checkout needs{" "}
-          <code>STRIPE_SECRET_KEY</code> and a price on the plan.
+          <code>STRIPE_SECRET_KEY</code> and a price on the plan. Enable{" "}
+          <strong>Customer portal</strong> in the Stripe Dashboard (Settings → Billing → Customer portal) so users can
+          cancel or update payment methods.
         </p>
+        {billing.stripe_customer_id ? (
+          <div className="action-row" style={{ marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+            <button type="button" disabled={portalBusy} onClick={() => void openCustomerPortal()}>
+              {portalBusy ? "Opening…" : "Manage subscription & billing"}
+            </button>
+            <span className="subtle" style={{ fontSize: "0.88rem", alignSelf: "center" }}>
+              Opens Stripe — cancel at period end, change card, or view invoices.
+            </span>
+          </div>
+        ) : null}
         <p className="subtle" style={{ marginTop: -4, marginBottom: 10 }}>
           Status: <strong>{billing.status || "none"}</strong>
           {billing.plan_display_name ? (

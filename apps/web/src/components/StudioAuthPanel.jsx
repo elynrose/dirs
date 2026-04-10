@@ -2,10 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiPath } from "../lib/api.js";
 import { parseJson } from "../lib/apiHelpers.js";
 import {
-  completeGoogleRedirectIdToken,
   describeFirebaseAuthError,
   initFirebaseWeb,
-  startGoogleRedirectSignIn,
+  signInWithGooglePopup,
   viteFirebaseWebConfig,
 } from "../lib/firebaseWebAuth.js";
 import { setDirectorAuthSession } from "../lib/directorAuthSession.js";
@@ -64,32 +63,6 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
 
   useEffect(() => {
     let cancelled = false;
-
-    const tryCompleteGoogleRedirect = async (fb) => {
-      if (!fb?.api_key || !fb?.project_id) return;
-      try {
-        initFirebaseWeb(fb);
-      } catch {
-        return;
-      }
-      let idToken = null;
-      try {
-        idToken = await completeGoogleRedirectIdToken();
-      } catch (re) {
-        if (!cancelled) setErr(describeFirebaseAuthError(re));
-        return;
-      }
-      if (!idToken || cancelled) return;
-      setBusy(true);
-      try {
-        await postFirebaseIdToken(idToken);
-      } catch (x) {
-        if (!cancelled) setErr(String(x?.message || x));
-      } finally {
-        if (!cancelled) setBusy(false);
-      }
-    };
-
     (async () => {
       let fb = null;
       try {
@@ -103,13 +76,11 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
       if (cancelled) return;
       firebaseCfgRef.current = fb;
       if (fb?.api_key && fb?.project_id) setFirebaseOffered(true);
-      await tryCompleteGoogleRedirect(fb);
     })();
-
     return () => {
       cancelled = true;
     };
-  }, [postFirebaseIdToken]);
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -165,7 +136,9 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
         setErr(String(initErr?.message || initErr));
         return;
       }
-      await startGoogleRedirectSignIn();
+      const idToken = await signInWithGooglePopup();
+      if (!idToken) return;
+      await postFirebaseIdToken(idToken);
     } catch (x) {
       const code = x?.code;
       const msg =
