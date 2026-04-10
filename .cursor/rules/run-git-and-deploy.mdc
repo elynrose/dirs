@@ -1,0 +1,13 @@
+---
+description: Run git, build, and deploy commands in the environment when the user asks—do not only suggest commands.
+alwaysApply: true
+---
+
+# Execute ops when asked
+
+When the user asks to **push**, **pull**, **deploy**, **rebuild**, **restart** services, or similar (e.g. “push to git”, “deploy”, “run it”), **run the commands yourself** in the integrated terminal from the correct paths (e.g. `/root/director`).
+
+- Prefer concrete steps: `git status`, `git add` / `git commit` when there are changes, `git push`, `npm run build`, `systemctl restart …`, etc.
+- **Do not** respond with only “you can run…” unless something cannot be automated here (browser OAuth, secrets the user must paste locally, or destructive actions they must explicitly confirm).
+
+If SSH, credentials, or network block an action, say what failed and the minimal fix—after you have tried once.
