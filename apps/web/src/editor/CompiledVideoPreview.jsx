@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiCompiledVideoUrl, sanitizeStudioUuid } from "../lib/api.js";
+import { apiBase, apiCompiledVideoUrl, sanitizeStudioUuid } from "../lib/api.js";
 import { directorAuthHeaders } from "../lib/directorAuthSession.js";
 
 /**
@@ -89,7 +89,15 @@ export function CompiledVideoPreview({ projectId, timelineVersionId }) {
       </div>
       {videoError ? (
         <div className="err" style={{ marginTop: 10 }}>
-          Could not play video in the browser. Try <a href={downloadUrl}>download</a> or open the URL from the network tab.
+          Could not play video in the browser. Try <a href={downloadUrl}>download</a> or open the video URL from DevTools → Network.
+          {String(apiBase || "").trim() ? (
+            <>
+              {" "}
+              You are using <code className="mono">VITE_API_BASE_URL</code> (cross-origin). Ensure the API allows your Studio origin in{" "}
+              <code className="mono">CORS_EXTRA_ORIGINS</code> (e.g. <code className="mono">http://YOUR_HOST:5173</code>), or leave{" "}
+              <code className="mono">VITE_API_BASE_URL</code> unset so <code className="mono">/v1</code> is same-origin behind the Vite proxy.
+            </>
+          ) : null}
         </div>
       ) : (
         <video
@@ -97,6 +105,12 @@ export function CompiledVideoPreview({ projectId, timelineVersionId }) {
           className="canvas-preview"
           controls
           playsInline
+          {...(String(apiBase || "").trim()
+            ? {
+                // Direct API origin (VITE_API_BASE_URL): needs CORS + anonymous cross-origin load.
+                crossOrigin: "anonymous",
+              }
+            : {})}
           src={playUrl}
           onError={() => setVideoError(true)}
         />
