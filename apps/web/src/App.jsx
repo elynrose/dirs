@@ -30,6 +30,7 @@ import {
 } from "./lib/api.js";
 import {
   DIRECTOR_UI_SESSION_KEY,
+  PENDING_CHECKOUT_PLAN_KEY,
   FAL_CATALOG_MIN_REFRESH_MS,
   STUDIO_MEDIA_JOB_TYPES,
   EXPORT_COMPILE_JOB_TYPES,
@@ -1151,6 +1152,46 @@ export default function App() {
     }
   }, [refreshAccountProfile, showToast]);
 
+  /** After login, resume Stripe Checkout when the user chose a plan on the public pricing page. */
+  useEffect(() => {
+    if (!studioReady || authBootstrap.mode !== "saas" || authBootstrap.needLogin) return;
+    let planSlug = "";
+    try {
+      planSlug = String(localStorage.getItem(PENDING_CHECKOUT_PLAN_KEY) || "").trim();
+    } catch {
+      return;
+    }
+    if (!planSlug) return;
+    try {
+      localStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
+    } catch {
+      /* ignore */
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api("/v1/billing/checkout-session", {
+          method: "POST",
+          body: JSON.stringify({ plan_slug: planSlug }),
+        });
+        const body = await parseJson(r);
+        if (cancelled) return;
+        if (!r.ok) {
+          showToast(apiErrorMessage(body) || "Could not start checkout", { type: "error", durationMs: 8000 });
+          return;
+        }
+        const url = body.data?.url;
+        if (url) window.location.href = url;
+        else showToast("No checkout URL returned", { type: "error" });
+      } catch (e) {
+        if (!cancelled) showToast(formatUserFacingError(e), { type: "error", durationMs: 8000 });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [studioReady, authBootstrap.mode, authBootstrap.needLogin, eventAuthKey, showToast]);
+
   useEffect(() => {
     const ent = accountProfile?.entitlements;
     if (!ent || ent.chat_enabled !== false) return;
@@ -1226,6 +1267,11 @@ export default function App() {
   const signOutSaas = useCallback(() => {
     clearDirectorAuthSession();
     resetWorkspaceForTenantBoundary();
+    try {
+      localStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
+    } catch {
+      /* ignore */
+    }
     setSaasTenants([]);
     setAccountProfile(null);
     setAuthBootstrap((s) => ({ ...s, needLogin: true }));
@@ -1243,6 +1289,11 @@ export default function App() {
       if (authModeRef.current !== "saas") return;
       clearDirectorAuthSession();
       resetWorkspaceForTenantBoundary();
+      try {
+        localStorage.removeItem(PENDING_CHECKOUT_PLAN_KEY);
+      } catch {
+        /* ignore */
+      }
       setSaasTenants([]);
       setAccountProfile(null);
       setAuthBootstrap((s) => ({

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiPath } from "../lib/api.js";
 import { parseJson, apiErrorMessage, formatUserFacingError } from "../lib/apiHelpers.js";
+import { PENDING_CHECKOUT_PLAN_KEY } from "../lib/constants.js";
 
 const FEATURE_LABELS = [
   { key: "chat_enabled", label: "Chat studio" },
@@ -21,7 +22,8 @@ function formatEntValue(key, value) {
 }
 
 /**
- * Public plan list (GET /v1/billing/plans). Checkout requires sign-in — buttons return to login.
+ * Public plan list (GET /v1/billing/plans). Choosing a plan stores the slug and sends the user to
+ * sign-in; after login the app opens Stripe Checkout for that plan.
  * `embedded` — rendered inside the login shell glass card (no outer margin).
  */
 export function StudioPricingPanel({ onBackToSignIn, embedded = false }) {
@@ -64,8 +66,9 @@ export function StudioPricingPanel({ onBackToSignIn, embedded = false }) {
       </button>
       <h1 style={{ fontSize: "1.35rem", marginBottom: 8 }}>Plans & pricing</h1>
       <p className="subtle" style={{ marginBottom: 20 }}>
-        Compare workspace plans. After you sign in, complete purchase from <strong>Account → Subscription</strong> using
-        Stripe Checkout.
+        Browse and compare plans without an account. To subscribe, pick a plan below — you will sign in next, then we open
+        Stripe Checkout for that plan. Subscriptions renew monthly until you cancel in the Stripe customer portal or from
+        Account → Subscription.
       </p>
       {loading ? <p className="subtle">Loading plans…</p> : null}
       {err ? <p className="err" style={{ marginBottom: 12 }}>{err}</p> : null}
@@ -106,8 +109,25 @@ export function StudioPricingPanel({ onBackToSignIn, embedded = false }) {
               </ul>
             </div>
             <div className="action-row" style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-              <button type="button" onClick={onBackToSignIn}>
-                Sign in to subscribe
+              <button
+                type="button"
+                disabled={!pl.stripe_price_configured}
+                title={
+                  pl.stripe_price_configured
+                    ? "Sign in, then continue to Stripe Checkout for this plan"
+                    : "Configure a Stripe price for this plan first"
+                }
+                onClick={() => {
+                  if (!pl.stripe_price_configured) return;
+                  try {
+                    localStorage.setItem(PENDING_CHECKOUT_PLAN_KEY, pl.slug);
+                  } catch {
+                    /* ignore */
+                  }
+                  onBackToSignIn?.();
+                }}
+              >
+                {pl.stripe_price_configured ? "Sign in & pay with Stripe" : "Unavailable — no Stripe price"}
               </button>
               {!pl.stripe_price_configured ? (
                 <span className="subtle" style={{ fontSize: "0.85rem" }}>

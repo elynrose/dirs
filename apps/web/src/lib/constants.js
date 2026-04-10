@@ -4,6 +4,8 @@
  */
 
 export const DIRECTOR_UI_SESSION_KEY = "director_ui_session";
+/** After plan selection on the public pricing page, sign-in completes checkout for this plan slug. */
+export const PENDING_CHECKOUT_PLAN_KEY = "directely_pending_checkout_plan_slug";
 export const FAL_CATALOG_MIN_REFRESH_MS = 60_000;
 
 /** Default narration preset id (must match API `style_presets.DEFAULT_NARRATION_PRESET`). */

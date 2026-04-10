@@ -342,7 +342,13 @@ def auth_me(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
                     "hands_off_unattended_enabled": True,
                     "subtitles_enabled": True,
                 },
-                "billing": {"status": "none", "plan_slug": None, "plan_display_name": None},
+                "billing": {
+                    "status": "none",
+                    "plan_slug": None,
+                    "plan_display_name": None,
+                    "current_period_end": None,
+                    "days_remaining_in_period": None,
+                },
             },
             "meta": {},
         }

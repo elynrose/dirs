@@ -210,38 +210,95 @@ export function StudioAccountPage({
   const displayName = (accountProfile?.full_name || "").trim() || accountProfile?.email || "—";
   const email = accountProfile?.email || "—";
   const billing = accountProfile?.billing || {};
+  const daysLeftInPeriod =
+    billing.days_remaining_in_period != null && billing.days_remaining_in_period !== ""
+      ? Number(billing.days_remaining_in_period)
+      : null;
   const ent = accountProfile?.entitlements || {};
   const tenants = Array.isArray(accountProfile?.tenants) ? accountProfile.tenants : [];
   const activeTid = accountProfile?.active_tenant_id;
 
+  const subStatusLabel = String(billing.status || "none");
+
   return (
     <div className="panel account-page" style={{ padding: 24, maxWidth: 820 }}>
-      <header style={{ marginBottom: 24 }}>
-        <h2 style={{ marginTop: 0, marginBottom: 8 }}>Account</h2>
-        <p style={{ margin: 0, fontSize: "1.1rem" }}>
-          <strong>{displayName}</strong>
-          {accountProfile?.user_id ? (
-            <span className="subtle" style={{ fontWeight: 400, marginLeft: 8 }}>
-              User id <code title={String(accountProfile.user_id)}>{accountProfile.user_id}</code>
-            </span>
-          ) : null}
-          {activeTid ? (
-            <span className="subtle" style={{ fontWeight: 400, marginLeft: 8 }}>
-              Tenant id <code title={activeTid}>{activeTid}</code>
-            </span>
-          ) : null}
-        </p>
-        <p className="subtle" style={{ margin: "8px 0 0" }}>
-          Signed in as <strong>{email}</strong>. Session controls stay in the header (refresh, sign out).
-        </p>
-        <div className="action-row" style={{ marginTop: 14, flexWrap: "wrap", gap: 8 }}>
-          <button type="button" className="secondary" disabled={profileBusy} onClick={() => void onRefreshProfile?.()}>
-            Refresh from server
-          </button>
-          <button type="button" onClick={() => onSignOut?.()}>
-            Sign out
-          </button>
+      <header
+        style={{
+          marginBottom: 24,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 16,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ flex: "1 1 280px", minWidth: 0 }}>
+          <h2 style={{ marginTop: 0, marginBottom: 8 }}>Account</h2>
+          <p style={{ margin: 0, fontSize: "1.1rem" }}>
+            <strong>{displayName}</strong>
+            {accountProfile?.user_id ? (
+              <span className="subtle" style={{ fontWeight: 400, marginLeft: 8 }}>
+                User id <code title={String(accountProfile.user_id)}>{accountProfile.user_id}</code>
+              </span>
+            ) : null}
+            {activeTid ? (
+              <span className="subtle" style={{ fontWeight: 400, marginLeft: 8 }}>
+                Tenant id <code title={activeTid}>{activeTid}</code>
+              </span>
+            ) : null}
+          </p>
+          <p className="subtle" style={{ margin: "8px 0 0" }}>
+            Signed in as <strong>{email}</strong>. Session controls stay in the header (refresh, sign out).
+          </p>
+          <div className="action-row" style={{ marginTop: 14, flexWrap: "wrap", gap: 8 }}>
+            <button type="button" className="secondary" disabled={profileBusy} onClick={() => void onRefreshProfile?.()}>
+              Refresh from server
+            </button>
+            <button type="button" onClick={() => onSignOut?.()}>
+              Sign out
+            </button>
+          </div>
         </div>
+        <aside
+          style={{
+            flex: "0 1 260px",
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--border, rgb(255 255 255 / 12%))",
+            background: "var(--panel-elevated, rgb(255 255 255 / 5%))",
+            fontSize: "0.88rem",
+            textAlign: "right",
+          }}
+          aria-label="Subscription summary"
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Subscription</div>
+          {subStatusLabel === "none" ? (
+            <p className="subtle" style={{ margin: 0 }}>
+              No active subscription on this workspace.
+            </p>
+          ) : (
+            <>
+              <p style={{ margin: "0 0 4px", lineHeight: 1.45 }}>
+                <span className="subtle">Status:</span> <strong>{subStatusLabel}</strong>
+              </p>
+              {billing.plan_display_name ? (
+                <p style={{ margin: "0 0 6px", lineHeight: 1.45 }}>
+                  <span className="subtle">Plan:</span> <strong>{billing.plan_display_name}</strong>
+                </p>
+              ) : null}
+              {daysLeftInPeriod != null && !Number.isNaN(daysLeftInPeriod) ? (
+                <p style={{ margin: 0, fontSize: "0.95rem" }}>
+                  <strong>{daysLeftInPeriod}</strong> day{daysLeftInPeriod === 1 ? "" : "s"} left in period
+                </p>
+              ) : null}
+              {formatPeriodEnd(billing.current_period_end) ? (
+                <p className="subtle" style={{ margin: "6px 0 0", fontSize: "0.8rem" }}>
+                  Renews / ends {formatPeriodEnd(billing.current_period_end)}
+                </p>
+              ) : null}
+            </>
+          )}
+        </aside>
       </header>
 
       <section style={sectionStyle} className="account-section">
@@ -388,6 +445,12 @@ export function StudioAccountPage({
             <>
               {" "}
               · <code>{billing.plan_slug}</code>
+            </>
+          ) : null}
+          {daysLeftInPeriod != null && !Number.isNaN(daysLeftInPeriod) ? (
+            <>
+              {" "}
+              · <strong>{daysLeftInPeriod}</strong> day{daysLeftInPeriod === 1 ? "" : "s"} left in period
             </>
           ) : null}
           {formatPeriodEnd(billing.current_period_end) ? (

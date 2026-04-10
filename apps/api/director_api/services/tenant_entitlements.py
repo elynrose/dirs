@@ -5,6 +5,7 @@ When ``director_auth_enabled`` is false (legacy single-tenant), all gates are op
 
 from __future__ import annotations
 
+import datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -270,10 +271,20 @@ def billing_summary_for_tenant(db: Session, tenant_id: str) -> dict[str, Any]:
         if p:
             plan_slug = p.slug
             plan_name = p.display_name
+    period_end_iso = row.current_period_end.isoformat() if row and row.current_period_end else None
+    days_remaining = None
+    if row and row.current_period_end:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        end = row.current_period_end
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=datetime.timezone.utc)
+        delta = end - now
+        days_remaining = max(0, int(delta.total_seconds() // 86400))
     return {
         "status": row.status if row else "none",
         "plan_slug": plan_slug,
         "plan_display_name": plan_name,
-        "current_period_end": row.current_period_end.isoformat() if row and row.current_period_end else None,
+        "current_period_end": period_end_iso,
+        "days_remaining_in_period": days_remaining,
         "stripe_customer_id": row.stripe_customer_id if row else None,
     }
