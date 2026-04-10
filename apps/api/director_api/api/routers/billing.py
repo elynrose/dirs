@@ -29,7 +29,8 @@ log = structlog.get_logger(__name__)
 @router.get("/plans")
 def list_plans(
     db: Session = Depends(get_db),
-    settings: Settings = Depends(settings_dep),
+    # Public: do not use ``settings_dep`` — it depends on ``auth_context_dep`` and would 401 anonymous users.
+    settings: Settings = Depends(get_settings),
     meta: dict = Depends(meta_dep),
 ) -> dict[str, Any]:
     ensure_default_subscription_plans(db, settings)
