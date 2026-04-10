@@ -130,10 +130,12 @@ def create_checkout_session(
             detail={"code": "STRIPE_ERROR", "message": str(exc)},
         ) from exc
 
-    url = session.get("url")
+    # ``stripe.checkout.Session.create`` returns a ``StripeObject`` (attribute access), not a dict.
+    url = getattr(session, "url", None) or (session.get("url") if isinstance(session, dict) else None)
+    sid = getattr(session, "id", None) or (session.get("id") if isinstance(session, dict) else None)
     if not url:
         raise HTTPException(status_code=502, detail={"code": "STRIPE_ERROR", "message": "no checkout url returned"})
-    return {"data": {"url": url, "session_id": session.get("id")}, "meta": meta}
+    return {"data": {"url": url, "session_id": sid}, "meta": meta}
 
 
 @router.get("/subscription")
