@@ -1,6 +1,6 @@
 # ffmpeg-pipelines
 
-Builds FFmpeg command lines and export manifests for Director Phase 5 compile jobs.
+Builds FFmpeg command lines and export manifests for Directely Phase 5 compile jobs.
 
 - **Image rough cut:** concat stills into H.264 MP4 (`compile_image_slideshow`).
 - **Video rough cut:** concat video streams with a single re-encoded H.264 output (`compile_video_concat`).

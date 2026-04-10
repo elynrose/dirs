@@ -2218,7 +2218,7 @@ export default function App() {
         let msg = apiErrorMessage(body) || `Could not load prompts (HTTP ${r.status}).`;
         if (r.status === 404) {
           msg =
-            "Prompts API not found on the server. Stop the Director API (close its PowerShell window from Launch, or run scripts\\stop-director.ps1), then run Launch.cmd again so the process loads the latest code.";
+            "Prompts API not found on the server. Stop the Directely API (close its PowerShell window from Launch, or run scripts\\stop-director.ps1), then run Launch.cmd again so the process loads the latest code.";
         }
         setLlmPromptsErr(msg);
         setLlmPrompts([]);
@@ -4980,7 +4980,7 @@ export default function App() {
     <div className="app-shell" data-testid="director-app-root">
       <header className="topbar topbar--compact panel">
         <div className="topbar-brand">
-          <h1>Director Studio</h1>
+          <h1>Directely Studio</h1>
           {authBootstrap.mode === "saas" && saasTenants.length > 1 ? (
             <label className="subtle topbar-saas-workspace">
               Workspace
@@ -5233,7 +5233,7 @@ export default function App() {
                   <span className="subtle">{usageSummary.totals?.llm_calls ?? 0} LLM calls recorded</span>
                 </div>
                 <div className="usage-total-card">
-                  <span className="usage-total-label">Director credits</span>
+                  <span className="usage-total-label">Directely credits</span>
                   <strong>{Number(usageSummary.totals?.director_credits ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>
                   <span className="subtle">
                     LLM {Number(usageSummary.totals?.llm_credits ?? 0).toLocaleString(undefined, { maximumFractionDigits: 1 })} · all modalities in range
@@ -6526,7 +6526,7 @@ export default function App() {
                       </p>
                     ) : null}
                     <p className="subtle">
-                      The bot is always created in Telegram (BotFather); Director only stores credentials and receives
+                      The bot is always created in Telegram (BotFather); Directely only stores credentials and receives
                       updates at the path below. Save these fields, then click <strong>Save settings</strong> (main
                       Settings actions) so the API can use them.
                     </p>
@@ -6541,7 +6541,7 @@ export default function App() {
                         Local API: use a tunnel (ngrok, Cloudflare Tunnel, …)
                       </summary>
                       <p style={{ marginTop: 8, fontSize: "0.9rem", lineHeight: 1.5 }}>
-                        Telegram cannot call <code>http://127.0.0.1</code>. Run Director API on port{" "}
+                        Telegram cannot call <code>http://127.0.0.1</code>. Run the Directely API on port{" "}
                         <code>8000</code> (or your <code>API_PORT</code>), expose it with a tunnel, then use{" "}
                         <strong>https://YOUR-TUNNEL-HOST</strong>
                         {apiPath("/v1/integrations/telegram/webhook")} as the webhook <code>url</code>. Chat ID must be

@@ -215,7 +215,7 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
   return (
     <div className="studio-preauth-shell">
       <div className="studio-preauth-shell__card studio-preauth-glass studio-preauth-shell__card--narrow">
-      <h1 style={{ fontSize: "1.25rem", marginBottom: 8 }}>Director Studio</h1>
+      <h1 style={{ fontSize: "1.25rem", marginBottom: 8 }}>Directely Studio</h1>
       <p className="subtle" style={{ marginBottom: 12 }}>
         Sign in to your workspace. The API has multi-tenant authentication enabled.
       </p>

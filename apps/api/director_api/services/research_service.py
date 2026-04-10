@@ -17,7 +17,7 @@ log = structlog.get_logger(__name__)
 # Wikimedia requires a descriptive User-Agent with contact info (URL or email) or requests may get 403.
 # See https://meta.wikimedia.org/wiki/User-Agent_policy
 _WIKIMEDIA_USER_AGENT = (
-    "DirectorStudio/0.1 (+https://github.com/; research fallback; respects robots.txt)"
+    "DirectelyStudio/0.1 (+https://github.com/; research fallback; respects robots.txt)"
 )
 
 # Words that often appear capitalized in briefs but are useless as Wikipedia OpenSearch queries.

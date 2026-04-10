@@ -43,7 +43,7 @@ function Stop-DirectorApiPythonProcesses {
         return
     }
     foreach ($p in $list) {
-        Write-Host "director-stop: stopping Director API python PID $($p.ProcessId) (tree)"
+        Write-Host "director-stop: stopping Directely API python PID $($p.ProcessId) (tree)"
         Invoke-TaskKillTree -ProcessId $p.ProcessId
     }
 }

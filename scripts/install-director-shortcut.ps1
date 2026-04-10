@@ -13,13 +13,13 @@ if (-not (Test-Path -LiteralPath $Bat)) {
 # imageres.dll ~102: generic media/gallery-style glyph (varies by Windows build)
 $Icon = "$env:SystemRoot\System32\imageres.dll,102"
 $Desktop = [Environment]::GetFolderPath("Desktop")
-$LnkPath = Join-Path $Desktop "Director Studio.lnk"
+$LnkPath = Join-Path $Desktop "Directely Studio.lnk"
 
 $Wsh = New-Object -ComObject WScript.Shell
 $Sc = $Wsh.CreateShortcut($LnkPath)
 $Sc.TargetPath = $Bat
 $Sc.WorkingDirectory = $RepoRoot
-$Sc.Description = "Director: Docker Compose, API, Celery, Vite web UI"
+$Sc.Description = "Directely: Docker Compose, API, Celery, Vite web UI"
 $Sc.IconLocation = $Icon
 $Sc.Save()
 

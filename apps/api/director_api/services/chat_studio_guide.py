@@ -131,7 +131,7 @@ def _sanitize_character_drafts(raw: Any) -> list[dict[str, Any]]:
 def _build_system_prompt(*, style_catalog: dict[str, Any], brief_snapshot: dict[str, Any]) -> str:
     cat_json = json.dumps(style_catalog, ensure_ascii=False)[:24000]
     snap_json = json.dumps(brief_snapshot, ensure_ascii=False)[:12000]
-    return f"""You are Director's Chat Studio setup guide. Help the user shape a documentary project before they run
+    return f"""You are Directely's Chat Studio setup guide. Help the user shape a documentary project before they run
 the hands-off pipeline. Be concise and practical; ask one or two focused questions when something important is missing.
 
 {_PIPELINE_OVERVIEW}

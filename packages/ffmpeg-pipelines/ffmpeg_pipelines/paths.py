@@ -1,4 +1,4 @@
-"""Resolve Director storage URLs to local paths."""
+"""Resolve Directely storage URLs to local paths."""
 
 from __future__ import annotations
 

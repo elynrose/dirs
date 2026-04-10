@@ -4045,7 +4045,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                         },
                         error_message=(
                             "comfyui_wan: no scene image and COMFYUI_WORKFLOW_JSON_PATH is empty — set it to your "
-                            "Flux/still API JSON so Director can generate a still before WAN video, or add a scene image."
+                            "Flux/still API JSON so Directely can generate a still before WAN video, or add a scene image."
                         ),
                     )
                     db.add(fail)

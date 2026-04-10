@@ -195,7 +195,7 @@ export function StudioAccountPage({
         <h2 style={{ marginTop: 0 }}>Account</h2>
         <p className="subtle">
           This install runs in <strong>local / single-tenant</strong> mode: API login is off, so there is no personal
-          Director account or subscription UI here.
+          Directely account or subscription UI here.
         </p>
         <ul className="subtle" style={{ lineHeight: 1.6 }}>
           <li>Workspace and projects use the default tenant from your API configuration.</li>

@@ -1,4 +1,4 @@
-# Dot-source only — venv + Python deps for Director (Windows + Unix venv layouts).
+# Dot-source only — venv + Python deps for Directely (Windows + Unix venv layouts).
 # Used by Launch.ps1 (repo root) when -SkipBootstrap is not set.
 
 function Test-DirectorPythonDeps {

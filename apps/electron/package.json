@@ -2,8 +2,8 @@
   "name": "director-electron",
   "version": "0.1.0",
   "private": true,
-  "description": "Director studio — Electron desktop shell",
-  "author": "Director",
+  "description": "Directely studio — Electron desktop shell",
+  "author": "Directely",
   "type": "module",
   "main": "main.js",
   "scripts": {
@@ -25,8 +25,8 @@
   },
   "build": {
     "appId": "com.director.studio",
-    "productName": "Director",
-    "copyright": "Copyright © 2025 Director",
+    "productName": "Directely",
+    "copyright": "Copyright © 2025 Directely",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release",
@@ -95,7 +95,7 @@
       "notarize": false
     },
     "dmg": {
-      "title": "Director ${version}",
+      "title": "Directely ${version}",
       "window": { "width": 540, "height": 380 },
       "contents": [
         { "x": 140, "y": 200, "type": "file" },
@@ -115,7 +115,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Director",
+      "shortcutName": "Directely",
       "installerHeaderIcon": "build-assets/icon.ico",
       "deleteAppDataOnUninstall": false
     },

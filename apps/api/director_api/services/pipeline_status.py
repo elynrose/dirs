@@ -72,7 +72,7 @@ def compute_pipeline_status(
     critique_blocked = p.workflow_phase == "critique_review"
 
     steps: list[dict[str, Any]] = [
-        {"id": "director", "label": "Director pack", "status": st(director_done)},
+        {"id": "director", "label": "Directely pack", "status": st(director_done)},
         {"id": "research", "label": "Research & dossier", "status": st(research_done, critique_blocked)},
         {"id": "outline", "label": "Chapter outline", "status": st(outline_done)},
         {"id": "chapters", "label": "Chapter scripts", "status": st(chapters_done)},

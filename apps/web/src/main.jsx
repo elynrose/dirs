@@ -15,7 +15,7 @@ class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, info) {
-    console.error("Director UI error:", error, info);
+    console.error("Directely UI error:", error, info);
   }
 
   render() {
@@ -32,7 +32,7 @@ class ErrorBoundary extends React.Component {
           }}
         >
           <h1 style={{ fontSize: "1rem", margin: "0 0 12px", color: "#fef2f2" }}>
-            Director UI failed to render
+            Directely UI failed to render
           </h1>
           <p style={{ margin: "0 0 8px", color: "#d4d4d4", fontSize: "0.9rem" }}>
             Open the browser console (DevTools) for the full stack trace. Common causes: opening{" "}

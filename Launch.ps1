@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  Director — full local stack (repo root).
+  Directely — full local stack (repo root).
 
   - Bootstrap: Python venv + pip deps (unless -SkipBootstrap)
   - Docker Compose: Postgres, Redis, MinIO (unless -SkipDocker)
@@ -206,7 +206,7 @@ if (-not $SkipBrowser -and -not $SkipVite) {
 }
 
 Write-Host ""
-Write-Host "Director is starting." -ForegroundColor Green
+Write-Host "Directely is starting." -ForegroundColor Green
 if (-not $SkipVite) {
     Write-Host "  Web UI:  http://localhost:5173/" -ForegroundColor Green
 }

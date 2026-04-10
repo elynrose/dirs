@@ -1,7 +1,7 @@
 [project]
 name = "director-api"
 version = "0.1.0"
-description = "Director studio orchestration API (FastAPI)"
+description = "Directely studio orchestration API (FastAPI)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

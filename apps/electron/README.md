@@ -1,4 +1,4 @@
-# Director (Electron)
+# Directely (Electron)
 
 Desktop shell for the studio UI: starts **Docker Compose** (Postgres, Redis, MinIO), bootstraps a **Python venv** under the app user-data directory, runs **migrations**, then **API + Celery worker + Celery beat**, and serves the built web app on a local port with a **`/v1` proxy** to the API.
 
@@ -31,7 +31,7 @@ Asset storage defaults to `<userData>/storage` (`LOCAL_STORAGE_ROOT`).
 
 ## Pointing the UI at a hosted API (SaaS)
 
-The packaged app serves the same Vite build as `apps/web`. To use a remote Director API instead of the bundled local stack, build the web app with `VITE_API_BASE_URL` set to your API origin (no trailing slash), e.g. `https://api.example.com`, then rebuild Electron so `dist` embeds that base URL. Users sign in via the Studio login screen when `DIRECTOR_AUTH_ENABLED=true` on the server. For OAuth-style flows later, prefer opening the system browser and deep-linking back into the app with a short-lived token.
+The packaged app serves the same Vite build as `apps/web`. To use a remote Directely API instead of the bundled local stack, build the web app with `VITE_API_BASE_URL` set to your API origin (no trailing slash), e.g. `https://api.example.com`, then rebuild Electron so `dist` embeds that base URL. Users sign in via the Studio login screen when `DIRECTOR_AUTH_ENABLED=true` on the server. For OAuth-style flows later, prefer opening the system browser and deep-linking back into the app with a short-lived token.
 
 ## Quit behavior
 

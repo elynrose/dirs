@@ -6,7 +6,7 @@ scripts/build-exe.ps1 — Windows
 .\scripts\build-exe.ps1 -Sign             # with code signing (needs CSC_LINK + CSC_KEY_PASSWORD)
 .\scripts\build-exe.ps1 -Arch arm64       # ARM build
 
-Produces: apps/electron/release/Director-<version>-win-x64.exe
+Produces: apps/electron/release/Directely-<version>-win-x64.exe
 
 scripts/build-dmg.sh — macOS
 ./scripts/build-dmg.sh                     # standard build (auto-detects x64/arm64)
@@ -14,11 +14,11 @@ scripts/build-dmg.sh — macOS
 ./scripts/build-dmg.sh --arch universal    # fat binary (x64 + arm64)
 ./scripts/build-dmg.sh --sign              # with signing + notarisation
 
-Produces: apps/electron/release/Director-<version>-mac-arm64.dmg
+Produces: apps/electron/release/Directely-<version>-mac-arm64.dmg
 
 apps/electron/package.json — build config improvements
 Before	After
-Default artifact naming	Director-0.1.0-win-x64.exe / Director-0.1.0-mac-arm64.dmg
+Default artifact naming	Directely-0.1.0-win-x64.exe / Directely-0.1.0-mac-arm64.dmg
 No code exclusions beyond .venv	Also excludes .venv-win, *.pyc, *.pyo, tests/, *.egg-info, .ruff_cache
 Single arch per platform	macOS builds both x64 + arm64 in one pass
 Bare NSIS (one-click)	Custom install dir, Start Menu + Desktop shortcuts, no data wipe on uninstall

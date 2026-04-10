@@ -31,7 +31,7 @@ from director_api.services.usage_accounting import (
 _LOCAL_OPENAI_JSON_SUFFIX = (
     " Output discipline (required): emit the full JSON object in the assistant's normal message content "
     "(the field API clients surface as assistant text). Do not leave that content empty or place the JSON only "
-    "in extended/internal reasoning; Director parses the visible assistant payload as JSON."
+    "in extended/internal reasoning; Directely parses the visible assistant payload as JSON."
 )
 
 

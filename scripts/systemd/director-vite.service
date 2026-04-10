@@ -1,5 +1,5 @@
 [Unit]
-Description=Director web UI (Vite dev server)
+Description=Directely web UI (Vite dev server)
 After=director-api.service network-online.target
 Wants=director-api.service
 

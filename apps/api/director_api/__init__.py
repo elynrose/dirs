@@ -1,3 +1,3 @@
-"""Director orchestration API (Python / FastAPI)."""
+"""Directely orchestration API (Python / FastAPI)."""
 
 __version__ = "0.1.0"

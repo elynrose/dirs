@@ -1,5 +1,5 @@
 [Unit]
-Description=Director Celery beat (scheduled tasks)
+Description=Directely Celery beat (scheduled tasks)
 After=director-infra.service network-online.target
 Requires=director-infra.service
 

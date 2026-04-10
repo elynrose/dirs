@@ -62,7 +62,7 @@ function Wait-DirectorJob {
     throw "Timeout waiting for job $JobId"
 }
 
-Write-Host "=== Director: Joshua / Jericho smoke ===" -ForegroundColor Cyan
+Write-Host "=== Directely: Joshua / Jericho smoke ===" -ForegroundColor Cyan
 
 # Explicit JSON avoids PowerShell hashtable / here-string quirks with newlines in topic.
 $createJson = @'

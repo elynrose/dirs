@@ -24,7 +24,7 @@ log = structlog.get_logger(__name__)
 
 def _help_text() -> str:
     return (
-        "Director bot\n\n"
+        "Directely bot\n\n"
         "Send a message with your documentary brief (topic). The first line is used as the title.\n"
         "The pipeline runs unattended through final video.\n\n"
         "Commands:\n"

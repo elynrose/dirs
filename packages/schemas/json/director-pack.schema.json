@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://director.local/schemas/director-pack/v1",
-  "title": "Director pack",
+  "title": "Directely pack",
   "type": "object",
   "additionalProperties": true,
   "required": ["schema_id", "title", "topic", "narrative_arc", "style_notes", "production_constraints"],

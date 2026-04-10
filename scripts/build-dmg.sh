@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build-dmg.sh — Build Director desktop app as a macOS DMG
+# build-dmg.sh — Build Directely desktop app as a macOS DMG
 # =============================================================================
 #
 # USAGE
@@ -21,8 +21,8 @@
 #   -h, --help              Show this help
 #
 # OUTPUT
-#   apps/electron/release/Director-<version>.dmg
-#   apps/electron/release/Director-<version>-mac.zip
+#   apps/electron/release/Directely-<version>.dmg
+#   apps/electron/release/Directely-<version>-mac.zip
 #
 # RUNTIME REQUIREMENTS (for end users)
 #   • Docker Desktop  https://www.docker.com/products/docker-desktop/

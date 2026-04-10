@@ -1,5 +1,5 @@
 [Unit]
-Description=Director Celery worker
+Description=Directely Celery worker
 After=director-infra.service network-online.target
 Requires=director-infra.service
 

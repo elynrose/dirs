@@ -1,7 +1,7 @@
 [project]
 name = "ffmpeg-pipelines"
 version = "0.1.0"
-description = "FFmpeg filter graphs and compile helpers for Director exports"
+description = "FFmpeg filter graphs and compile helpers for Directely exports"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []

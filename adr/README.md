@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Index of ADRs for the Director monorepo. See [000-template.md](000-template.md).
+Index of ADRs for the Directely monorepo. See [000-template.md](000-template.md).
 
 | ADR | Title |
 | --- | ----- |

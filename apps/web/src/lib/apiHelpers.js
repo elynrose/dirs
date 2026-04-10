@@ -63,7 +63,7 @@ export function apiErrorMessage(body) {
       : "";
   if (typeof d === "string") {
     if (/^not found$/i.test(d.trim())) {
-      return `Not found — restart the Director API if you recently updated code (stale servers return HTTP 404 for new routes).${hint}`;
+      return `Not found — restart the Directely API if you recently updated code (stale servers return HTTP 404 for new routes).${hint}`;
     }
     return `${d}${hint}`;
   }

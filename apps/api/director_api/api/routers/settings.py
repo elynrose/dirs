@@ -471,7 +471,7 @@ def test_telegram_connection(
             telegram_send_message(
                 token,
                 chat,
-                "Director: Telegram connection test OK.",
+                "Directely: Telegram connection test OK.",
             )
             sent = True
         except Exception as exc:

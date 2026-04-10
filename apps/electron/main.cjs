@@ -77,11 +77,11 @@ async function startFullStack() {
   const studioEnv = loadStudioEnv(studioRoot);
 
   if (!fs.existsSync(composeFile)) {
-    await showFatal("Director Studio", `docker-compose.yml not found:\n${composeFile}`);
+    await showFatal("Directely Studio", `docker-compose.yml not found:\n${composeFile}`);
     return;
   }
   if (!fs.existsSync(apiDir)) {
-    await showFatal("Director Studio", `API directory missing:\n${apiDir}`);
+    await showFatal("Directely Studio", `API directory missing:\n${apiDir}`);
     return;
   }
 
@@ -255,7 +255,7 @@ app.whenReady().then(async () => {
       await startFullStack();
     }
   } catch (e) {
-    await showFatal("Director Studio", e?.stack || e?.message || String(e));
+    await showFatal("Directely Studio", e?.stack || e?.message || String(e));
   }
 });
 

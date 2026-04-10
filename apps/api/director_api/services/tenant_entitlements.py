@@ -97,7 +97,7 @@ def entitlement_definitions_public() -> list[dict[str, Any]]:
             "label": "Monthly credits (budget)",
             "type": "limit",
             "description": (
-                "Director credits per rolling 30-day window. Empty = unlimited. "
+                "Directely credits per rolling 30-day window. Empty = unlimited. "
                 "Turn on “Enforce credit budget” to block jobs when usage reaches this cap."
             ),
         },

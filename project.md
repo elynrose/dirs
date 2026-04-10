@@ -1,4 +1,4 @@
-AI Documentary Director Studio — Production Specification
+Directely — AI Documentary Studio — Production Specification
 1. Product summary
 
 Build a production-grade agentic documentary creation platform that can generate a coherent 30–45 minute documentary from a topic prompt, using a multi-agent workflow for research, direction, writing, storyboarding, visual generation, scene critique, editing, and compilation. The system is **local-first**: projects, assets, and queues run primarily on **local storage** and local services; remote cloud storage is optional, not required.
@@ -96,7 +96,7 @@ The **orchestration API, job workers, provider adapters, media helpers, FFmpeg o
 
 Use OpenAI for:
 
-Director Agent planning
+Directely agent planning
 Script Writer Agent
 Scene Critic Agent
 structured scene manifests
@@ -195,7 +195,7 @@ Reason: Open TTS reduces per-minute narration cost and keeps audio generation on
 
 6. High-level product workflow
 User creates project
-Director Agent defines documentary brief
+Directely agent defines documentary brief
 Research Agent builds source dossier
 Script Writer Agent creates long-form outline and chapter scripts
 Storyboard Agent breaks chapters into scenes
@@ -206,7 +206,7 @@ Editor Agent assembles rough cut
 Compiler renders final documentary
 QA pipeline validates runtime, continuity, and exports
 7. Agent architecture
-7.1 Director Agent
+7.1 Directely agent
 
 Responsibilities:
 
@@ -398,7 +398,7 @@ Goal: produce a strong documentary plan and script.
 
 Deliverables
 project intake UI
-Director Agent
+Directely agent
 Research Agent
 Script Writer Agent
 source manifest and claim tracking

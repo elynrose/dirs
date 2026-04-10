@@ -1,4 +1,4 @@
-# apps/api — Director API (Phase 1)
+# apps/api — Directely API (Phase 1)
 
 **Python 3.11+** FastAPI service. Loads env from **repo root** `.env` or `apps/api/.env` (see `director_api/config.py`).
 

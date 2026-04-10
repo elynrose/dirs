@@ -51,7 +51,7 @@ def telegram_notify_run_started(settings, project_title: str, agent_run_id: str)
     if not token or not chat:
         return
     title = (project_title or "Project").strip() or "Project"
-    text = f"Director pipeline started.\nProject: {title}\nRun: {agent_run_id}"
+    text = f"Directely pipeline started.\nProject: {title}\nRun: {agent_run_id}"
     try:
         telegram_send_message(token, chat, text)
     except Exception as exc:

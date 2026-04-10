@@ -11,8 +11,8 @@ export default defineConfig({
     port: 5173,
     // Fail fast if something else (e.g. an old Vite) is on 5173 — avoids “wrong UI” on a surprise port.
     strictPort: true,
-    // Allow access via VPS hostname (e.g. srv1360778.hstgr.cloud), not only localhost.
-    allowedHosts: [".hstgr.cloud", "localhost"],
+    // Allow access via VPS hostname (e.g. srv1360778.hstgr.cloud), custom domain (directely.com), not only localhost.
+    allowedHosts: [".hstgr.cloud", ".directely.com", "directely.com", "localhost"],
     proxy: apiProxy,
     headers: {
       // Local dev: stop browsers from serving a cached index.html / stale JS after git pull or restart.
@@ -23,7 +23,7 @@ export default defineConfig({
   preview: {
     port: 4173,
     strictPort: true,
-    allowedHosts: [".hstgr.cloud", "localhost"],
+    allowedHosts: [".hstgr.cloud", ".directely.com", "directely.com", "localhost"],
     proxy: apiProxy,
     headers: {
       "Cache-Control": "no-store",

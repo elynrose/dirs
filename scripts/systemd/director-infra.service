@@ -1,5 +1,5 @@
 [Unit]
-Description=Director infrastructure (Postgres, Redis, MinIO via Docker)
+Description=Directely infrastructure (Postgres, Redis, MinIO via Docker)
 After=docker.service
 Requires=docker.service
 Before=director-api.service director-worker.service director-beat.service

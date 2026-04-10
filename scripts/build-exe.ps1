@@ -1,17 +1,17 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Build the Director desktop app as a Windows NSIS installer (.exe).
+    Build the Directely desktop app as a Windows NSIS installer (.exe).
 
 .DESCRIPTION
     Orchestrates the full build pipeline:
       1. Prerequisite checks (Node 18+, npm)
       2. Installs web + Electron npm dependencies
       3. Builds the React frontend (Vite production build)
-      4. Runs electron-builder to produce Director Setup <version>.exe
+      4. Runs electron-builder to produce Directely Setup <version>.exe
 
     The finished installer is written to:
-      apps\electron\release\Director Setup <version>.exe
+      apps\electron\release\Directely Setup <version>.exe
 
     The installed app requires Docker Desktop at runtime (for PostgreSQL + Redis).
     FFmpeg must be on PATH or configured via FFMPEG_BIN in the app's .env file.

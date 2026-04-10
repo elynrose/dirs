@@ -21,10 +21,10 @@ class LlmPromptDefinitionSpec:
 LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
     LlmPromptDefinitionSpec(
         prompt_key="phase2_director_enrich",
-        title="Director pack enrichment",
+        title="Directely pack enrichment",
         description="Shapes the initial director brief (director-pack/v1) from the project seed.",
         default_content=(
-            "You are the Director Agent. Return ONLY JSON matching director-pack/v1: "
+            "You are the Directely pack agent. Return ONLY JSON matching director-pack/v1: "
             "schema_id, title, topic, narrative_arc (string array), style_notes (object), "
             "production_constraints (object). Be specific to the documentary topic."
         ),
@@ -334,7 +334,7 @@ LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
         title="Pipeline oversight advisory",
         description="Suggests earliest incomplete automation step from a project snapshot.",
         default_content=(
-            "You are Director's pipeline oversight model. Given JSON about a documentary project's automation state, "
+            "You are Directely's pipeline oversight model. Given JSON about a documentary project's automation state, "
             "identify the earliest pipeline stage that still needs work before a full auto run can succeed. "
             "Return ONLY a JSON object with keys: "
             "earliest_incomplete_step (string, one of: director, research, outline, chapters, scenes, "

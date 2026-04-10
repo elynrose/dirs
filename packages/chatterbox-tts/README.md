@@ -1,6 +1,6 @@
 # chatterbox-tts (vendored)
 
-This directory is a **vendored copy** of [Resemble AI Chatterbox](https://github.com/resemble-ai/chatterbox) for use by Director. The upstream **LICENSE** applies.
+This directory is a **vendored copy** of [Resemble AI Chatterbox](https://github.com/resemble-ai/chatterbox) for use by Directely. The upstream **LICENSE** applies.
 
 Model **weights are not committed**; they are downloaded when the library runs (e.g. from Hugging Face).
 

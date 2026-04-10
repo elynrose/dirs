@@ -41,7 +41,7 @@ def ensure_default_subscription_plans(db: Session, settings: Settings | None = N
                 slug=_STUDIO_MONTHLY_SLUG,
                 display_name="Studio Monthly",
                 description=(
-                    "Monthly access to Director studio features. Excludes Chat, Telegram, full-through "
+                    "Monthly access to Directely studio features. Excludes Chat, Telegram, full-through "
                     "automation, hands-off runs, and subtitle generation. Project count unlimited."
                 ),
                 stripe_price_id=price_id,

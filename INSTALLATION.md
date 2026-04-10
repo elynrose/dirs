@@ -1,6 +1,6 @@
 # Linux server installation
 
-This note covers deploying Director on a **Linux** host with **Docker** (Postgres, Redis, MinIO), a **Python 3.11+** virtualenv for the API and Celery, and optional **systemd** units so everything survives reboots.
+This note covers deploying Directely on a **Linux** host with **Docker** (Postgres, Redis, MinIO), a **Python 3.11+** virtualenv for the API and Celery, and optional **systemd** units so everything survives reboots.
 
 For day-to-day commands (`make up`, `make api`, etc.), see the root [`README.md`](README.md).
 

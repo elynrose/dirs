@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared by Director systemd wrappers — sources repo-root .env like `make`.
+# Shared by Directely systemd wrappers — sources repo-root .env like `make`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ROOT

@@ -1,4 +1,4 @@
-"""Director credits computation."""
+"""Directely credits computation."""
 
 from director_api.services.usage_credits import (
     CREDITS_PER_USD,

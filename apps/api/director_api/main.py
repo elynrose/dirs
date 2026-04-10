@@ -122,7 +122,7 @@ async def lifespan(_app: FastAPI):
 
 _cfg = get_settings()
 app = FastAPI(
-    title="Director API",
+    title="Directely API",
     version="0.1.0",
     lifespan=lifespan,
     docs_url="/docs" if _cfg.director_expose_openapi else None,

@@ -1,6 +1,6 @@
-# Director
+# Directely
 
-Production specification and phased build plan for an **AI Documentary Director Studio** (multi-agent research → script → scenes → media → critique → FFmpeg compile). The **backend and workers are Python-based** (FastAPI); the **web UI** is TypeScript (Next.js) per [`project.md`](project.md) §4.8 and §11.
+Production specification and phased build plan for **Directely**, an **AI documentary studio** (multi-agent research → script → scenes → media → critique → FFmpeg compile). The **backend and workers are Python-based** (FastAPI); the **web UI** is TypeScript (Next.js) per [`project.md`](project.md) §4.8 and §11.
 
 ## Start here
 

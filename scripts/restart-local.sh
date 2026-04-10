@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop and restart local Director API + Celery worker + Celery beat. See --help.
+# Stop and restart local Directely API + Celery worker + Celery beat. See --help.
 
 set -euo pipefail
 
@@ -87,7 +87,7 @@ start_background() {
 
 usage() {
   cat <<'EOF'
-Stop/start local Director API + Celery worker + beat (loads repo .env, uses apps/api/.venv).
+Stop/start local Directely API + Celery worker + beat (loads repo .env, uses apps/api/.venv).
 
   ./scripts/restart-local.sh           Stop, then start API + worker + beat in background
   ./scripts/restart-local.sh --stop-only   Stop only

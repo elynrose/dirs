@@ -17,7 +17,7 @@ this script does not stub those.
 
 Prerequisites
   - API + Celery worker running, DB/Redis up (same as normal Studio).
-  - ffmpeg on PATH for the worker (already required for Director).
+  - ffmpeg on PATH for the worker (already required for Directely).
   - Optional: set DIRECTOR_PLACEHOLDER_MEDIA=1 on the worker to force placeholder media for *any*
     project (overrides Studio provider picks). Otherwise this script sets providers on the new project only.
 

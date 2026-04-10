@@ -1,5 +1,5 @@
 /**
- * Director desktop shell: Docker stack + Python venv (API, Celery worker+beat) + local UI server (/v1 proxy).
+ * Directely desktop shell: Docker stack + Python venv (API, Celery worker+beat) + local UI server (/v1 proxy).
  */
 import { app, BrowserWindow, dialog } from "electron";
 import path from "node:path";
@@ -149,7 +149,7 @@ function runPythonVersionCheck(parts) {
 }
 
 /**
- * Director API requires Python >= 3.11 (see apps/api/pyproject.toml).
+ * Directely API requires Python >= 3.11 (see apps/api/pyproject.toml).
  * macOS `/usr/bin/python3` is often 3.9 — prefer `python3.11` / `python3.12` from Homebrew or pyenv.
  */
 async function resolveHostPython() {
@@ -173,7 +173,7 @@ async function resolveHostPython() {
     if (await runPythonVersionCheck(parts)) return parts;
   }
   throw new Error(
-    "Python 3.11+ not found on PATH. Install e.g. `brew install python@3.12` and ensure `python3.12` is on PATH, then restart Director.",
+    "Python 3.11+ not found on PATH. Install e.g. `brew install python@3.12` and ensure `python3.12` is on PATH, then restart Directely.",
   );
 }
 
@@ -365,7 +365,7 @@ async function shutdown(paths) {
 
 function showFatal(err) {
   console.error(err);
-  dialog.showErrorBox("Director failed to start", String(err?.message || err));
+  dialog.showErrorBox("Directely failed to start", String(err?.message || err));
 }
 
 async function boot() {

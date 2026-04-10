@@ -1,4 +1,4 @@
-"""FFmpeg compile helpers for Director."""
+"""FFmpeg compile helpers for Directely."""
 
 from ffmpeg_pipelines.audio_concat import concat_audio_files
 from ffmpeg_pipelines.errors import FFmpegCompileError

@@ -1,4 +1,4 @@
-"""Director credits: normalize provider usage into a single internal currency.
+"""Directely credits: normalize provider usage into a single internal currency.
 
 LLM rows derive credits from ``cost_estimate`` (USD) × CREDITS_PER_USD so they stay aligned
 with :func:`usage_accounting.estimate_llm_cost_usd`. Media/TTS use fixed tables (tunable).
@@ -24,7 +24,7 @@ from director_api.services.tenant_entitlements import (
 
 log = structlog.get_logger(__name__)
 
-# How many Director credits correspond to one USD of estimated LLM cost.
+# How many Directely credits correspond to one USD of estimated LLM cost.
 CREDITS_PER_USD = 1000.0
 
 # Rolling window for budget checks (matches default usage-summary period).

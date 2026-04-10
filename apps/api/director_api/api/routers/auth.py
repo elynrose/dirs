@@ -52,7 +52,7 @@ class LoginIn(BaseModel):
 
 
 class FirebaseSignInIn(BaseModel):
-    """Exchange a Firebase Auth ID token (Google, etc.) for a Director JWT."""
+    """Exchange a Firebase Auth ID token (Google, etc.) for a Directely JWT."""
 
     id_token: str = Field(min_length=20, max_length=16_384)
     tenant_name: str = Field(default="My workspace", min_length=1, max_length=256)

@@ -161,7 +161,7 @@ export const VISUAL_STYLE_PRESET_FALLBACK = [
 export const RUN_STEP_LABEL = {
   queued: "Queued",
   rerun: "Re-run from phase",
-  director: "Director",
+  director: "Directely",
   research: "Research",
   outline: "Outline",
   scripts: "Scripts",
@@ -209,7 +209,7 @@ export const AGENT_PROGRESS_ORDER = {
 
 /** Worker `pipeline_options.force_pipeline_steps` keys for the restart automation modal. */
 export const RESTART_AUTOMATION_STEPS = [
-  { key: "director", label: "Director pack" },
+  { key: "director", label: "Directely pack" },
   { key: "research", label: "Research" },
   { key: "outline", label: "Outline" },
   { key: "chapters", label: "Chapter scripts" },

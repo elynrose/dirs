@@ -1,5 +1,5 @@
 [Unit]
-Description=Director API (FastAPI / Uvicorn)
+Description=Directely API (FastAPI / Uvicorn)
 After=director-infra.service network-online.target
 Requires=director-infra.service
 

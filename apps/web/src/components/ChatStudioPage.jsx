@@ -762,7 +762,7 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
             </h3>
             <p className="subtle chat-studio__section-hint">
               Chat with the guide to set title, description, length, narration and visual style, and characters. This uses
-              your workspace text model (same as the rest of Director).
+              your workspace text model (same as the rest of Directely).
             </p>
             {setupErr ? (
               <p className="err chat-studio__err" role="alert">

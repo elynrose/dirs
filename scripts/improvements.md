@@ -1,4 +1,4 @@
-Director Codebase Review — Suggested Improvements
+Directely Codebase Review — Suggested Improvements
 Overview
 Three layers examined: Python backend (apps/api/), React frontend (apps/web/), and the FFmpeg pipeline package. Issues are grouped by severity within each layer.
 

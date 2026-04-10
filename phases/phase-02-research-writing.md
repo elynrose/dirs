@@ -33,7 +33,7 @@ source: "../project.md §8 Phase 2, §9.1–9.3, §14, §20 Phase 2 exit; docs/h
 
 ### Agents and pipelines
 
-- [x] **P2-D04** Director Agent: project brief JSON, style guide, narrative structure, production constraints (validated schema) — _deterministic pack + optional OpenAI `enrich_director_pack` before `validate_director_pack`_
+- [x] **P2-D04** Directely agent: project brief JSON, style guide, narrative structure, production constraints (validated schema) — _deterministic pack + optional OpenAI `enrich_director_pack` before `validate_director_pack`_
 - [x] **P2-D05** Research Agent: source manifest, fact graph / timeline, chapter evidence packs (validated schema) — _Tavily + extraction + optional `enrich_research_dossier_body`; validated `research-dossier/v1`_
 - [x] **P2-D06** Script Writer Agent: outline, chapter scripts, transitions (validated schema) — _optional `generate_outline_batch` / `generate_scripts_batch` with schema validation; fallback to deterministic outline + stub scripts if no key or invalid LLM output_
 
@@ -54,7 +54,7 @@ _Added `POST /projects/:id/research/override` per [`docs/human-overrides.md`](..
 - [x] **P2-R02** Script outline/chapter generation **cannot run** until research is **approved** OR an **explicit override** is recorded (user, reason, timestamp)
 - [x] **P2-R03** Claims without adequate sourcing are flagged; unsupported claims do not silently present as facts in generated script (surface in UI or metadata) — _LLM chapter generation uses `allowed_claims` / `disputed_claims`; research GET exposes claim flags_
 - [x] **P2-R04** Chapter **target_duration_sec** enforced in generation prompts and visible in editors; violations surfaced as warnings — _`pacing_warning` on `GET /v1/projects/:id/chapters` and chapter PATCH response; prompts cite ~130 wpm_
-- [x] **P2-R05** Director output is validated and stored before research job is eligible to run
+- [x] **P2-R05** Directely pack output is validated and stored before research job is eligible to run
 - [x] **P2-R06** Research dossier meets minimum bar: ≥ N user-configurable sources (default documented), timeline present, disputed items flagged — _`research_min_sources` on project; Tavily-backed sources + timeline in dossier body; disputed claims flagged_
 
 ## Success metric

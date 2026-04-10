@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  Stop then start local Director API + Celery worker + beat (Windows; uses apps\api\.venv-win).
+  Stop then start local Directely API + Celery worker + beat (Windows; uses apps\api\.venv-win).
 
   Usage:
     powershell -ExecutionPolicy Bypass -File scripts\restart-local.ps1

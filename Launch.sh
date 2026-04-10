@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Director — full local stack (macOS / Linux). Opens Studio in your default browser.
+# Directely — full local stack (macOS / Linux). Opens Studio in your default browser.
 #
 # Usage:
 #   chmod +x Launch.sh   # once
@@ -183,7 +183,7 @@ if [[ "$SKIP_BROWSER" != true && "$SKIP_VITE" != true ]]; then
 fi
 
 echo ""
-echo "Director is starting."
+echo "Directely is starting."
 [[ "$SKIP_VITE" != true ]] && echo "  Web UI:  http://localhost:5173/"
 echo "  API:     http://127.0.0.1:8000/v1/health"
 echo "  Logs:    $RUN_DIR/director-*.log"

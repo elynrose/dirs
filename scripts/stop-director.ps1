@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  Stop all local Director dev processes: API (default port from repo .env or 8000), Celery worker/beat,
+  Stop all local Directely dev processes: API (default port from repo .env or 8000), Celery worker/beat,
   and Vite dev/preview listeners (5173, 4173).
 
   Usage:
