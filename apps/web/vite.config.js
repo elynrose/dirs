@@ -6,8 +6,37 @@ const apiProxy = {
   "/v1": { target: "http://127.0.0.1:8000", changeOrigin: true },
 };
 
-export default defineConfig({
+/**
+ * If the shell or a stale .env exports `VITE_API_BASE_URL=http://127.0.0.1:8000`, Vite would bake that into
+ * the client bundle — then https://directely.com would try to fetch the *visitor's* loopback (CORS / failed fetch).
+ * Production builds must not ship loopback API origins.
+ */
+function shouldStripLoopbackApiBase(mode, raw) {
+  if (mode !== "production") return false;
+  const s = String(raw ?? "").trim();
+  if (!s) return false;
+  try {
+    const u = new URL(s);
+    if (u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "[::1]") return true;
+  } catch {
+    if (/127\.0\.0\.1|localhost/i.test(s)) return true;
+  }
+  return false;
+}
+
+export default defineConfig(({ mode }) => {
+  const rawBase = process.env.VITE_API_BASE_URL;
+  const stripLoopback = shouldStripLoopbackApiBase(mode, rawBase);
+
+  return {
   plugins: [react()],
+  ...(stripLoopback
+    ? {
+        define: {
+          "import.meta.env.VITE_API_BASE_URL": JSON.stringify(""),
+        },
+      }
+    : {}),
   server: {
     port: 5173,
     // Fail fast if something else (e.g. an old Vite) is on 5173 — avoids “wrong UI” on a surprise port.
@@ -30,4 +59,5 @@ export default defineConfig({
       "Cache-Control": "no-store",
     },
   },
+};
 });
