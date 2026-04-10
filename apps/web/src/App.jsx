@@ -1152,7 +1152,12 @@ export default function App() {
     }
   }, [refreshAccountProfile, showToast]);
 
-  /** After login, resume Stripe Checkout when the user chose a plan on the public pricing page. */
+  /**
+   * After login (or session restore), resume Stripe Checkout when the user chose a plan on pricing.
+   * Do not use an effect cleanup that cancels the async work: in React Strict Mode (dev) the effect
+   * runs twice — the first run removes the pending key; a cancelled in-flight request would never
+   * redirect.
+   */
   useEffect(() => {
     if (!studioReady || authBootstrap.mode !== "saas" || authBootstrap.needLogin) return;
     let planSlug = "";
@@ -1167,15 +1172,13 @@ export default function App() {
     } catch {
       /* ignore */
     }
-    let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const r = await api("/v1/billing/checkout-session", {
           method: "POST",
           body: JSON.stringify({ plan_slug: planSlug }),
         });
         const body = await parseJson(r);
-        if (cancelled) return;
         if (!r.ok) {
           showToast(apiErrorMessage(body) || "Could not start checkout", { type: "error", durationMs: 8000 });
           return;
@@ -1184,12 +1187,9 @@ export default function App() {
         if (url) window.location.href = url;
         else showToast("No checkout URL returned", { type: "error" });
       } catch (e) {
-        if (!cancelled) showToast(formatUserFacingError(e), { type: "error", durationMs: 8000 });
+        showToast(formatUserFacingError(e), { type: "error", durationMs: 8000 });
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [studioReady, authBootstrap.mode, authBootstrap.needLogin, eventAuthKey, showToast]);
 
   useEffect(() => {
