@@ -1041,32 +1041,6 @@ export default function App() {
     }
   }, []);
 
-  const onSaaSLoggedIn = useCallback(
-    (payload) => {
-      setError("");
-      setDirectorAuthSession({
-        accessToken: payload.access_token,
-        tenantId: payload.tenant_id,
-      });
-      setSaasTenants(Array.isArray(payload.tenants) ? payload.tenants : []);
-      setAuthBootstrap((s) => ({ ...s, needLogin: false }));
-      setEventAuthKey((k) => k + 1);
-      queueMicrotask(() => {
-        void refreshAccountProfile();
-      });
-    },
-    [refreshAccountProfile],
-  );
-
-  const signOutSaas = useCallback(() => {
-    clearDirectorAuthSession();
-    setSaasTenants([]);
-    setAccountProfile(null);
-    setError("");
-    setAuthBootstrap((s) => ({ ...s, needLogin: true }));
-    setEventAuthKey((k) => k + 1);
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1185,13 +1159,92 @@ export default function App() {
     }
   }, [accountProfile, activePage]);
 
+  /** Clear editor + ``director_ui_session`` so a new login never inherits another user's open project / scenes. */
+  const resetWorkspaceForTenantBoundary = useCallback(() => {
+    try {
+      localStorage.removeItem(DIRECTOR_UI_SESSION_KEY);
+    } catch {
+      /* ignore */
+    }
+    setError("");
+    setMessage("");
+    setActivePage("editor");
+    setProjectId("");
+    setAgentRunId("");
+    setRun(null);
+    setChapters([]);
+    setChapterId("");
+    setScenes([]);
+    setExpandedScene(null);
+    setPinnedPreviewAssetId(null);
+    setSceneAssets({});
+    setTrimByScene({});
+    setTimelineVersionId("");
+    setMediaJobId("");
+    setMediaPoll(false);
+    setCharactersJobId("");
+    setLastHandledMediaJobId("");
+    setRetryPrompt("");
+    setRetryVideoPrompt("");
+    retryPromptSceneRef.current = null;
+    retryVideoPromptSceneRef.current = null;
+    setPhase3Summary(null);
+    setCriticReport(null);
+    setProjectCriticReports([]);
+    setCriticListError("");
+    setPhase5Ready(null);
+    setPipelineStatus(null);
+    setActiveProjectJobs([]);
+    setActiveJobsLoadErr("");
+    setProjectCharacters([]);
+    setResearchJsonDraft("");
+    setResearchMeta(null);
+    setResearchPageErr("");
+    setResearchPipelineBusy(false);
+    setTitle("New documentary");
+    setTopic("Describe your topic, audience, and the story you want to tell.");
+    setRuntime(15);
+  }, []);
+
+  const onSaaSLoggedIn = useCallback(
+    (payload) => {
+      resetWorkspaceForTenantBoundary();
+      setDirectorAuthSession({
+        accessToken: payload.access_token,
+        tenantId: payload.tenant_id,
+      });
+      setSaasTenants(Array.isArray(payload.tenants) ? payload.tenants : []);
+      setAuthBootstrap((s) => ({ ...s, needLogin: false }));
+      setEventAuthKey((k) => k + 1);
+      queueMicrotask(() => {
+        void refreshAccountProfile();
+      });
+    },
+    [refreshAccountProfile, resetWorkspaceForTenantBoundary],
+  );
+
+  const signOutSaas = useCallback(() => {
+    clearDirectorAuthSession();
+    resetWorkspaceForTenantBoundary();
+    setSaasTenants([]);
+    setAccountProfile(null);
+    setAuthBootstrap((s) => ({ ...s, needLogin: true }));
+    setEventAuthKey((k) => k + 1);
+  }, [resetWorkspaceForTenantBoundary]);
+
+  /** SaaS login screen: drop any stale ``director_ui_session`` / in-memory project from a prior browser user. */
+  useEffect(() => {
+    if (!authBootstrap.done || authBootstrap.mode !== "saas" || !authBootstrap.needLogin) return;
+    resetWorkspaceForTenantBoundary();
+  }, [authBootstrap.done, authBootstrap.mode, authBootstrap.needLogin, resetWorkspaceForTenantBoundary]);
+
   useEffect(() => {
     const onSessionExpired = () => {
       if (authModeRef.current !== "saas") return;
       clearDirectorAuthSession();
+      resetWorkspaceForTenantBoundary();
       setSaasTenants([]);
       setAccountProfile(null);
-      setError("");
       setAuthBootstrap((s) => ({
         ...s,
         done: true,
@@ -1202,7 +1255,7 @@ export default function App() {
     };
     window.addEventListener("director:session-expired", onSessionExpired);
     return () => window.removeEventListener("director:session-expired", onSessionExpired);
-  }, []);
+  }, [resetWorkspaceForTenantBoundary]);
 
   useEffect(() => {
     if (!adapterSmokePollActive || !adapterSmokeJobId) return;
