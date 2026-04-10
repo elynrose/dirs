@@ -1,6 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+/** Dev/preview only: Node on this host proxies /v1 → local API. Browsers still use same-origin `/v1`. */
 const apiProxy = {
   "/v1": { target: "http://127.0.0.1:8000", changeOrigin: true },
 };
@@ -11,8 +12,8 @@ export default defineConfig({
     port: 5173,
     // Fail fast if something else (e.g. an old Vite) is on 5173 — avoids “wrong UI” on a surprise port.
     strictPort: true,
-    // Allow access via VPS hostname (e.g. srv1360778.hstgr.cloud), custom domain (directely.com), not only localhost.
-    allowedHosts: [".hstgr.cloud", ".directely.com", "directely.com", "localhost"],
+    // Remote dev (VPS): browsers often use the server IP; a fixed list misses it and Vite rejects the host.
+    allowedHosts: true,
     proxy: apiProxy,
     headers: {
       // Local dev: stop browsers from serving a cached index.html / stale JS after git pull or restart.
@@ -23,7 +24,7 @@ export default defineConfig({
   preview: {
     port: 4173,
     strictPort: true,
-    allowedHosts: [".hstgr.cloud", ".directely.com", "directely.com", "localhost"],
+    allowedHosts: true,
     proxy: apiProxy,
     headers: {
       "Cache-Control": "no-store",

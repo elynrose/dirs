@@ -2066,9 +2066,17 @@ export default function App() {
     } catch (e) {
       const net =
         e instanceof TypeError || String(e).toLowerCase().includes("fetch") || String(e).includes("NetworkError");
+      const hint = String(e?.message || e || "").trim();
       setError(
         net
-          ? "Could not reach the API to load projects. If you use the Electron app, ensure the backend finished starting."
+          ? [
+              "Could not reach the API to load projects (network error before any HTTP response).",
+              hint ? `Details: ${hint}` : null,
+              "Check: (1) API is running on the host you expect. (2) If you set VITE_API_BASE_URL=http://127.0.0.1:8000 and open the Studio from another device or https://, the browser cannot reach that URL—leave VITE_API_BASE_URL unset and use the Vite/nginx same-origin /v1 proxy, or point it at a reachable API and set CORS_EXTRA_ORIGINS.",
+              "Electron: wait until Docker + API finish starting.",
+            ]
+              .filter(Boolean)
+              .join(" ")
           : formatUserFacingError(e),
       );
       setProjects([]);
