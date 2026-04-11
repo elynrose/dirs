@@ -128,10 +128,15 @@ def _sanitize_character_drafts(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _build_system_prompt(*, style_catalog: dict[str, Any], brief_snapshot: dict[str, Any]) -> str:
+def _build_system_prompt(
+    *,
+    style_catalog: dict[str, Any],
+    brief_snapshot: dict[str, Any],
+    telegram_mode: bool = False,
+) -> str:
     cat_json = json.dumps(style_catalog, ensure_ascii=False)[:24000]
     snap_json = json.dumps(brief_snapshot, ensure_ascii=False)[:12000]
-    return f"""You are Directely's Chat Studio setup guide. Help the user shape a documentary project before they run
+    base = f"""You are Directely's Chat Studio setup guide. Help the user shape a documentary project before they run
 the hands-off pipeline. Be concise and practical; ask one or two focused questions when something important is missing.
 
 {_PIPELINE_OVERVIEW}
@@ -153,6 +158,14 @@ You MUST respond with a single JSON object (no markdown) using these keys:
 - "notes_for_user" (string, optional): very short checklist (e.g. what to clarify next, or "Ready to generate.").
 
 Stay factual; do not promise real research results. Prefer preset narration/visual ids from the catalog when matching tone."""
+    if telegram_mode:
+        base += """
+
+--- Telegram mode ---
+The user is messaging via Telegram. Use the same JSON response format.
+When you have enough detail for a solid documentary brief, ask them to start the automated pipeline by sending a message that contains ONLY the trigger word RUN (letters R-U-N, nothing else in the message). You may say something like: "When you're ready, send RUN as its own message and I'll enqueue the full hands-off pipeline."
+Do not say the pipeline has started or is queued until they send that RUN message. Until then, keep refining the brief through dialogue."""
+    return base
 
 
 def run_setup_guide_turn(
@@ -160,6 +173,7 @@ def run_setup_guide_turn(
     *,
     messages: list[dict[str, str]],
     brief_snapshot: dict[str, Any],
+    telegram_mode: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Return (response_dict, error). response_dict keys: reply, brief_patch, character_drafts, notes_for_user."""
     if not messages:
@@ -168,7 +182,9 @@ def run_setup_guide_turn(
     if not flat.strip():
         return None, "empty conversation"
     style_catalog = style_presets_public_payload()
-    system = _build_system_prompt(style_catalog=style_catalog, brief_snapshot=brief_snapshot)
+    system = _build_system_prompt(
+        style_catalog=style_catalog, brief_snapshot=brief_snapshot, telegram_mode=telegram_mode
+    )
     data, err = _chat_json_object_ex(
         settings,
         system=system,

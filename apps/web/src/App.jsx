@@ -6630,8 +6630,10 @@ export default function App() {
                     ) : null}
                     <p className="subtle">
                       The bot is always created in Telegram (BotFather); Directely only stores credentials and receives
-                      updates at the path below. Save these fields, then click <strong>Save settings</strong> (main
-                      Settings actions) so the API can use them.
+                      updates at the path below. Conversations use the same <strong>Chat Studio</strong> assistant as
+                      the web app; when you&apos;re ready, send <strong>RUN</strong> alone to queue the full pipeline.
+                      Save these fields, then click <strong>Save settings</strong> (main Settings actions) so the API can
+                      use them.
                     </p>
                     <p className="subtle" style={{ marginTop: 8 }}>
                       Webhook path (append to your <strong>public API base URL</strong>, not the Vite dev port):{" "}

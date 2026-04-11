@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Identity, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Identity, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -577,6 +577,22 @@ class GenerationArtifact(Base):
     generation_status: Mapped[str] = mapped_column(String(32), default="succeeded")
     cost_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TelegramChatStudioSession(Base):
+    """Chat Studio conversation state for Telegram (per workspace + Telegram chat id)."""
+
+    __tablename__ = "telegram_chat_studio_sessions"
+    __table_args__ = (UniqueConstraint("tenant_id", "telegram_chat_id", name="uq_telegram_chat_studio_tenant_chat"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    telegram_chat_id: Mapped[str] = mapped_column(String(32), index=True)
+    messages_json: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    brief_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class IdempotencyRecord(Base):
