@@ -71,6 +71,10 @@ def _find_runtime_settings_for_telegram_chat(
     """Resolve the workspace whose saved ``telegram_chat_id`` matches this update and secret matches setWebhook.
 
     Telegram does not send a logged-in user; we bind the chat to the tenant that configured that chat id in Studio.
+
+    If the webhook ``secret_token`` in Telegram does not match the DB (common after rotating the secret in Studio
+    without re-running ``setWebhook``), we still accept the update when **exactly one** workspace has this
+    ``telegram_chat_id`` and bot token — otherwise we would return 200 and send nothing.
     """
     inc = str(incoming_chat_id).strip()
     sh = (secret_header or "").strip()
@@ -85,27 +89,51 @@ def _find_runtime_settings_for_telegram_chat(
             return False
         return sh == eff
 
-    for app in db.scalars(select(AppSetting)).all():
-        tid = (app.tenant_id or "").strip()
-        if not tid:
-            continue
-        rt = resolve_runtime_settings(db, base, tid)
-        if str(rt.telegram_chat_id or "").strip() != inc:
-            continue
-        if not (rt.telegram_bot_token or "").strip():
-            continue
+    def chat_token_candidates() -> dict[str, Settings]:
+        """tenant_id -> merged Settings for rows whose saved chat id and bot token match ``inc``."""
+        out: dict[str, Settings] = {}
+        for app in db.scalars(select(AppSetting)).all():
+            tid = (app.tenant_id or "").strip()
+            if not tid:
+                continue
+            rt = resolve_runtime_settings(db, base, tid)
+            if str(rt.telegram_chat_id or "").strip() != inc:
+                continue
+            if not (rt.telegram_bot_token or "").strip():
+                continue
+            out[rt.default_tenant_id] = rt
+
+        tid0 = (base.default_tenant_id or "").strip()
+        if tid0 and tid0 not in out:
+            rt = resolve_runtime_settings(db, base, tid0)
+            if (
+                str(rt.telegram_chat_id or "").strip() == inc
+                and (rt.telegram_bot_token or "").strip()
+            ):
+                out[rt.default_tenant_id] = rt
+        return out
+
+    by_tid = chat_token_candidates()
+
+    for rt in by_tid.values():
         if secret_matches(rt):
             return rt
 
-    tid0 = (base.default_tenant_id or "").strip()
-    if tid0:
-        rt = resolve_runtime_settings(db, base, tid0)
-        if (
-            str(rt.telegram_chat_id or "").strip() == inc
-            and (rt.telegram_bot_token or "").strip()
-            and secret_matches(rt)
-        ):
-            return rt
+    cands = list(by_tid.values())
+    if len(cands) == 1:
+        log.warning(
+            "telegram_webhook_secret_mismatch_using_single_chat_match",
+            tenant_id=cands[0].default_tenant_id,
+            hint="Re-run setWebhook with secret_token equal to telegram_webhook_secret (Studio or env)",
+        )
+        return cands[0]
+
+    if len(cands) > 1:
+        log.warning(
+            "telegram_webhook_ambiguous_chat",
+            incoming_chat=inc,
+            tenant_ids=[c.default_tenant_id for c in cands],
+        )
 
     return None
 
@@ -180,6 +208,13 @@ async def telegram_webhook(
 
     msg = body.get("message") or body.get("edited_message")
     if not isinstance(msg, dict):
+        uid = body.get("update_id")
+        if uid is not None:
+            log.info(
+                "telegram_webhook_non_message_update",
+                update_id=uid,
+                keys=list(body.keys())[:15],
+            )
         return {"ok": True}
 
     chat = msg.get("chat")
@@ -189,6 +224,11 @@ async def telegram_webhook(
     incoming_chat = str(chat_id_raw).strip()
 
     sh = (x_telegram_bot_api_secret_token or "").strip()
+    log.info(
+        "telegram_webhook_incoming",
+        incoming_chat=incoming_chat,
+        has_secret_header=bool(sh),
+    )
     rt = _find_runtime_settings_for_telegram_chat(db, base, incoming_chat_id=incoming_chat, secret_header=sh)
     if rt is None:
         log.warning(

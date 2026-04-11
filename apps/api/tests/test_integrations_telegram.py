@@ -8,6 +8,7 @@ from director_api.config import Settings
 
 TENANT_A = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 TENANT_B = "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"
+TENANT_C = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
 def _rt_for_tenant(tid: str, *, chat: str, secret: str = "whsec") -> Settings:
@@ -55,7 +56,8 @@ def test_find_runtime_picks_tenant_matching_chat_and_secret():
     assert rt.telegram_chat_id == "222"
 
 
-def test_find_runtime_returns_none_on_secret_mismatch():
+def test_find_runtime_fallback_when_single_workspace_secret_wrong():
+    """Wrong X-Telegram-Bot-Api-Secret-Token still resolves if only one row matches chat id + token."""
     from director_api.api.routers.integrations_telegram import _find_runtime_settings_for_telegram_chat
 
     app_b = MagicMock()
@@ -70,6 +72,38 @@ def test_find_runtime_returns_none_on_secret_mismatch():
 
     db = MagicMock()
     db.scalars.return_value.all.return_value = [app_b]
+
+    with patch(
+        "director_api.api.routers.integrations_telegram.resolve_runtime_settings",
+        side_effect=fake_resolve,
+    ):
+        rt = _find_runtime_settings_for_telegram_chat(
+            db, base, incoming_chat_id="222", secret_header="wrong"
+        )
+    assert rt is not None
+    assert rt.default_tenant_id == TENANT_B
+
+
+def test_find_runtime_returns_none_on_secret_mismatch_when_ambiguous():
+    """Two workspaces share the same chat id in config — wrong secret must not pick arbitrarily."""
+    from director_api.api.routers.integrations_telegram import _find_runtime_settings_for_telegram_chat
+
+    app_b = MagicMock()
+    app_b.tenant_id = TENANT_B
+    app_c = MagicMock()
+    app_c.tenant_id = TENANT_C
+    base = Settings()
+    base = base.model_copy(update={"default_tenant_id": TENANT_A})
+
+    def fake_resolve(_db, _base, tid):
+        if tid == TENANT_B:
+            return _rt_for_tenant(TENANT_B, chat="222", secret="good")
+        if tid == TENANT_C:
+            return _rt_for_tenant(TENANT_C, chat="222", secret="good")
+        return _rt_for_tenant(tid, chat="999")
+
+    db = MagicMock()
+    db.scalars.return_value.all.return_value = [app_b, app_c]
 
     with patch(
         "director_api.api.routers.integrations_telegram.resolve_runtime_settings",
