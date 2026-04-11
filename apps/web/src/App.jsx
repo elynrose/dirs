@@ -1023,6 +1023,15 @@ export default function App() {
     return `${window.location.origin}${path}`;
   }, []);
 
+  /** Same-origin `https://host` for copy-paste in `telegram-set-webhook.sh` (no path). */
+  const telegramWebhookPublicOrigin = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    const { protocol, hostname } = window.location;
+    if (protocol !== "https:") return "";
+    if (hostname === "localhost" || hostname === "127.0.0.1") return "";
+    return window.location.origin;
+  }, []);
+
   /** Slug of the workspace plan when subscription is active or trialing (Upgrade modal hides re-subscribe for this plan). */
   const billingActivePlanSlug = useMemo(() => {
     const b = accountProfile?.billing;
@@ -6635,24 +6644,103 @@ export default function App() {
                       </p>
                     ) : null}
                     <p className="subtle">
-                      The bot is always created in Telegram (BotFather); Directely only stores credentials and receives
-                      updates at the path below. Conversations use the same <strong>Chat Studio</strong> assistant as
-                      the web app; when you&apos;re ready, send <strong>RUN</strong> alone to queue the full pipeline.
-                      Save these fields, then click <strong>Save settings</strong> (main Settings actions) so the API can
-                      use them.
+                      Create the bot in Telegram (BotFather). Directely stores credentials and handles the same{" "}
+                      <strong>Chat Studio</strong> flow in Telegram; send <strong>RUN</strong> alone when you are ready
+                      to queue the full pipeline. Full setup for self-hosted installs is in{" "}
+                      <code>INSTALLATION.md</code> §9 in the repo.
                     </p>
-                    <p className="subtle" style={{ marginTop: 8 }}>
-                      Webhook path (append to your <strong>public API base URL</strong>, not the Vite dev port):{" "}
+                    <ol
+                      className="subtle"
+                      style={{
+                        marginTop: 10,
+                        marginBottom: 12,
+                        paddingLeft: 22,
+                        lineHeight: 1.55,
+                        fontSize: "0.95rem",
+                      }}
+                    >
+                      <li>
+                        Paste <strong>Bot token</strong> and <strong>Chat ID</strong> below. Use <strong>Generate</strong>{" "}
+                        for the webhook secret (or paste your own).
+                      </li>
+                      <li>
+                        Click <strong>Save settings</strong> in the main Settings actions so the API can read them.
+                      </li>
+                      <li>
+                        <strong>Register the webhook with Telegram</strong> (required — Telegram does not call Directely
+                        until you do). On the server, from the repo root, with the same token and secret as above:{" "}
+                        <code>./scripts/telegram-set-webhook.sh {telegramWebhookPublicOrigin || "https://YOUR_PUBLIC_HOST"}</code>
+                        {telegramWebhookPublicOrigin ? (
+                          <>
+                            {" "}
+                            or use the curl block below. Re-run after you change the secret or URL.
+                          </>
+                        ) : (
+                          <>
+                            {" "}
+                            (set <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_WEBHOOK_SECRET</code> in the shell
+                            first), or use curl below. Re-run after you change the secret or URL.
+                          </>
+                        )}
+                      </li>
+                      <li>
+                        Use <strong>Test Telegram connection</strong> — it verifies the bot and shows whether Telegram has
+                        a webhook URL registered.
+                      </li>
+                    </ol>
+                    <p className="subtle" style={{ marginTop: 4 }}>
+                      Webhook path:{" "}
                       <code>{apiPath("/v1/integrations/telegram/webhook")}</code> — register with Telegram{" "}
-                      <code>setWebhook</code>. Set <strong>webhook secret</strong> here to match Telegram&apos;s{" "}
-                      <code>secret_token</code>.
+                      <code>setWebhook</code>. The <strong>webhook secret</strong> must match <code>secret_token</code>.
                     </p>
                     {telegramWebhookPublicUrl ? (
                       <p className="subtle" style={{ marginTop: 8, fontSize: "0.92rem" }}>
-                        <strong>This site (HTTPS):</strong> use{" "}
-                        <code style={{ wordBreak: "break-all" }}>{telegramWebhookPublicUrl}</code> as the webhook{" "}
-                        <code>url</code> (nginx should proxy <code>/v1/</code> to your API).
+                        <strong>This site (HTTPS):</strong> webhook <code>url</code> should be{" "}
+                        <code style={{ wordBreak: "break-all" }}>{telegramWebhookPublicUrl}</code> (nginx proxies{" "}
+                        <code>/v1/</code> to the API).
                       </p>
+                    ) : null}
+                    {telegramWebhookPublicUrl && telegramWebhookPublicOrigin ? (
+                      <details className="subtle" style={{ marginTop: 10, marginBottom: 12 }}>
+                        <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                          Server: repo script or curl (same host as this page)
+                        </summary>
+                        <p style={{ marginTop: 8, fontSize: "0.88rem", lineHeight: 1.5 }}>
+                          From the machine that has the repo and your bot credentials (export the same values you saved in
+                          Studio):
+                        </p>
+                        <pre
+                          className="mono"
+                          style={{
+                            fontSize: "0.72rem",
+                            overflow: "auto",
+                            padding: 10,
+                            marginTop: 6,
+                            background: "var(--panel-2, #1a1a1e)",
+                            borderRadius: 6,
+                            lineHeight: 1.4,
+                          }}
+                        >{`export TELEGRAM_BOT_TOKEN='…'
+export TELEGRAM_WEBHOOK_SECRET='…'
+./scripts/telegram-set-webhook.sh ${telegramWebhookPublicOrigin}`}</pre>
+                        <p style={{ fontSize: "0.88rem", marginTop: 10 }}>Or curl:</p>
+                        <pre
+                          className="mono"
+                          style={{
+                            fontSize: "0.72rem",
+                            overflow: "auto",
+                            padding: 10,
+                            marginTop: 6,
+                            background: "var(--panel-2, #1a1a1e)",
+                            borderRadius: 6,
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          {`curl -sS -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \\
+  --data-urlencode "url=${telegramWebhookPublicUrl}" \\
+  --data-urlencode "secret_token=<same as webhook secret above>"`}
+                        </pre>
+                      </details>
                     ) : null}
                     <details className="subtle" style={{ marginTop: 10, marginBottom: 12 }}>
                       <summary style={{ cursor: "pointer", fontWeight: 600 }}>
@@ -6681,11 +6769,7 @@ export default function App() {
                           lineHeight: 1.4,
                         }}
                       >
-                        {telegramWebhookPublicUrl
-                          ? `curl -sS -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \\
-  --data-urlencode "url=${telegramWebhookPublicUrl}" \\
-  --data-urlencode "secret_token=<same as webhook secret above>"`
-                          : `curl -sS -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \\
+                        {`curl -sS -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \\
   --data-urlencode "url=https://YOUR_TUNNEL_HOST${apiPath("/v1/integrations/telegram/webhook")}" \\
   --data-urlencode "secret_token=<same as webhook secret above>"`}
                       </pre>

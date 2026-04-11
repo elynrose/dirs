@@ -61,6 +61,7 @@ Install **FFmpeg** on the worker host for compile jobs. Web studio: `apps/web` (
 | `make migrate` | Run Alembic (`apps/api`) — needs Python 3.11+ on PATH |
 | `make api` | Start FastAPI (`python -m director_api` from `apps/api`) |
 | `make worker` | Start Celery worker |
+| `./scripts/telegram-set-webhook.sh https://YOUR_PUBLIC_HOST` | Register Telegram `setWebhook` (needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WEBHOOK_SECRET`; see [INSTALLATION.md](INSTALLATION.md) §9) |
 | `Launch.cmd` / `Launch.ps1` (repo root) | **Windows:** Docker Compose, migrate, API + Celery worker + beat + Vite + browser |
 | `./Launch.sh` (repo root) | **macOS / Linux:** same stack in background + logs under `.run/` + opens browser |
 

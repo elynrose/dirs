@@ -193,3 +193,52 @@ cd /path/to/director && docker compose down
 The Studio lives in **`apps/web`** (Vite + React). With **`director-vite.service`** enabled, the dev server listens on **port 5173** on all interfaces (`--host 0.0.0.0`). Open **`http://YOUR_SERVER:5173`** in a browser (open the port in your firewall if needed).
 
 For a static production build behind nginx/Caddy, use `npm run build` in `apps/web` and serve `dist/`; you will need to proxy **`/v1`** to the API (see `vite.config.js` for dev proxy behaviour).
+
+## 9. Telegram bot (webhook)
+
+Directely receives Bot API updates at **`POST /v1/integrations/telegram/webhook`**. **Telegram does not send inbound traffic until you call `setWebhook`** with a public **HTTPS** URL. Saving credentials in Studio only stores them in the database; it does not register the webhook.
+
+### Studio (per workspace)
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the **bot token**.
+2. In **Settings → Telegram**, paste **Bot token** and **Chat ID** (your user id for DMs, or the group/channel id if the bot is added there).
+3. Click **Generate** next to **Webhook secret** (or paste your own). The value must be acceptable to Telegram as `secret_token` (avoid characters Telegram rejects; the built-in generator produces hex).
+4. Click **Save settings** on the main Settings page so `app_settings` is updated.
+
+### Register `setWebhook` with Telegram
+
+Run this **once** after the first save, and **again** whenever you change the webhook secret or the public API URL.
+
+**Option A — repo script** (from the repository root on Linux/macOS):
+
+```bash
+export TELEGRAM_BOT_TOKEN='123456789:…'        # from BotFather
+export TELEGRAM_WEBHOOK_SECRET='…'             # exact same string as “Webhook secret” in Studio
+./scripts/telegram-set-webhook.sh https://YOUR_PUBLIC_HOST
+```
+
+Use your real site origin with **no trailing slash** (example: `https://directely.com`). The script sets `url` to `https://YOUR_PUBLIC_HOST/v1/integrations/telegram/webhook`.
+
+If you copied the repo from Windows, ensure shell scripts use **LF** line endings (see **§1. Get the code on the server** above); otherwise `set -o pipefail` may fail.
+
+**Option B — curl**:
+
+```bash
+curl -sS -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+  --data-urlencode "url=https://YOUR_PUBLIC_HOST/v1/integrations/telegram/webhook" \
+  --data-urlencode "secret_token=<same as webhook secret in Studio>"
+```
+
+### Verify
+
+```bash
+curl -sS "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
+```
+
+The JSON should show a non-empty **`url`** pointing at your host. Use **Test Telegram connection** in Studio: it checks the token, optional test message, and whether Telegram has registered a webhook URL.
+
+### Troubleshooting
+
+- **`url` empty in `getWebhookInfo`**: Directely will not receive messages; run `setWebhook` as above.
+- **Changed the secret in Studio**: run `setWebhook` again with the new `secret_token`.
+- **Local dev**: expose the API with a tunnel (ngrok, Cloudflare Tunnel, …) and use `https://YOUR-TUNNEL-HOST/v1/integrations/telegram/webhook` as `url`.
