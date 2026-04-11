@@ -1023,6 +1023,16 @@ export default function App() {
     return `${window.location.origin}${path}`;
   }, []);
 
+  /** Slug of the workspace plan when subscription is active or trialing (Upgrade modal hides re-subscribe for this plan). */
+  const billingActivePlanSlug = useMemo(() => {
+    const b = accountProfile?.billing;
+    if (!b) return null;
+    const st = String(b.status || "").toLowerCase();
+    if (st !== "active" && st !== "trialing") return null;
+    const s = String(b.plan_slug || "").trim();
+    return s || null;
+  }, [accountProfile?.billing]);
+
   const refreshAccountProfile = useCallback(async () => {
     try {
       const r = await api("/v1/auth/config");
@@ -5113,6 +5123,7 @@ export default function App() {
         open={upgradeModalOpen}
         onClose={() => setUpgradeModalOpen(false)}
         showToast={showToast}
+        activePlanSlug={billingActivePlanSlug}
       />
 
       {headerProgressBanner ? (

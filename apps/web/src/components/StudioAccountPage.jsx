@@ -240,6 +240,12 @@ export function StudioAccountPage({
 
   const subStatusLabel = String(billing.status || "none");
 
+  const isActiveSubscriptionPlan = (planSlug) => {
+    const st = String(billing.status || "").toLowerCase();
+    if (st !== "active" && st !== "trialing") return false;
+    return String(billing.plan_slug || "").trim() === String(planSlug || "").trim();
+  };
+
   return (
     <div className="panel account-page" style={{ padding: 24, maxWidth: 820 }}>
       <header
@@ -539,18 +545,24 @@ export function StudioAccountPage({
                   ({pl.billing_interval}) · slug: <code>{pl.slug}</code>
                 </span>
                 {pl.description ? <p className="subtle" style={{ margin: "8px 0" }}>{pl.description}</p> : null}
-                <button
-                  type="button"
-                  disabled={checkoutBusy || !pl.stripe_price_configured}
-                  title={
-                    pl.stripe_price_configured
-                      ? "Open Stripe Checkout"
-                      : "Configure Stripe price id for this plan (env or database)"
-                  }
-                  onClick={() => void startCheckout(pl.slug)}
-                >
-                  {checkoutBusy ? "Redirecting…" : "Subscribe with Stripe"}
-                </button>
+                {isActiveSubscriptionPlan(pl.slug) ? (
+                  <span className="subtle" style={{ fontWeight: 600 }}>
+                    Your current plan
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={checkoutBusy || !pl.stripe_price_configured}
+                    title={
+                      pl.stripe_price_configured
+                        ? "Open Stripe Checkout"
+                        : "Configure Stripe price id for this plan (env or database)"
+                    }
+                    onClick={() => void startCheckout(pl.slug)}
+                  >
+                    {checkoutBusy ? "Redirecting…" : "Subscribe with Stripe"}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

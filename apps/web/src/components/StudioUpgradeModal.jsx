@@ -20,10 +20,14 @@ function formatEntValue(key, value) {
   return value == null ? "—" : String(value);
 }
 
-/**
- * Authenticated-only: list plans and open Stripe Checkout for the selected plan.
- */
-export function StudioUpgradeModal({ open, onClose, showToast }) {
+function isActivePlanSlug(activePlanSlug, planSlug) {
+  const a = String(activePlanSlug || "").trim();
+  const p = String(planSlug || "").trim();
+  return Boolean(a && p && a === p);
+}
+
+/** Authenticated-only: list plans and open Stripe Checkout for the selected plan. */
+export function StudioUpgradeModal({ open, onClose, showToast, activePlanSlug = null }) {
   const [plans, setPlans] = useState([]);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -153,22 +157,28 @@ export function StudioUpgradeModal({ open, onClose, showToast }) {
                   ))}
                 </ul>
               </div>
-              <button
-                type="button"
-                disabled={!pl.stripe_price_configured || checkoutSlug !== null}
-                title={
-                  pl.stripe_price_configured
-                    ? "Continue to Stripe Checkout"
-                    : "Stripe price not configured for this plan"
-                }
-                onClick={() => void startCheckout(pl.slug)}
-              >
-                {checkoutSlug === pl.slug
-                  ? "Redirecting…"
-                  : pl.stripe_price_configured
-                    ? "Continue to Stripe"
-                    : "Unavailable"}
-              </button>
+              {isActivePlanSlug(activePlanSlug, pl.slug) ? (
+                <span className="subtle" style={{ fontWeight: 600 }}>
+                  Your current plan
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!pl.stripe_price_configured || checkoutSlug !== null}
+                  title={
+                    pl.stripe_price_configured
+                      ? "Continue to Stripe Checkout"
+                      : "Stripe price not configured for this plan"
+                  }
+                  onClick={() => void startCheckout(pl.slug)}
+                >
+                  {checkoutSlug === pl.slug
+                    ? "Redirecting…"
+                    : pl.stripe_price_configured
+                      ? "Continue to Stripe"
+                      : "Unavailable"}
+                </button>
+              )}
               {!pl.stripe_price_configured ? (
                 <span className="subtle" style={{ fontSize: "0.82rem", marginLeft: 8 }}>
                   Configure a Stripe price for this plan in Admin or billing settings.
