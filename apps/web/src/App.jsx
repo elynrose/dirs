@@ -927,6 +927,8 @@ export default function App() {
   const [clipCrossfadeSec, setClipCrossfadeSec] = useState(0);
   const [musicUploadLicense, setMusicUploadLicense] = useState("");
   const musicFileInputRef = useRef(null);
+  const sceneClipFileInputRef = useRef(null);
+  const [sceneClipUploadKind, setSceneClipUploadKind] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -949,6 +951,11 @@ export default function App() {
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const authModeRef = useRef("legacy");
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+  /** Slide-out primary nav on narrow viewports (see `index.css` @media). */
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [isMobileLayout, setIsMobileLayout] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches,
+  );
   const [celeryStatus, setCeleryStatus] = useState("unknown");
   const [celeryWorkers, setCeleryWorkers] = useState([]);
   /** Tooltip when API reports *online* via DB fallback (solo pool busy). */
@@ -1006,6 +1013,35 @@ export default function App() {
     if (!ent || ent.chat_enabled !== false) return STUDIO_PAGE_RAILS;
     return STUDIO_PAGE_RAILS.filter((t) => t.id !== "chat");
   }, [accountProfile]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") setMobileNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
+    if (mobileNavOpen) document.body.style.overflow = "hidden";
+    else document.body.style.overflow = "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 900px)");
+    const sync = () => {
+      const narrow = mq.matches;
+      setIsMobileLayout(narrow);
+      if (!narrow) setMobileNavOpen(false);
+    };
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   const telegramPlanLocked = useMemo(
     () => authBootstrap.mode === "saas" && accountProfile?.entitlements?.telegram_enabled === false,
@@ -1474,6 +1510,14 @@ export default function App() {
   const sceneNarrationMetaFetchGenRef = useRef(0);
   /** `{ total, done, label }` while a chapter batch image run is active. */
   const [batchImagesProgress, setBatchImagesProgress] = useState(null);
+  /** Optional 1-based story-order bounds for "All images (chapter)"; empty = full chapter. */
+  const [batchImageRangeFrom, setBatchImageRangeFrom] = useState("");
+  const [batchImageRangeTo, setBatchImageRangeTo] = useState("");
+
+  useEffect(() => {
+    setBatchImageRangeFrom("");
+    setBatchImageRangeTo("");
+  }, [chapterId]);
 
   const phase5ReadinessFetchOpts = useMemo(
     () => buildPhase5ReadinessFetchOpts(pipelineMode, timelineVersionId, "rough_cut"),
@@ -3823,25 +3867,56 @@ export default function App() {
       Math.min(3600, Number(appConfig.studio_batch_image_interval_sec) || 5),
     );
     const ordered = [...scenes].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
+    const n = ordered.length;
+    const rawFrom = String(batchImageRangeFrom ?? "").trim();
+    const rawTo = String(batchImageRangeTo ?? "").trim();
+    let fromIdx = 1;
+    let toIdx = n;
+    if (rawFrom !== "") {
+      const v = parseInt(rawFrom, 10);
+      if (!Number.isFinite(v) || v < 1 || v > n) {
+        setError(`Batch range: "From" must be between 1 and ${n} (story order in this chapter).`);
+        return;
+      }
+      fromIdx = v;
+    }
+    if (rawTo !== "") {
+      const v = parseInt(rawTo, 10);
+      if (!Number.isFinite(v) || v < 1 || v > n) {
+        setError(`Batch range: "To" must be between 1 and ${n} (story order in this chapter).`);
+        return;
+      }
+      toIdx = v;
+    }
+    if (fromIdx > toIdx) {
+      setError('Batch range: "From" must be less than or equal to "To".');
+      return;
+    }
+    const toSlice = ordered.slice(fromIdx - 1, toIdx);
+    if (toSlice.length === 0) {
+      setError("Batch range: no scenes in range (check From / To).");
+      return;
+    }
     setError("");
-    setBatchImagesProgress({ total: ordered.length, done: 0, label: "Starting…" });
+    setBatchImagesProgress({ total: toSlice.length, done: 0, label: "Starting…" });
     try {
-      for (let i = 0; i < ordered.length; i++) {
+      for (let i = 0; i < toSlice.length; i++) {
         if (batchImagesCancelRef.current) {
-          setMessage(`Batch images stopped after ${i} / ${ordered.length}.`);
+          setMessage(`Batch images stopped after ${i} / ${toSlice.length}.`);
           break;
         }
         if (i > 0) {
           await sleepBatchWait(intervalSec * 1000);
         }
         if (batchImagesCancelRef.current) break;
-        const scene = ordered[i];
+        const scene = toSlice[i];
         const sid = scene.id;
+        const globalNum = fromIdx + i;
         setExpandedScene(sid);
         setBatchImagesProgress({
-          total: ordered.length,
+          total: toSlice.length,
           done: i,
-          label: `Scene ${i + 1} of ${ordered.length} (S${(scene.order_index ?? i) + 1})`,
+          label: `Scene ${globalNum} of ${n} (batch ${i + 1}/${toSlice.length}) · S${(scene.order_index ?? globalNum - 1) + 1}`,
         });
         const extra = {};
         const m = String(appConfig.fal_smoke_model || "").trim();
@@ -3856,15 +3931,19 @@ export default function App() {
         }
         loadSceneAssets(sid);
         void loadActiveProjectJobs();
-        setMessage(`Batch images: queued ${i + 1} / ${ordered.length} (spacing ${intervalSec}s between jobs).`);
+        setMessage(
+          `Batch images: queued ${i + 1} / ${toSlice.length} (chapter scene ${globalNum}/${n}; spacing ${intervalSec}s between jobs).`,
+        );
         setBatchImagesProgress({
-          total: ordered.length,
+          total: toSlice.length,
           done: i + 1,
-          label: `Queued ${i + 1} / ${ordered.length}`,
+          label: `Queued ${i + 1} / ${toSlice.length}`,
         });
       }
-      if (!batchImagesCancelRef.current && ordered.length > 0) {
-        setMessage(`Batch images: finished queueing ${ordered.length} job(s). Poll interval uses Settings → Studio.`);
+      if (!batchImagesCancelRef.current && toSlice.length > 0) {
+        setMessage(
+          `Batch images: finished queueing ${toSlice.length} job(s) (scenes ${fromIdx}–${toIdx} of ${n}). Poll interval uses Settings → Studio.`,
+        );
       }
     } catch (e) {
       setError(formatUserFacingError(e));
@@ -4505,6 +4584,47 @@ export default function App() {
 
   const selectedSceneId = expandedScene || scenes[0]?.id || "";
   const selectedScene = scenes.find((s) => String(s.id) === String(selectedSceneId)) || null;
+
+  const uploadSceneClipFile = useCallback(async () => {
+    if (!selectedSceneId) return;
+    const inp = sceneClipFileInputRef.current;
+    const f = inp?.files?.[0];
+    if (!f) {
+      setError("Choose an image, video, or audio file first.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const fd = new FormData();
+      fd.append("file", f, f.name || "upload");
+      fd.append("clip_kind", sceneClipUploadKind);
+      const r = await fetch(apiPath(`/v1/scenes/${encodeURIComponent(selectedSceneId)}/upload-clip`), {
+        method: "POST",
+        body: fd,
+      });
+      const b = await parseJson(r);
+      if (!r.ok) throw new Error(apiErrorMessage(b));
+      if (inp) inp.value = "";
+      void loadSceneAssets(selectedSceneId);
+      if (chapterId) void loadPhase3Summary(chapterId);
+      if (projectId) void refreshPhase5Readiness({ reportError: false });
+      setMessage("Clip uploaded to this scene.");
+    } catch (e) {
+      setError(formatUserFacingError(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    selectedSceneId,
+    sceneClipUploadKind,
+    loadSceneAssets,
+    chapterId,
+    loadPhase3Summary,
+    projectId,
+    refreshPhase5Readiness,
+  ]);
+
   const enhanceRetryImagePrompt = useCallback(async () => {
     const sid = String(selectedSceneId || "").trim();
     if (!sid) return;
@@ -5087,7 +5207,18 @@ export default function App() {
     <EditorLayoutProvider>
     <div className="app-shell" data-testid="director-app-root">
       <header className="topbar topbar--compact panel">
-        <div className="topbar-brand">
+        <div className="topbar-leading">
+          <button
+            type="button"
+            className="secondary mobile-nav-toggle"
+            aria-label={mobileNavOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileNavOpen}
+            aria-controls="studio-primary-nav"
+            onClick={() => setMobileNavOpen((o) => !o)}
+          >
+            <i className="fa-solid fa-bars" aria-hidden="true" />
+          </button>
+          <div className="topbar-brand">
           <h1>Directely Studio</h1>
           {authBootstrap.mode === "saas" && saasTenants.length > 1 ? (
             <label className="subtle topbar-saas-workspace">
@@ -5112,6 +5243,7 @@ export default function App() {
               </select>
             </label>
           ) : null}
+          </div>
         </div>
         {authBootstrap.mode === "saas" ? (
           <div className="topbar-actions">
@@ -5263,14 +5395,38 @@ export default function App() {
         </div>
       ) : null}
 
-      <div className="app-shell__body">
-        <nav className="studio-page-rail panel" aria-label="Primary pages">
+      <div className={`app-shell__body${mobileNavOpen ? " app-shell__body--mobile-nav-open" : ""}`}>
+        <div
+          className={`mobile-nav-backdrop${mobileNavOpen ? " mobile-nav-backdrop--visible" : ""}`}
+          aria-hidden="true"
+          onClick={() => setMobileNavOpen(false)}
+        />
+        <nav
+          id="studio-primary-nav"
+          className={`studio-page-rail studio-page-rail--drawer panel${mobileNavOpen ? " studio-page-rail--open" : ""}`}
+          aria-label="Primary pages"
+          aria-hidden={isMobileLayout ? !mobileNavOpen : undefined}
+        >
+          <div className="studio-page-rail__drawer-head">
+            <span className="studio-page-rail__drawer-title">Menu</span>
+            <button
+              type="button"
+              className="secondary studio-page-rail__drawer-close"
+              aria-label="Close menu"
+              onClick={() => setMobileNavOpen(false)}
+            >
+              <i className="fa-solid fa-xmark" aria-hidden="true" />
+            </button>
+          </div>
           {studioPageRails.map((tab) => (
             <button
               key={tab.id}
               type="button"
               className={`studio-page-rail__tab${activePage === tab.id ? " studio-page-rail__tab--active" : ""}`}
-              onClick={() => setActivePage(tab.id)}
+              onClick={() => {
+                setActivePage(tab.id);
+                setMobileNavOpen(false);
+              }}
               aria-current={activePage === tab.id ? "page" : undefined}
             >
               <span className="studio-page-rail__tab-label">{tab.label}</span>
@@ -8655,9 +8811,43 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         </p>
                       ) : null}
                       <p className="subtle" style={{ margin: "10px 0 6px" }}>
-                        Queue one image job for <strong>every scene in this chapter</strong>, in story order. Waits the{" "}
+                        Queue one image job per scene <strong>in story order</strong> (optional range below for sectional runs). Waits the{" "}
                         <strong>batch image spacing</strong> from Settings → Studio (default 5s) between each enqueue so providers are not flooded.
                       </p>
+                      <div
+                        className="action-row subtle"
+                        style={{ flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 8, fontSize: "0.85rem" }}
+                      >
+                        <span>Scene range (1–{scenes.length}, leave blank for all):</span>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          From
+                          <input
+                            type="number"
+                            min={1}
+                            max={scenes.length || 1}
+                            value={batchImageRangeFrom}
+                            onChange={(e) => setBatchImageRangeFrom(e.target.value)}
+                            disabled={Boolean(batchImagesProgress) || !chapterId || scenes.length === 0}
+                            placeholder="1"
+                            style={{ width: 56 }}
+                            aria-label="Batch from scene number"
+                          />
+                        </label>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          To
+                          <input
+                            type="number"
+                            min={1}
+                            max={scenes.length || 1}
+                            value={batchImageRangeTo}
+                            onChange={(e) => setBatchImageRangeTo(e.target.value)}
+                            disabled={Boolean(batchImagesProgress) || !chapterId || scenes.length === 0}
+                            placeholder={String(scenes.length || "")}
+                            style={{ width: 56 }}
+                            aria-label="Batch to scene number"
+                          />
+                        </label>
+                      </div>
                       <div className="action-row" style={{ flexWrap: "wrap", alignItems: "center" }}>
                         <button
                           type="button"
@@ -8869,6 +9059,47 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                       <p className="subtle" style={{ margin: "0 0 8px" }}>
                         Rejected assets are hidden. Use Earlier / Later to set playback order for approved images in the rough cut.
                       </p>
+                      <div
+                        className="action-row"
+                        style={{ marginBottom: 10, flexWrap: "wrap", gap: 8, alignItems: "center" }}
+                      >
+                        <label className="subtle" style={{ display: "flex", gap: 6, alignItems: "center", fontSize: "0.85rem" }}>
+                          Upload clip
+                          <select
+                            value={sceneClipUploadKind}
+                            onChange={(e) => setSceneClipUploadKind(e.target.value)}
+                            disabled={busy}
+                            style={{ fontSize: "0.8rem" }}
+                          >
+                            <option value="auto">Auto-detect</option>
+                            <option value="image">Image</option>
+                            <option value="video">Video</option>
+                            <option value="audio">Audio</option>
+                          </select>
+                        </label>
+                        <input
+                          ref={sceneClipFileInputRef}
+                          type="file"
+                          accept="image/*,video/*,audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.webm,.mkv"
+                          style={{ display: "none" }}
+                          id="scene-clip-upload-input"
+                        />
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={busy || !selectedSceneId}
+                          onClick={() => sceneClipFileInputRef.current?.click()}
+                        >
+                          Choose file…
+                        </button>
+                        <button type="button" disabled={busy || !selectedSceneId} onClick={() => void uploadSceneClipFile()}>
+                          Upload
+                        </button>
+                        <span className="subtle" style={{ fontSize: "0.78rem", maxWidth: "42ch", lineHeight: 1.35 }}>
+                          Video and audio clips must be ≤10s. Files are stored under{" "}
+                          <code style={{ fontSize: "0.72rem" }}>assets/&lt;project&gt;/&lt;scene&gt;/&lt;asset&gt;.…</code>
+                        </span>
+                      </div>
                       {gallerySceneAssets.length > 0 ? (
                         <div className="action-row" style={{ marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
                           <button type="button" className="secondary" style={{ fontSize: "0.78rem", padding: "2px 8px" }} onClick={selectAllAssets}>
@@ -8960,6 +9191,8 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                                   preload="metadata"
                                   src={thumbSrc}
                                 />
+                              ) : a.status === "succeeded" && at === "audio" ? (
+                                <audio key={thumbSrc} className="scene-asset-thumb" controls preload="metadata" src={thumbSrc} style={{ width: "100%" }} />
                               ) : (
                                 <div className="scene-asset-thumb-placeholder subtle">{a.asset_type}</div>
                               )}
@@ -9022,7 +9255,9 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           <div style={{ fontSize: "1.4rem", marginBottom: 6 }}>🖼️</div>
                           No assets yet for this scene.
                           <br />
-                          Press <kbd style={{ background: "var(--bg-2,#333)", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>G</kbd> to generate an image,
+                          Use <strong>Upload clip</strong> above for a short image, video, or audio file, press{" "}
+                          <kbd style={{ background: "var(--bg-2,#333)", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>G</kbd>{" "}
+                          to generate an image,
                           or run <strong>Batch generate images</strong> for all scenes at once.
                         </div>
                       ) : null}

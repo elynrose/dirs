@@ -17,6 +17,7 @@ from director_api.auth.passwords import hash_password, verify_password
 from director_api.config import get_settings
 from director_api.db.models import Tenant, TenantMembership, User
 from director_api.db.session import get_db
+from director_api.services.billing_plans_seed import assign_free_plan_to_new_tenant
 from director_api.services.firebase_id_token import (
     firebase_public_web_config,
     firebase_sign_in_available,
@@ -160,6 +161,7 @@ def register(body: RegisterIn, db: Session = Depends(get_db)) -> dict[str, Any]:
         role="owner",
     )
     db.add(mem)
+    assign_free_plan_to_new_tenant(db, tid, settings)
     db.commit()
 
     token = issue_access_token(settings=settings, user_id=user.id, tenant_id=tid)
@@ -254,6 +256,7 @@ def auth_firebase(body: FirebaseSignInIn, db: Session = Depends(get_db)) -> dict
             role="owner",
         )
         db.add(mem)
+        assign_free_plan_to_new_tenant(db, tid, settings)
         db.commit()
         db.refresh(user)
 

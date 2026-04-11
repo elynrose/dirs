@@ -10,7 +10,9 @@ from pathlib import Path
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from tempfile import NamedTemporaryFile
+
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
@@ -41,6 +43,16 @@ from director_api.db.models import Asset, Chapter, Job, Project, Scene
 from director_api.db.session import get_db
 from director_api.services import phase3 as phase3_svc
 from director_api.services.prompt_enhance import enhance_image_retry_prompt, enhance_scene_vo_script
+from director_api.services.scene_clip_upload import (
+    AMBIGUOUS_EXTS,
+    MAX_UPLOAD_BYTES,
+    assert_clip_duration_within_limit,
+    classify_from_filename_and_hint,
+    normalized_extension,
+    refine_ambiguous_kind,
+    validate_explicit_clip_kind,
+)
+from director_api.storage.filesystem import FilesystemStorage
 from director_api.tasks.job_enqueue import enqueue_job_task, enqueue_run_phase3_job
 from ffmpeg_pipelines.paths import path_from_storage_url, path_is_readable_file
 
@@ -74,7 +86,26 @@ def _resolve_asset_local_path(a: Asset, *, storage_root: Path) -> Path | None:
             log.info("asset_content_via_storage_key", asset_id=str(a.id))
             return p2
     base = root / "assets" / str(a.project_id) / str(a.scene_id)
-    for ext in ("png", "jpg", "jpeg", "webp", "gif", "mp4", "webm"):
+    for ext in (
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+        "mp4",
+        "webm",
+        "mov",
+        "m4v",
+        "mkv",
+        "avi",
+        "mp3",
+        "wav",
+        "m4a",
+        "aac",
+        "flac",
+        "ogg",
+        "opus",
+    ):
         cand = (base / f"{a.id}.{ext}").resolve()
         if path_is_readable_file(cand) and _path_within_storage(cand, root):
             log.info("asset_content_via_canonical_guess", asset_id=str(a.id), ext=ext)
@@ -658,10 +689,10 @@ def approve_asset(
     root = Path(settings.local_storage_root).resolve()
     local_path = _resolve_asset_local_path(a, storage_root=root)
     at = str(a.asset_type or "").lower()
-    # Export / gallery treat "succeeded" as the usable state. Promote image/video to succeeded when
+    # Export / gallery treat "succeeded" as the usable state. Promote image/video/audio to succeeded when
     # bytes exist on disk (pending with a file is common if the worker never flipped status).
     # Only rejected/failed without a file fall back to pending + guidance.
-    if at in ("image", "video"):
+    if at in ("image", "video", "audio"):
         if local_path is not None:
             if a.status in ("pending", "rejected", "failed"):
                 a.status = "succeeded"
@@ -792,3 +823,139 @@ def put_scene_asset_sequence(
         "data": {"assets": [AssetOut.model_validate(a).model_dump(mode="json") for a in rows]},
         "meta": meta,
     }
+
+
+@router.post("/scenes/{scene_id}/upload-clip")
+async def upload_scene_clip(
+    scene_id: UUID,
+    file: UploadFile = File(...),
+    clip_kind: str = Form("auto"),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Upload image, video, or audio for a scene; stored as ``assets/<project>/<scene>/<asset_id>.<ext>``.
+
+    Video and audio must be at most ~10 seconds (measured with ffprobe). Still images are unlimited;
+    animated images are limited to 10 seconds of decoded timeline.
+    """
+    sc = _scene_or_404(db, settings, scene_id)
+    ch = db.get(Chapter, sc.chapter_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
+    project_id = ch.project_id
+
+    hint = (clip_kind or "auto").strip().lower()
+    if hint not in ("auto", "image", "video", "audio"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_CLIP_KIND", "message": "clip_kind must be auto, image, video, or audio"},
+        )
+
+    try:
+        validate_explicit_clip_kind(kind_hint=clip_kind, filename=file.filename)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "KIND_MISMATCH", "message": str(e)},
+        ) from e
+
+    raw_parts: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "TOO_LARGE", "message": f"upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"},
+            )
+        raw_parts.append(chunk)
+    raw = b"".join(raw_parts)
+    if len(raw) < 16:
+        raise HTTPException(status_code=422, detail={"code": "EMPTY", "message": "uploaded file too small"})
+
+    orig_name = file.filename or "upload.bin"
+    asset_kind, ext_guess = classify_from_filename_and_hint(orig_name, kind_hint=hint if hint != "auto" else None)
+    suffix = ext_guess if ext_guess.startswith(".") else f".{ext_guess}"
+
+    tmp_path: Path | None = None
+    try:
+        with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(raw)
+            tmp_path = Path(tmp.name)
+
+        if tmp_path.suffix.lower() in AMBIGUOUS_EXTS and asset_kind == "video":
+            asset_kind = refine_ambiguous_kind(
+                tmp_path,
+                ffprobe_bin=(settings.ffprobe_bin or "ffprobe").strip() or "ffprobe",
+                initial=asset_kind,
+            )
+
+        ffprobe_bin = (settings.ffprobe_bin or "ffprobe").strip() or "ffprobe"
+        try:
+            measured_sec = assert_clip_duration_within_limit(tmp_path, asset_kind=asset_kind, ffprobe_bin=ffprobe_bin)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "CLIP_TOO_LONG_OR_INVALID", "message": str(e)},
+            ) from e
+
+        norm_ext = normalized_extension(asset_kind, suffix)
+        asset_id = uuid.uuid4()
+        storage_key = f"assets/{project_id}/{scene_id}/{asset_id}{norm_ext}"
+
+        storage = FilesystemStorage(settings.local_storage_root)
+        ct = file.content_type
+        if not ct or ct == "application/octet-stream":
+            guessed, _ = mimetypes.guess_type(orig_name)
+            ct = guessed or (
+                "audio/mpeg"
+                if asset_kind == "audio"
+                else ("video/mp4" if asset_kind == "video" else "image/jpeg")
+            )
+        file_url = storage.put_bytes(storage_key, raw, content_type=ct)
+
+        mx = db.scalar(select(func.max(Asset.timeline_sequence)).where(Asset.scene_id == scene_id))
+        next_seq = int(mx or -1) + 1
+
+        params: dict[str, object] = {
+            "storage_key": storage_key,
+            "source_filename": orig_name[:500],
+            "upload": True,
+        }
+        if measured_sec is not None:
+            params["duration_sec"] = round(float(measured_sec), 4)
+
+        a = Asset(
+            id=asset_id,
+            tenant_id=settings.default_tenant_id,
+            scene_id=scene_id,
+            project_id=project_id,
+            asset_type=asset_kind,
+            status="succeeded",
+            generation_tier="preview",
+            provider="upload",
+            model_name=None,
+            params_json=params,
+            storage_url=file_url,
+            preview_url=file_url,
+            error_message=None,
+            timeline_sequence=next_seq,
+        )
+        db.add(a)
+        db.commit()
+        db.refresh(a)
+        log.info(
+            "scene_clip_uploaded",
+            scene_id=str(scene_id),
+            asset_id=str(asset_id),
+            asset_type=asset_kind,
+            storage_key=storage_key,
+        )
+        return {"data": AssetOut.model_validate(a).model_dump(mode="json"), "meta": meta}
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
