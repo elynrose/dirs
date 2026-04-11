@@ -41,17 +41,20 @@ import time
 from typing import AsyncGenerator
 from uuid import UUID
 
+import jwt
 import structlog
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, desc, select
 from sqlalchemy.orm import Session
 
-from director_api.api.deps import settings_dep
 from director_api.api.schemas.project import JobOut
-from director_api.config import Settings
+from director_api.auth.deps import extract_token
+from director_api.auth.jwtutil import decode_access_token
+from director_api.config import Settings, get_settings
 from director_api.services.celery_liveness import celery_ping_workers, tenant_has_running_async_work
-from director_api.db.models import AgentRun, Asset, Job, Project
+from director_api.db.models import AgentRun, Asset, Job, Project, TenantMembership
+from director_api.services.runtime_settings import resolve_runtime_settings
 from director_api.db.session import get_db
 
 router = APIRouter(tags=["events"])
@@ -225,9 +228,9 @@ async def _event_stream(
 
 @router.get("/events")
 async def project_event_stream(
+    request: Request,
     project_id: UUID = Query(..., description="Project UUID to subscribe to"),
     db: Session = Depends(get_db),
-    settings: Settings = Depends(settings_dep),
 ):
     """Subscribe to a real-time event stream for a project.
 
@@ -237,12 +240,55 @@ async def project_event_stream(
     **Rate:** approximately one DB query per poll interval (1.5 s) per open connection.
     The rate limiter skips ``/v1/events`` to avoid counting the long-lived connection
     as many separate requests.
+
+    Authorization uses the project row's ``tenant_id`` plus JWT membership, so a stale
+    ``tenant_id`` query parameter (common after workspace switches) does not cause 404.
     """
-    # Verify the project exists and belongs to this tenant.
+    base = get_settings()
     p = db.get(Project, project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
-        from fastapi import HTTPException
+    if not p:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
+
+    if not base.director_auth_enabled:
+        settings = resolve_runtime_settings(db, base, base.default_tenant_id)
+        if p.tenant_id != settings.default_tenant_id:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
+    else:
+        token = extract_token(request, base)
+        if not token:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "UNAUTHORIZED", "message": "missing credentials"},
+            )
+        try:
+            claims = decode_access_token(base, token)
+        except jwt.PyJWTError:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "UNAUTHORIZED", "message": "invalid or expired token"},
+            ) from None
+        try:
+            user_id = int(str(claims["sub"]).strip())
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "UNAUTHORIZED", "message": "invalid token subject"},
+            )
+        row = db.scalar(
+            select(TenantMembership).where(
+                TenantMembership.user_id == user_id,
+                TenantMembership.tenant_id == p.tenant_id,
+            )
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "FORBIDDEN",
+                    "message": "not a member of this project's workspace",
+                },
+            )
+        settings = resolve_runtime_settings(db, base, p.tenant_id)
 
     return StreamingResponse(
         _event_stream(project_id, settings, db),

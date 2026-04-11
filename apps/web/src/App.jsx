@@ -6707,14 +6707,43 @@ export default function App() {
                     <label htmlFor="cfg-telegram-webhook-secret" style={{ marginTop: 12 }}>
                       Webhook secret (must match Telegram <code>secret_token</code>)
                     </label>
-                    <input
-                      id="cfg-telegram-webhook-secret"
-                      type="password"
-                      autoComplete="off"
-                      disabled={telegramPlanLocked}
-                      value={appConfig.telegram_webhook_secret || ""}
-                      onChange={(e) => setAppConfig((p) => ({ ...p, telegram_webhook_secret: e.target.value }))}
-                    />
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "stretch", marginBottom: 6 }}>
+                      <input
+                        id="cfg-telegram-webhook-secret"
+                        type="password"
+                        autoComplete="off"
+                        disabled={telegramPlanLocked}
+                        value={appConfig.telegram_webhook_secret || ""}
+                        onChange={(e) => setAppConfig((p) => ({ ...p, telegram_webhook_secret: e.target.value }))}
+                        style={{ flex: "1 1 200px", minWidth: 0 }}
+                      />
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={telegramPlanLocked}
+                        title="Fills in a random 64-character hex string — then Save settings and use the same value in setWebhook"
+                        style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}
+                        onClick={() => {
+                          try {
+                            const buf = new Uint8Array(32);
+                            crypto.getRandomValues(buf);
+                            const hex = Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+                            setAppConfig((p) => ({ ...p, telegram_webhook_secret: hex }));
+                            showToast(
+                              "Webhook secret filled in. Click Save settings below, then run setWebhook with the same secret_token.",
+                              { type: "success", durationMs: 9000 },
+                            );
+                          } catch {
+                            showToast("Could not generate a secret in this browser.", { type: "error" });
+                          }
+                        }}
+                      >
+                        Generate
+                      </button>
+                    </div>
+                    <p className="subtle" style={{ fontSize: "0.82rem", marginTop: 0, marginBottom: 0 }}>
+                      Use the same value for Telegram <code>setWebhook</code> <code>secret_token</code> (see curl above).
+                    </p>
                     <div className="action-row" style={{ marginTop: 12 }}>
                       <button
                         type="button"

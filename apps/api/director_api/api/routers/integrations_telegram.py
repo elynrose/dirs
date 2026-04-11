@@ -7,13 +7,14 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from director_api.api.schemas.agent_run import AgentRunCreate
 from director_api.api.schemas.project import ProjectCreate
 from director_api.config import Settings, get_settings
-from director_api.db.models import AgentRun, TelegramChatStudioSession
+from director_api.db.models import AppSetting, AgentRun, TelegramChatStudioSession
 from director_api.db.session import get_db
 from director_api.services.runtime_settings import resolve_runtime_settings
 from director_api.services.telegram_client import telegram_send_message
@@ -30,7 +31,6 @@ from director_api.services.chat_studio_guide import run_setup_guide_turn
 from director_api.services.tenant_entitlements import (
     assert_agent_run_pipeline_allowed,
     assert_can_create_project,
-    assert_telegram_allowed,
 )
 
 router = APIRouter(prefix="/integrations/telegram", tags=["integrations"])
@@ -54,6 +54,60 @@ def _help_text() -> str:
 
 def _normalize_chat_id(raw: Any, expected: str) -> bool:
     return str(raw).strip() == str(expected).strip()
+
+
+def _effective_webhook_secret(rt: Settings, base: Settings) -> str:
+    """Tenant merge may omit secrets; fall back to env on ``base``."""
+    return (rt.telegram_webhook_secret or base.telegram_webhook_secret or "").strip()
+
+
+def _find_runtime_settings_for_telegram_chat(
+    db: Session,
+    base: Settings,
+    *,
+    incoming_chat_id: str,
+    secret_header: str,
+) -> Settings | None:
+    """Resolve the workspace whose saved ``telegram_chat_id`` matches this update and secret matches setWebhook.
+
+    Telegram does not send a logged-in user; we bind the chat to the tenant that configured that chat id in Studio.
+    """
+    inc = str(incoming_chat_id).strip()
+    sh = (secret_header or "").strip()
+    if not inc:
+        return None
+
+    def secret_matches(rt: Settings) -> bool:
+        eff = _effective_webhook_secret(rt, base)
+        if not sh:
+            return not eff
+        if not eff:
+            return False
+        return sh == eff
+
+    for app in db.scalars(select(AppSetting)).all():
+        tid = (app.tenant_id or "").strip()
+        if not tid:
+            continue
+        rt = resolve_runtime_settings(db, base, tid)
+        if str(rt.telegram_chat_id or "").strip() != inc:
+            continue
+        if not (rt.telegram_bot_token or "").strip():
+            continue
+        if secret_matches(rt):
+            return rt
+
+    tid0 = (base.default_tenant_id or "").strip()
+    if tid0:
+        rt = resolve_runtime_settings(db, base, tid0)
+        if (
+            str(rt.telegram_chat_id or "").strip() == inc
+            and (rt.telegram_bot_token or "").strip()
+            and secret_matches(rt)
+        ):
+            return rt
+
+    return None
 
 
 def _truncate_telegram(s: str) -> str:
@@ -117,39 +171,7 @@ async def telegram_webhook(
     x_telegram_bot_api_secret_token: str | None = Header(default=None, alias="X-Telegram-Bot-Api-Secret-Token"),
 ) -> dict[str, bool]:
     base = get_settings()
-    rt = resolve_runtime_settings(db, base, None)
     auth_on = bool(base.director_auth_enabled)
-
-    try:
-        assert_telegram_allowed(db=db, tenant_id=rt.default_tenant_id, auth_enabled=auth_on)
-    except HTTPException:
-        log.info("telegram_webhook_skip_telegram_entitlement")
-        return {"ok": True}
-    # Do not require chat_enabled here: many plans include Telegram without the web Chat Studio tab; the same LLM
-    # setup guide runs for Telegram-only users.
-
-    secret = (rt.telegram_webhook_secret or "").strip()
-    if not secret:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "TELEGRAM_WEBHOOK_SECRET_MISSING",
-                "message": "Set telegram_webhook_secret in Settings and pass the same value to Telegram setWebhook secret_token",
-            },
-        )
-    if (x_telegram_bot_api_secret_token or "").strip() != secret:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "invalid webhook secret"},
-        )
-
-    token = (rt.telegram_bot_token or "").strip()
-    chat_expected = (rt.telegram_chat_id or "").strip()
-    if not token or not chat_expected:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "TELEGRAM_NOT_CONFIGURED", "message": "Configure telegram_bot_token and telegram_chat_id in Settings"},
-        )
 
     try:
         body: dict[str, Any] = await request.json()
@@ -161,9 +183,33 @@ async def telegram_webhook(
         return {"ok": True}
 
     chat = msg.get("chat")
-    chat_id = chat.get("id") if isinstance(chat, dict) else None
-    if chat_id is None or not _normalize_chat_id(chat_id, chat_expected):
-        log.info("telegram_webhook_chat_mismatch", got=chat_id)
+    chat_id_raw = chat.get("id") if isinstance(chat, dict) else None
+    if chat_id_raw is None:
+        return {"ok": True}
+    incoming_chat = str(chat_id_raw).strip()
+
+    sh = (x_telegram_bot_api_secret_token or "").strip()
+    rt = _find_runtime_settings_for_telegram_chat(db, base, incoming_chat_id=incoming_chat, secret_header=sh)
+    if rt is None:
+        log.warning(
+            "telegram_webhook_no_matching_tenant",
+            incoming_chat=incoming_chat,
+            hint="Save Telegram settings in Studio for this workspace; chat id and webhook secret must match setWebhook",
+        )
+        return {"ok": True}
+
+    # Do not call assert_telegram_allowed here: the request is already scoped by webhook secret + matching
+    # telegram_chat_id. The default env tenant id often differs from the workspace row in app_settings; gating on
+    # entitlements for the wrong id caused silent 200s. Saving Telegram in Settings still requires the entitlement.
+
+    token = (rt.telegram_bot_token or "").strip()
+    chat_expected = (rt.telegram_chat_id or "").strip()
+    if not token or not chat_expected:
+        log.warning("telegram_webhook_missing_token_or_chat", tenant_id=rt.default_tenant_id)
+        return {"ok": True}
+
+    if not _normalize_chat_id(incoming_chat, chat_expected):
+        log.info("telegram_webhook_chat_mismatch", got=incoming_chat, expected=chat_expected)
         return {"ok": True}
 
     text_raw = msg.get("text")
