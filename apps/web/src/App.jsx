@@ -1559,7 +1559,13 @@ export default function App() {
       const bits = [`@${d.bot_username || "bot"}`];
       if (d.test_message_sent) bits.push("test message sent");
       else if (!d.chat_id_configured) bits.push("add chat id to receive a test message");
-      showToast(`Telegram: ${bits.join(" · ")}`, { type: "success", durationMs: 7000 });
+      if (d.webhook_action_required || d.webhook_registered_with_telegram === false) {
+        bits.push("run setWebhook (curl below) — Telegram is not posting to Directely yet");
+      }
+      showToast(`Telegram: ${bits.join(" · ")}`, {
+        type: d.webhook_action_required ? "warning" : "success",
+        durationMs: d.webhook_action_required ? 12000 : 7000,
+      });
     } catch (e) {
       showToast(formatUserFacingError(e), { type: "error", durationMs: 8000 });
     } finally {

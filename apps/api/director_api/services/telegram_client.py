@@ -28,6 +28,16 @@ def telegram_get_me(token: str) -> dict[str, Any]:
     return data.get("result") or {}
 
 
+def telegram_get_webhook_info(token: str) -> dict[str, Any]:
+    """Returns Telegram's registered webhook URL and delivery diagnostics (``getWebhookInfo``)."""
+    r = httpx.get(f"{_base(token)}/getWebhookInfo", timeout=_DEFAULT_TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(str(data.get("description") or "getWebhookInfo failed"))
+    return data.get("result") or {}
+
+
 def telegram_send_message(token: str, chat_id: str, text: str) -> None:
     body = {"chat_id": chat_id, "text": (text or "")[:4096]}
     r = httpx.post(f"{_base(token)}/sendMessage", json=body, timeout=_DEFAULT_TIMEOUT)

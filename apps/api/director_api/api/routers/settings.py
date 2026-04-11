@@ -41,7 +41,7 @@ from director_api.services.llm_prompt_service import (
 )
 from director_api.services.usage_accounting import usage_summary_for_tenant
 from director_api.config import get_settings
-from director_api.services.telegram_client import telegram_get_me, telegram_send_message
+from director_api.services.telegram_client import telegram_get_me, telegram_get_webhook_info, telegram_send_message
 from director_api.services.tenant_entitlements import assert_telegram_allowed
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -481,6 +481,22 @@ def test_telegram_connection(
             ) from exc
 
     secret_ok = bool((settings.telegram_webhook_secret or "").strip())
+    wh: dict[str, Any] = {}
+    wh_err: str | None = None
+    try:
+        raw = telegram_get_webhook_info(token)
+        wh = {
+            "url": (raw.get("url") or "").strip(),
+            "has_custom_certificate": bool(raw.get("has_custom_certificate")),
+            "pending_update_count": raw.get("pending_update_count"),
+            "last_error_date": raw.get("last_error_date"),
+            "last_error_message": raw.get("last_error_message"),
+            "max_connections": raw.get("max_connections"),
+        }
+    except Exception as exc:
+        wh_err = str(exc)[:300]
+
+    inbound = bool(wh.get("url")) if wh else False
     return {
         "data": {
             "ok": True,
@@ -491,6 +507,10 @@ def test_telegram_connection(
             "webhook_secret_configured": secret_ok,
             "webhook_path": "/v1/integrations/telegram/webhook",
             "webhook_hint": "Call Telegram setWebhook with this URL (HTTPS), secret_token equal to telegram_webhook_secret, and header X-Telegram-Bot-Api-Secret-Token will be verified automatically.",
+            "webhook_registered_with_telegram": inbound,
+            "webhook_info": wh if wh else None,
+            "webhook_info_error": wh_err,
+            "webhook_action_required": not inbound,
         },
         "meta": meta,
     }
