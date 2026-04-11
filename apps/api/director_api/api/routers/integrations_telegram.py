@@ -30,7 +30,6 @@ from director_api.services.chat_studio_guide import run_setup_guide_turn
 from director_api.services.tenant_entitlements import (
     assert_agent_run_pipeline_allowed,
     assert_can_create_project,
-    assert_chat_allowed,
     assert_telegram_allowed,
 )
 
@@ -126,11 +125,8 @@ async def telegram_webhook(
     except HTTPException:
         log.info("telegram_webhook_skip_telegram_entitlement")
         return {"ok": True}
-    try:
-        assert_chat_allowed(db=db, tenant_id=rt.default_tenant_id, auth_enabled=auth_on)
-    except HTTPException:
-        log.info("telegram_webhook_skip_chat_entitlement")
-        return {"ok": True}
+    # Do not require chat_enabled here: many plans include Telegram without the web Chat Studio tab; the same LLM
+    # setup guide runs for Telegram-only users.
 
     secret = (rt.telegram_webhook_secret or "").strip()
     if not secret:

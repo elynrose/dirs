@@ -34,6 +34,7 @@ _SKIP_PREFIXES = (
     "/v1/events",
     "/v1/admin",
     "/v1/billing/stripe/webhook",
+    "/v1/integrations/telegram",
     "/docs",
     "/openapi",
     "/redoc",
