@@ -23,6 +23,41 @@ const LIMIT = 50;
 
 const BUDGET_PIPELINE_LS_KEY = "director_admin_budget_pipeline_v1";
 const BUDGET_PIPELINE_STATE_VERSION = 1;
+/** Plain UUID string so Continue works after refresh even if `budgetLast` shape is stale. */
+const BUDGET_PROJECT_ID_LS_KEY = "director_admin_budget_project_id_v1";
+
+function readSavedBudgetProjectId() {
+  try {
+    return localStorage.getItem(BUDGET_PROJECT_ID_LS_KEY)?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+/** Prefer the most recent budget queue that recorded a project id (history → budgetLast → dedicated key). */
+function readLastRanBudgetProjectId(persisted) {
+  const p = persisted && typeof persisted === "object" ? persisted : null;
+  const h = p?.budgetRunHistory;
+  if (Array.isArray(h) && h.length) {
+    for (let i = h.length - 1; i >= 0; i--) {
+      const id = h[i]?.project_id;
+      if (id != null && String(id).trim()) return String(id).trim();
+    }
+  }
+  const fromLast = p?.budgetLast?.project?.id;
+  if (fromLast != null && String(fromLast).trim()) return String(fromLast).trim();
+  return readSavedBudgetProjectId();
+}
+
+function persistLastRanBudgetProjectId(projectId) {
+  const s = projectId == null ? "" : String(projectId).trim();
+  if (!s) return;
+  try {
+    localStorage.setItem(BUDGET_PROJECT_ID_LS_KEY, s);
+  } catch {
+    /* ignore */
+  }
+}
 
 function readBudgetPipelinePersisted() {
   try {
@@ -263,6 +298,8 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     const p = readBudgetPipelinePersisted();
     return Array.isArray(p?.budgetRunHistory) ? p.budgetRunHistory : [];
   });
+  /** Project id for the last budget run that was queued (Run or Continue); same id Continue re-uses. */
+  const [budgetProjectId, setBudgetProjectId] = useState(() => readLastRanBudgetProjectId(readBudgetPipelinePersisted()));
 
   useEffect(() => {
     if (!unlocked) return;
@@ -298,6 +335,14 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
       /* quota or private mode */
     }
   }, [unlocked, budgetTitle, budgetTopic, budgetRuntime, budgetMode, budgetLast, budgetErr, budgetRunHistory]);
+
+  useEffect(() => {
+    const id = budgetLast?.project?.id;
+    if (id == null || String(id).trim() === "") return;
+    const s = String(id).trim();
+    setBudgetProjectId(s);
+    persistLastRanBudgetProjectId(s);
+  }, [budgetLast?.project?.id]);
 
   /** Logged-in Studio workspace (from App: auth/me + session tenant); falls back if prop not ready yet. */
   const resolvedBudgetWorkspaceId = useMemo(() => {
@@ -470,6 +515,12 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
       }
       const data = body.data ?? null;
       setBudgetLast(data);
+      const projId = data?.project?.id;
+      if (projId != null && String(projId).trim()) {
+        const ps = String(projId).trim();
+        setBudgetProjectId(ps);
+        persistLastRanBudgetProjectId(ps);
+      }
       const rid = data?.agent_run?.id;
       if (rid) {
         setBudgetRunHistory((h) => {
@@ -478,6 +529,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
             {
               ts: new Date().toISOString(),
               agent_run_id: String(rid),
+              project_id: projId != null ? String(projId).trim() : undefined,
               poll_url: data.poll_url != null ? String(data.poll_url) : null,
             },
           ];
@@ -493,9 +545,18 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
   }, [budgetTitle, budgetTopic, budgetRuntime, budgetMode, resolvedBudgetWorkspaceId, showToast]);
 
   const continueBudgetPipeline = useCallback(async () => {
-    const pid = budgetLast?.project?.id;
-    if (!pid || String(pid).trim() === "") {
-      setBudgetErr("Run a budget pipeline once first — we need the project id from the last queued run.");
+    const pid =
+      String(budgetProjectId || "").trim() ||
+      readLastRanBudgetProjectId({
+        budgetRunHistory,
+        budgetLast,
+      }) ||
+      String(budgetLast?.project?.id || "").trim();
+    if (!pid) {
+      const msg =
+        "Set Project id (below) or run “Run budget pipeline” once — Continue needs a workspace project UUID.";
+      setBudgetErr(msg);
+      showToast?.(msg, { type: "error" });
       return;
     }
     setBudgetErr("");
@@ -523,6 +584,12 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
       }
       const data = body.data ?? null;
       setBudgetLast(data);
+      const projId = data?.project?.id;
+      if (projId != null && String(projId).trim()) {
+        const ps = String(projId).trim();
+        setBudgetProjectId(ps);
+        persistLastRanBudgetProjectId(ps);
+      }
       const rid = data?.agent_run?.id;
       if (rid) {
         setBudgetRunHistory((h) => {
@@ -531,6 +598,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
             {
               ts: new Date().toISOString(),
               agent_run_id: String(rid),
+              project_id: projId != null ? String(projId).trim() : undefined,
               poll_url: data.poll_url != null ? String(data.poll_url) : null,
               continued: true,
             },
@@ -545,6 +613,8 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
       setBudgetBusy(false);
     }
   }, [
+    budgetProjectId,
+    budgetRunHistory,
     budgetLast,
     budgetTitle,
     budgetRuntime,
@@ -774,6 +844,22 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                     </span>
                   )}
                 </p>
+                <label className="subtle" style={{ display: "block", marginTop: 6 }}>
+                  Project id (last budget run — updates each time you queue Run or Continue; edit or paste if needed){" "}
+                  <input
+                    className="mono"
+                    value={budgetProjectId}
+                    onChange={(e) => setBudgetProjectId(e.target.value)}
+                    onBlur={() => {
+                      const t = budgetProjectId.trim();
+                      if (t) persistLastRanBudgetProjectId(t);
+                    }}
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    autoComplete="off"
+                    spellCheck="false"
+                    style={{ width: "100%", marginTop: 4, fontSize: "0.85rem" }}
+                  />
+                </label>
                 <div className="action-row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <button type="button" disabled={budgetBusy} onClick={() => void runBudgetPipeline()}>
                     {budgetBusy ? "Queueing…" : "Run budget pipeline"}
@@ -781,12 +867,8 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                   <button
                     type="button"
                     className="secondary"
-                    disabled={budgetBusy || !budgetLast?.project?.id}
-                    title={
-                      budgetLast?.project?.id ?
-                        "Enqueue another agent run on this project; worker skips steps already done."
-                      : "Queue a run first to capture a project id."
-                    }
+                    disabled={budgetBusy}
+                    title="Enqueue another agent run on the project id above; worker skips steps already done."
                     onClick={() => void continueBudgetPipeline()}
                   >
                     {budgetBusy ? "Queueing…" : "Continue budget pipeline"}
