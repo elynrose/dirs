@@ -36,11 +36,7 @@ from director_api.services.runtime_settings import invalidate_runtime_settings_c
 from director_api.storage.project_storage_cleanup import remove_generated_project_files
 from director_api.services.billing_plans_seed import ensure_default_subscription_plans
 from director_api.services.platform_stripe_settings import get_or_create_platform_stripe, resolve_effective_stripe_settings
-from director_api.services.tenant_entitlements import (
-    assert_agent_run_pipeline_allowed,
-    assert_can_create_project,
-    entitlement_definitions_public,
-)
+from director_api.services.tenant_entitlements import entitlement_definitions_public
 
 log = structlog.get_logger(__name__)
 
@@ -1124,7 +1120,6 @@ def admin_budget_pipeline_test(
         )
 
     settings = resolve_runtime_settings(db, base, tid)
-    auth_on = bool(base.director_auth_enabled)
 
     brief = ProjectCreate(
         title=body.title.strip(),
@@ -1148,12 +1143,12 @@ def admin_budget_pipeline_test(
 
     create_body = AgentRunCreate(brief=brief, pipeline_options=pipeline_options)
 
-    assert_can_create_project(db, tid, auth_enabled=auth_on)
+    # Platform admin smoke test: do not enforce workspace subscription gates (project cap,
+    # hands-off / full-through entitlements). Caller is already authenticated via AdminDep.
     p = _project_from_brief(db, settings, create_body, tenant_id_override=tid)
 
     po: dict[str, Any] = dict(create_body.pipeline_options or {})
     po["continue_from_existing"] = False
-    assert_agent_run_pipeline_allowed(po, db=db, tenant_id=tid, auth_enabled=auth_on)
 
     run = AgentRun(
         id=uuid.uuid4(),

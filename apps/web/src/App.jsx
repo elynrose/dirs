@@ -1120,6 +1120,13 @@ export default function App() {
     return s || null;
   }, [accountProfile?.billing]);
 
+  /** Admin → Tools budget pipeline: target workspace matches the Studio session (auth/me + X-Tenant-Id). */
+  const adminToolsWorkspaceTenantId = useMemo(() => {
+    const fromProfile = (accountProfile?.active_tenant_id || accountProfile?.tenant_id || "").trim();
+    if (fromProfile) return fromProfile;
+    return getDirectorTenantId().trim();
+  }, [accountProfile?.active_tenant_id, accountProfile?.tenant_id]);
+
   const refreshAccountProfile = useCallback(async () => {
     try {
       const r = await api("/v1/auth/config");
@@ -5498,7 +5505,7 @@ export default function App() {
           showToast={showToast}
         />
       ) : activePage === "admin" ? (
-        <StudioAdminPage showToast={showToast} />
+        <StudioAdminPage showToast={showToast} workspaceTenantId={adminToolsWorkspaceTenantId} />
       ) : activePage === "usage" ? (
         <section className="panel usage-page">
           <header className="usage-page-header">

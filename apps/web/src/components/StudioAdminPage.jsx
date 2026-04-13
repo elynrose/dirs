@@ -212,7 +212,7 @@ function EntitlementEditor({ definitions, value, onChange }) {
   );
 }
 
-export function StudioAdminPage({ showToast }) {
+export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
   const [tab, setTab] = useState("dashboard");
   const [keyInput, setKeyInput] = useState(() => getAdminKey());
   const [unlocked, setUnlocked] = useState(false);
@@ -249,12 +249,6 @@ export function StudioAdminPage({ showToast }) {
   const [budgetMode, setBudgetMode] = useState(() => {
     const p = readBudgetPipelinePersisted();
     return p?.budgetMode === "auto" || p?.budgetMode === "hands-off" ? p.budgetMode : "hands-off";
-  });
-  /** Prefill with the Studio session workspace so entitlements/billing overrides match (empty = API DEFAULT_TENANT_ID). */
-  const [budgetTenant, setBudgetTenant] = useState(() => {
-    const p = readBudgetPipelinePersisted();
-    if (typeof p?.budgetTenant === "string") return p.budgetTenant;
-    return getDirectorTenantId().trim();
   });
   const [budgetBusy, setBudgetBusy] = useState(false);
   const [budgetErr, setBudgetErr] = useState(() => {
@@ -295,7 +289,6 @@ export function StudioAdminPage({ showToast }) {
           budgetTopic,
           budgetRuntime,
           budgetMode,
-          budgetTenant,
           budgetLast,
           budgetErr,
           budgetRunHistory,
@@ -304,7 +297,14 @@ export function StudioAdminPage({ showToast }) {
     } catch {
       /* quota or private mode */
     }
-  }, [unlocked, budgetTitle, budgetTopic, budgetRuntime, budgetMode, budgetTenant, budgetLast, budgetErr, budgetRunHistory]);
+  }, [unlocked, budgetTitle, budgetTopic, budgetRuntime, budgetMode, budgetLast, budgetErr, budgetRunHistory]);
+
+  /** Logged-in Studio workspace (from App: auth/me + session tenant); falls back if prop not ready yet. */
+  const resolvedBudgetWorkspaceId = useMemo(() => {
+    const fromProp = (workspaceTenantId || "").trim();
+    if (fromProp) return fromProp;
+    return getDirectorTenantId().trim();
+  }, [workspaceTenantId]);
 
   const tryUnlock = useCallback(async () => {
     setErr("");
@@ -457,7 +457,7 @@ export function StudioAdminPage({ showToast }) {
         target_runtime_minutes: tr,
         mode: budgetMode === "auto" ? "auto" : "hands-off",
       };
-      const tid = budgetTenant.trim();
+      const tid = resolvedBudgetWorkspaceId.trim();
       if (tid) payload.tenant_id = tid;
       const r = await adminFetch("/v1/admin/budget-pipeline-test", {
         method: "POST",
@@ -490,7 +490,7 @@ export function StudioAdminPage({ showToast }) {
     } finally {
       setBudgetBusy(false);
     }
-  }, [budgetTitle, budgetTopic, budgetRuntime, budgetMode, budgetTenant, showToast]);
+  }, [budgetTitle, budgetTopic, budgetRuntime, budgetMode, resolvedBudgetWorkspaceId, showToast]);
 
   const lock = () => {
     setAdminKey("");
@@ -698,18 +698,19 @@ export function StudioAdminPage({ showToast }) {
                     <option value="auto">Auto</option>
                   </select>
                 </label>
-                <label className="subtle">
-                  Workspace id — empty uses server <code className="mono">DEFAULT_TENANT_ID</code>, which may{" "}
-                  <strong>not</strong> be the workspace where you set billing overrides. Pre-filled from your Studio session
-                  when logged in.
-                  <input
-                    value={budgetTenant}
-                    onChange={(e) => setBudgetTenant(e.target.value)}
-                    className="mono"
-                    placeholder="UUID"
-                    style={{ width: "100%", marginTop: 4 }}
-                  />
-                </label>
+                <p className="subtle" style={{ margin: 0, fontSize: "0.85rem" }}>
+                  <input type="hidden" name="director-budget-workspace-id" value={resolvedBudgetWorkspaceId} readOnly />
+                  Target workspace:{" "}
+                  {resolvedBudgetWorkspaceId ? (
+                    <code className="mono" title={resolvedBudgetWorkspaceId}>
+                      {formatShortId(resolvedBudgetWorkspaceId)}
+                    </code>
+                  ) : (
+                    <span>
+                      <em>none in session</em> — API uses server <code className="mono">DEFAULT_TENANT_ID</code>
+                    </span>
+                  )}
+                </p>
                 <div className="action-row" style={{ gap: 8, alignItems: "center" }}>
                   <button type="button" disabled={budgetBusy} onClick={() => void runBudgetPipeline()}>
                     {budgetBusy ? "Queueing…" : "Run budget pipeline"}

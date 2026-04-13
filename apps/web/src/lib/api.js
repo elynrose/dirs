@@ -130,26 +130,55 @@ function shouldIgnoreUnauthorizedForPath(path) {
   );
 }
 
+function _authorizationWasSent(mergedHeaders) {
+  const a = mergedHeaders?.Authorization ?? mergedHeaders?.authorization;
+  return typeof a === "string" && /^Bearer\s+\S/.test(a.trim());
+}
+
+/** Best-effort JSON detail.code from a 401 body (FastAPI HTTPException shape). */
+async function _detailCodeFrom401Response(response) {
+  try {
+    const body = await response.clone().json();
+    const d = body?.detail;
+    if (d && typeof d === "object" && typeof d.code === "string") return d.code;
+  } catch {
+    /* non-JSON or empty */
+  }
+  return null;
+}
+
 export const api = (path, opts = {}) => {
   const method = String(opts.method || "GET").toUpperCase();
   const baseHeaders =
     method === "GET" || method === "HEAD" ? {} : { "Content-Type": "application/json" };
   const auth = directorAuthHeaders();
+  const headers = {
+    ...baseHeaders,
+    ...auth,
+    ...(opts.headers || {}),
+  };
   return fetch(apiPath(path), {
     ...opts,
-    headers: {
-      ...baseHeaders,
-      ...auth,
-      ...(opts.headers || {}),
-    },
-  }).then((response) => {
+    headers,
+  }).then(async (response) => {
     if (
-      response.status === 401 &&
-      typeof window !== "undefined" &&
-      !shouldIgnoreUnauthorizedForPath(path)
+      response.status !== 401 ||
+      typeof window === "undefined" ||
+      shouldIgnoreUnauthorizedForPath(path)
     ) {
-      window.dispatchEvent(new CustomEvent("director:session-expired"));
+      return response;
     }
+    // No Bearer on this request — 401 is not "session expired" (e.g. omitted credentials bug,
+    // or expected unauthenticated call). Do not clear localStorage / force re-login.
+    if (!_authorizationWasSent(headers)) {
+      return response;
+    }
+    const code = await _detailCodeFrom401Response(response);
+    // Feature-gated 401 (e.g. custom styles) must not sign the user out of Studio.
+    if (code === "AUTH_REQUIRED") {
+      return response;
+    }
+    window.dispatchEvent(new CustomEvent("director:session-expired"));
     return response;
   });
 };
