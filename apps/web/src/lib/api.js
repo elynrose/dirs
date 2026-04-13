@@ -130,22 +130,6 @@ function shouldIgnoreUnauthorizedForPath(path) {
   );
 }
 
-/**
- * Only JWT / credential failures should clear the SaaS session. Other 401s (e.g. AUTH_REQUIRED
- * for a feature when the account state is odd) must not log the user out.
- */
-function shouldInvalidateSessionOn401Body(body) {
-  if (!body || typeof body !== "object") return false;
-  const d = body.detail;
-  if (d && typeof d === "object" && !Array.isArray(d) && d.code) {
-    return String(d.code) === "UNAUTHORIZED";
-  }
-  if (typeof d === "string") {
-    return /invalid or expired token|missing credentials|invalid token subject|user not found/i.test(d);
-  }
-  return false;
-}
-
 export const api = (path, opts = {}) => {
   const method = String(opts.method || "GET").toUpperCase();
   const baseHeaders =
@@ -158,23 +142,13 @@ export const api = (path, opts = {}) => {
       ...auth,
       ...(opts.headers || {}),
     },
-  }).then(async (response) => {
+  }).then((response) => {
     if (
       response.status === 401 &&
       typeof window !== "undefined" &&
       !shouldIgnoreUnauthorizedForPath(path)
     ) {
-      const ct = (response.headers.get("content-type") || "").toLowerCase();
-      if (ct.includes("application/json")) {
-        try {
-          const body = await response.clone().json();
-          if (shouldInvalidateSessionOn401Body(body)) {
-            window.dispatchEvent(new CustomEvent("director:session-expired"));
-          }
-        } catch {
-          /* ignore parse errors — do not force logout on ambiguous 401 */
-        }
-      }
+      window.dispatchEvent(new CustomEvent("director:session-expired"));
     }
     return response;
   });

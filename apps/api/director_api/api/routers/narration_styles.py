@@ -50,7 +50,7 @@ def create_narration_style(
     meta: dict = Depends(meta_dep),
 ) -> dict:
     if not auth.user_id:
-        raise HTTPException(status_code=403, detail={"code": "AUTH_REQUIRED", "message": "sign in to create styles"})
+        raise HTTPException(status_code=401, detail={"code": "AUTH_REQUIRED", "message": "sign in to create styles"})
     row = nar_svc.create_style(
         db,
         settings.default_tenant_id,
@@ -76,7 +76,7 @@ def patch_narration_style(
     meta: dict = Depends(meta_dep),
 ) -> dict:
     if not auth.user_id:
-        raise HTTPException(status_code=403, detail={"code": "AUTH_REQUIRED", "message": "sign in to edit styles"})
+        raise HTTPException(status_code=401, detail={"code": "AUTH_REQUIRED", "message": "sign in to edit styles"})
     if body.title is None and body.prompt_text is None:
         raise HTTPException(
             status_code=422,
@@ -109,7 +109,7 @@ def delete_narration_style(
     meta: dict = Depends(meta_dep),
 ) -> dict:
     if not auth.user_id:
-        raise HTTPException(status_code=403, detail={"code": "AUTH_REQUIRED", "message": "sign in to delete styles"})
+        raise HTTPException(status_code=401, detail={"code": "AUTH_REQUIRED", "message": "sign in to delete styles"})
     ok = nar_svc.delete_style(db, settings.default_tenant_id, int(auth.user_id), style_id)
     if not ok:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "style not found"})
