@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiBase, apiCompiledVideoUrl, sanitizeStudioUuid } from "../lib/api.js";
-import { directorAuthHeaders } from "../lib/directorAuthSession.js";
+import { apiBase, apiCompiledVideoUrl, apiForm, apiRelativePathFromFullUrl, sanitizeStudioUuid } from "../lib/api.js";
 
 /**
  * Polls the API for an on-disk compiled video (exports/…/final_cut.mp4, etc.) and shows inline playback + download.
@@ -20,7 +19,7 @@ export function CompiledVideoPreview({ projectId, timelineVersionId }) {
     }
     const url = apiCompiledVideoUrl(pid, tv, { cacheBust: Date.now() });
     try {
-      const r = await fetch(url, { method: "HEAD", headers: directorAuthHeaders() });
+      const r = await apiForm(apiRelativePathFromFullUrl(url), { method: "HEAD" });
       const ok = r.ok;
       setAvailable(ok);
       if (ok) {

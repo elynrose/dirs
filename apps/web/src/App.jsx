@@ -17,6 +17,7 @@ import {
 // Extracted lib / hooks / components
 import {
   api,
+  apiForm,
   apiBase,
   viteApiBaseEnvRaw,
   apiPath,
@@ -2003,7 +2004,7 @@ export default function App() {
       fd.append("file", f);
       fd.append("title", f.name || "Uploaded music");
       fd.append("license_or_source_ref", lic);
-      const r = await fetch(apiPath(`/v1/projects/${encodeURIComponent(projectId)}/music-beds/upload`), {
+      const r = await apiForm(`/v1/projects/${encodeURIComponent(projectId)}/music-beds/upload`, {
         method: "POST",
         body: fd,
       });
@@ -2542,7 +2543,7 @@ export default function App() {
       try {
         const fd = new FormData();
         fd.append("file", file, file.name || "upload");
-        const r = await fetch(apiPath("/v1/settings/chatterbox-voice-ref"), {
+        const r = await apiForm("/v1/settings/chatterbox-voice-ref", {
           method: "POST",
           body: fd,
         });
@@ -4653,7 +4654,7 @@ export default function App() {
       const fd = new FormData();
       fd.append("file", f, f.name || "upload");
       fd.append("clip_kind", sceneClipUploadKind);
-      const r = await fetch(apiPath(`/v1/scenes/${encodeURIComponent(selectedSceneId)}/upload-clip`), {
+      const r = await apiForm(`/v1/scenes/${encodeURIComponent(selectedSceneId)}/upload-clip`, {
         method: "POST",
         body: fd,
       });

@@ -147,6 +147,30 @@ async function _detailCodeFrom401Response(response) {
   return null;
 }
 
+/**
+ * Same 401 → session-expired policy as `api()` (Bearer sent, not AUTH_REQUIRED, etc.).
+ * @param {string} path — same as `api()` (e.g. `/v1/...`)
+ * @param {Record<string, string>} mergedHeaders — headers actually sent on the request
+ */
+async function _applySessionPolicyOn401(path, mergedHeaders, response) {
+  if (
+    response.status !== 401 ||
+    typeof window === "undefined" ||
+    shouldIgnoreUnauthorizedForPath(path)
+  ) {
+    return response;
+  }
+  if (!_authorizationWasSent(mergedHeaders)) {
+    return response;
+  }
+  const code = await _detailCodeFrom401Response(response);
+  if (code === "AUTH_REQUIRED") {
+    return response;
+  }
+  window.dispatchEvent(new CustomEvent("director:session-expired"));
+  return response;
+}
+
 export const api = (path, opts = {}) => {
   const method = String(opts.method || "GET").toUpperCase();
   const baseHeaders =
@@ -160,25 +184,35 @@ export const api = (path, opts = {}) => {
   return fetch(apiPath(path), {
     ...opts,
     headers,
-  }).then(async (response) => {
-    if (
-      response.status !== 401 ||
-      typeof window === "undefined" ||
-      shouldIgnoreUnauthorizedForPath(path)
-    ) {
-      return response;
-    }
-    // No Bearer on this request — 401 is not "session expired" (e.g. omitted credentials bug,
-    // or expected unauthenticated call). Do not clear localStorage / force re-login.
-    if (!_authorizationWasSent(headers)) {
-      return response;
-    }
-    const code = await _detailCodeFrom401Response(response);
-    // Feature-gated 401 (e.g. custom styles) must not sign the user out of Studio.
-    if (code === "AUTH_REQUIRED") {
-      return response;
-    }
-    window.dispatchEvent(new CustomEvent("director:session-expired"));
-    return response;
-  });
+  }).then((response) => _applySessionPolicyOn401(path, headers, response));
 };
+
+/**
+ * Fetch with Bearer + X-Tenant-Id but **without** forcing `Content-Type: application/json`
+ * (use for `FormData` uploads and other non-JSON bodies). Same 401 session policy as `api()`.
+ */
+export function apiForm(path, opts = {}) {
+  const auth = directorAuthHeaders();
+  const headers = {
+    ...auth,
+    ...(opts.headers || {}),
+  };
+  return fetch(apiPath(path), {
+    ...opts,
+    headers,
+  }).then((response) => _applySessionPolicyOn401(path, headers, response));
+}
+
+/** Strip origin from an absolute API URL so it can be passed to `api()` / `apiForm()` (same as `apiPath` input). */
+export function apiRelativePathFromFullUrl(fullUrl) {
+  const s = String(fullUrl || "");
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      const u = new URL(s);
+      return `${u.pathname}${u.search}`;
+    } catch {
+      return s;
+    }
+  }
+  return s;
+}
