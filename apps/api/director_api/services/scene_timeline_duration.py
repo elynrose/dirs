@@ -14,19 +14,24 @@ from director_api.db.models import NarrationTrack, Scene
 from ffmpeg_pipelines.paths import path_from_storage_url, path_is_readable_file
 from ffmpeg_pipelines.probe import ffprobe_duration_seconds
 
+DEFAULT_SCENE_VO_TAIL_PADDING_SEC = 1.5
+
 
 def scene_vo_tail_padding_sec_from_settings(settings: Any) -> float:
     """Tail padding from merged Settings (env + app_settings); clamped for safety."""
+    d = DEFAULT_SCENE_VO_TAIL_PADDING_SEC
     try:
-        v = float(getattr(settings, "scene_vo_tail_padding_sec", 5.0) or 5.0)
+        v = float(getattr(settings, "scene_vo_tail_padding_sec", d) or d)
     except (TypeError, ValueError):
-        return 5.0
+        return d
     if v != v:  # NaN
-        return 5.0
+        return d
     return max(0.0, min(120.0, v))
 
 
-def min_planned_duration_int_for_narration_sec(narr_sec: float, *, tail_padding_sec: float = 5.0) -> int:
+def min_planned_duration_int_for_narration_sec(
+    narr_sec: float, *, tail_padding_sec: float = DEFAULT_SCENE_VO_TAIL_PADDING_SEC
+) -> int:
     """Integer ``planned_duration_sec`` so the scene budget is at least narration + tail padding (3–600)."""
     narr = max(0.0, float(narr_sec))
     pad = max(0.0, float(tail_padding_sec))
@@ -97,7 +102,7 @@ def effective_scene_visual_budget_sec(
     storage_root: Path,
     ffprobe_bin: str = "ffprobe",
     timeout_sec: float = 120.0,
-    tail_padding_sec: float = 5.0,
+    tail_padding_sec: float = DEFAULT_SCENE_VO_TAIL_PADDING_SEC,
 ) -> float:
     """
     Seconds of visual timeline to allocate for one scene's primary beat.
@@ -126,7 +131,7 @@ def bump_scene_planned_duration_for_narration(
     scene: Scene,
     narration_sec: float,
     *,
-    tail_padding_sec: float = 5.0,
+    tail_padding_sec: float = DEFAULT_SCENE_VO_TAIL_PADDING_SEC,
 ) -> bool:
     """Ensure ``planned_duration_sec`` covers VO + tail padding. Returns True if the row was raised."""
     target = min_planned_duration_int_for_narration_sec(narration_sec, tail_padding_sec=tail_padding_sec)

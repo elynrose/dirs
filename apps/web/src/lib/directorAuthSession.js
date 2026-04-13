@@ -42,15 +42,19 @@ export function clearDirectorAuthSession() {
   }
 }
 
-/** Headers merged into `api()` when a token and tenant are stored. */
+/**
+ * Headers merged into `api()` when SaaS session values exist.
+ * Send each header independently: if only one of token/tenant is present, the API returns
+ * `TENANT_REQUIRED` or `missing credentials` instead of masking a valid token with empty headers
+ * (which produced confusing 401s during long runs / workspace edge cases).
+ */
 export function directorAuthHeaders() {
   const token = getDirectorAuthToken().trim();
   const tenant = getDirectorTenantId().trim();
-  if (!token || !tenant) return {};
-  return {
-    Authorization: `Bearer ${token}`,
-    "X-Tenant-Id": tenant,
-  };
+  const out = {};
+  if (token) out.Authorization = `Bearer ${token}`;
+  if (tenant) out["X-Tenant-Id"] = tenant;
+  return out;
 }
 
 /** Query suffix for EventSource (no custom headers). */

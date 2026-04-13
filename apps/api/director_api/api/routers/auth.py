@@ -321,6 +321,46 @@ def logout(response: Response) -> dict[str, Any]:
     return {"data": {"ok": True}, "meta": {}}
 
 
+@router.post("/auth/refresh")
+def auth_refresh(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Issue a new JWT for the current user and workspace. Call while the token is still valid if ``director_jwt_expire_hours`` is short."""
+    settings = get_settings()
+    if not settings.director_auth_enabled:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "not found"})
+    user = _require_user(request, db)
+    tid = (
+        (request.headers.get("x-tenant-id") or request.headers.get("X-Tenant-Id") or "").strip()
+        or (request.query_params.get("tenant_id") or "").strip()
+    )
+    if not tid:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "TENANT_REQUIRED", "message": "X-Tenant-Id header is required"},
+        )
+    row = db.scalar(
+        select(TenantMembership).where(
+            TenantMembership.user_id == user.id,
+            TenantMembership.tenant_id == tid,
+        )
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "FORBIDDEN", "message": "not a member of this workspace"},
+        )
+    token = issue_access_token(settings=settings, user_id=user.id, tenant_id=tid)
+    tenants = _serialize_tenants(db, _tenant_rows_for_user(db, user.id))
+    return {
+        "data": {
+            "access_token": token,
+            "tenant_id": tid,
+            "tenants": [t.model_dump(mode="json") for t in tenants],
+            "email": user.email,
+        },
+        "meta": {},
+    }
+
+
 @router.get("/auth/me")
 def auth_me(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Return session info and all workspaces (valid Bearer or session cookie; no X-Tenant-Id)."""

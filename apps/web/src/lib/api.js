@@ -118,7 +118,7 @@ export function apiChatterboxVoiceRefContentUrl(cacheBust) {
  * Thin fetch wrapper that:
  * - Defaults GET/HEAD to no Content-Type header.
  * - Passes through any extra options (method, headers, body, signal, …).
- * - Adds Bearer + X-Tenant-Id when a SaaS session is stored (see directorAuthSession.js).
+ * - Adds Bearer and/or X-Tenant-Id when stored (see directorAuthSession.js); both are required for API routes that use `auth_context_dep`.
  */
 function shouldIgnoreUnauthorizedForPath(path) {
   const p = String(path || "");

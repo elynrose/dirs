@@ -60,12 +60,7 @@ def revise_scene_narration_llm(
     usage_sink: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Return revised narration_text or None to use deterministic fallback."""
-    sys = (
-        "You are a documentary script editor. Return ONLY JSON with key narration_text (string): "
-        "revised voice-over for this scene, applying the critic recommendations. "
-        "Preserve facts; write for spoken broadcast/streaming documentary narration — calm, precise, "
-        "third person or neutral observational voice; no tutorial tone, no bullets, no 'as we saw earlier'."
-    )
+    sys = get_llm_prompt_text("phase4_scene_narration_revise_base")
     if (narration_style or "").strip():
         sys += " Overall voice brief: " + (narration_style.strip()[:1200])
     user = json.dumps(

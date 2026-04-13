@@ -1384,6 +1384,45 @@ export default function App() {
     return () => window.removeEventListener("director:session-expired", onSessionExpired);
   }, [resetWorkspaceForTenantBoundary]);
 
+  /** Proactively rotate JWT before expiry when operators use a short ``director_jwt_expire_hours`` (long rough/final-cut runs). */
+  const tryRefreshSaaSAccessToken = useCallback(async () => {
+    if (authBootstrap.mode !== "saas" || authBootstrap.needLogin) return;
+    const token = getDirectorAuthToken().trim();
+    const tenant = getDirectorTenantId().trim();
+    if (!token || !tenant) return;
+    let expMs = null;
+    try {
+      const part = token.split(".")[1];
+      if (!part) return;
+      const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+      const payload = JSON.parse(atob(b64));
+      if (typeof payload.exp === "number") expMs = payload.exp * 1000;
+    } catch {
+      return;
+    }
+    if (expMs == null || expMs - Date.now() > 45 * 60 * 1000) return;
+    try {
+      const r = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
+      const b = await parseJson(r);
+      if (r.ok && b?.data?.access_token) {
+        setDirectorAuthSession({
+          accessToken: b.data.access_token,
+          tenantId: String(b.data.tenant_id || tenant).trim(),
+        });
+        setEventAuthKey((k) => k + 1);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [authBootstrap.mode, authBootstrap.needLogin]);
+
+  useEffect(() => {
+    if (!authBootstrap.done || authBootstrap.needLogin || authBootstrap.mode !== "saas") return;
+    const id = setInterval(() => void tryRefreshSaaSAccessToken(), 5 * 60 * 1000);
+    void tryRefreshSaaSAccessToken();
+    return () => clearInterval(id);
+  }, [authBootstrap.done, authBootstrap.needLogin, authBootstrap.mode, tryRefreshSaaSAccessToken]);
+
   useEffect(() => {
     if (!adapterSmokePollActive || !adapterSmokeJobId) return;
     if (adapterSmokePollErr) {
@@ -6705,7 +6744,7 @@ export default function App() {
               min={0}
               max={120}
               step={0.5}
-              value={Number(appConfig.scene_vo_tail_padding_sec ?? 5)}
+              value={Number(appConfig.scene_vo_tail_padding_sec ?? 1.5)}
               onChange={(e) => {
                 const v = Math.max(0, Math.min(120, Number.parseFloat(e.target.value) || 5));
                 setAppConfig((p) => ({ ...p, scene_vo_tail_padding_sec: v }));

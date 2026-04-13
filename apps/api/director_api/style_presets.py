@@ -18,15 +18,16 @@ DEFAULT_VISUAL_PRESET = "cinematic_documentary"
 _NARRATION: dict[str, tuple[str, str]] = {
     "narrative_documentary": (
         "Narrative documentary (story-first)",
-        "Narrative documentary voice: tell a story, not a research report. Open with a strong hook and clear "
-        "stakes; build scenes with turning points, cause-and-effect, and a through-line the listener can follow. "
-        "Weave facts, names, and dates only where they advance the plot—avoid abstract survey pacing, "
-        "literature-review framing, thesis-style abstracts, or stacks of hedging. Use vivid concrete sensory "
-        "detail where it matters; dramatic contrasts and occasional refrains are welcome. Prefer confident "
-        "declarative delivery; use rhetorical questions sparingly for tension. Third person for the narrative "
-        "spine; direct address to the audience only when the script calls for it (e.g. a closing reflection). "
-        "Frame human stakes to match the topic. Stay factual and broadcast-safe; no clickbait or invented "
-        "quotations.",
+        "Narrative documentary voice: tell a clear story, not a research paper. Use plain language a curious "
+        "15-year-old can follow: short-to-medium sentences, everyday words, and one main idea per sentence when "
+        "possible. If you must use a technical or rare term, explain it in simple words in the same beat. Avoid "
+        "stacked subordinate clauses, ornate phrasing, and dense ‘essay’ tone. Each scene’s voice-over must be "
+        "at least two full sentences (real sentences—not one long chain of commas). Open with a hook and clear "
+        "stakes; build turning points and cause-and-effect the listener can track. Weave facts, names, and dates "
+        "only where they move the story—skip abstract survey pacing and thesis-style framing. Use concrete sensory "
+        "detail where it helps. Prefer confident, simple declarative lines; rhetorical questions only sparingly. "
+        "Third person for the spine; address the viewer directly only when the script calls for it. Stay factual "
+        "and broadcast-safe; no clickbait or invented quotations.",
     ),
     "investigative_journalism": (
         "Investigative / accountability",

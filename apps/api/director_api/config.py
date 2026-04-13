@@ -460,7 +460,7 @@ class Settings(BaseSettings):
     ffmpeg_timeout_sec: float = 3600.0
     export_chapter_title_card_sec: float = Field(default=0.0, ge=0.0, le=30.0)
     scene_vo_tail_padding_sec: float = Field(
-        default=5.0,
+        default=1.5,
         ge=0.0,
         le=120.0,
         description="Silence/hold after spoken VO before next beat (export, planned_duration bumps, timeline slots).",

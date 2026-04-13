@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from director_api.config import Settings
 from director_api.db.models import AppSetting
+from director_api.services.scene_timeline_duration import DEFAULT_SCENE_VO_TAIL_PADDING_SEC
 
 log = structlog.get_logger(__name__)
 
@@ -294,5 +295,6 @@ def scene_vo_tail_padding_sec_for_tenant(db: Session, tenant_id: str) -> float:
     from director_api.config import get_settings
 
     merged = resolve_runtime_settings(db, get_settings(), tenant_id)
-    v = float(getattr(merged, "scene_vo_tail_padding_sec", 5.0) or 5.0)
+    d = DEFAULT_SCENE_VO_TAIL_PADDING_SEC
+    v = float(getattr(merged, "scene_vo_tail_padding_sec", d) or d)
     return max(0.0, min(120.0, v))
