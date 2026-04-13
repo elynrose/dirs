@@ -1906,12 +1906,6 @@ def _run_agent_full_pipeline_tail(
         raise ValueError("FULL_VIDEO_NO_SCENES")
 
     run = db.get(AgentRun, agent_run_uuid)
-    if run:
-        # Clear pre-tail latch (e.g. story_research_review) so UIs that read current_step do not stay on an old phase
-        # for the whole media tail; steps_json running/succeeded rows drive the true step.
-        run.current_step = None
-        db.commit()
-
     run_opts_pre = run.pipeline_options_json if isinstance(run.pipeline_options_json, dict) else {}
     allow_unapproved_media = bool(run_opts_pre.get("unattended"))
     if "auto_generate_scene_videos" in run_opts_pre:
@@ -1951,6 +1945,7 @@ def _run_agent_full_pipeline_tail(
         run = db.get(AgentRun, agent_run_uuid)
         if need_character_gen:
             if run:
+                run.current_step = "auto_characters"
                 _append_event(run, "auto_characters", "running")
             db.commit()
             try:
@@ -2037,6 +2032,7 @@ def _run_agent_full_pipeline_tail(
     if pipeline_oversight_svc.tail_should_run_with_force("auto_images", tr, fs):
         run = db.get(AgentRun, agent_run_uuid)
         if run:
+            run.current_step = "auto_images"
             _append_event(run, "auto_images", "running", scene_total=len(all_scenes))
         db.commit()
         img_failed = _auto_image_pass(all_scenes)
@@ -2089,6 +2085,7 @@ def _run_agent_full_pipeline_tail(
     if run_tail_videos:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
+            run.current_step = "auto_videos"
             _append_event(run, "auto_videos", "running", scene_total=len(all_scenes))
         db.commit()
         had_video_at_start = {sc.id for sc in all_scenes if _scene_has_succeeded_video(db, sc.id)}
@@ -2175,15 +2172,22 @@ def _run_agent_full_pipeline_tail(
                 skipped_existing=video_skipped,
             )
             db.commit()
-    elif auto_scene_videos:
+    else:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
-            _append_event(run, "auto_videos", "skipped", reason="oversight_tail_resume")
+            skip_reason = (
+                "oversight_tail_resume"
+                if auto_scene_videos
+                else "auto_generate_scene_videos_false"
+            )
+            run.current_step = "auto_videos"
+            _append_event(run, "auto_videos", "skipped", reason=skip_reason)
         db.commit()
 
     if pipeline_oversight_svc.tail_should_run_with_force("auto_narration", tr, fs):
         run = db.get(AgentRun, agent_run_uuid)
         if run:
+            run.current_step = "auto_narration"
             _append_event(run, "auto_narration", "running")
         db.commit()
         all_scenes_narr = _ordered_scenes_for_project(db, pid)
@@ -2272,6 +2276,7 @@ def _run_agent_full_pipeline_tail(
         return False
     run = db.get(AgentRun, agent_run_uuid)
     if run:
+        run.current_step = "auto_timeline"
         _append_event(run, "auto_timeline", "running")
     db.commit()
     clips: list[dict[str, Any]] = []
@@ -2467,6 +2472,7 @@ def _run_agent_full_pipeline_tail(
         return False
     run = db.get(AgentRun, agent_run_uuid)
     if run:
+        run.current_step = "auto_rough_cut"
         _append_event(run, "auto_rough_cut", "running")
     db.commit()
     rj = _synthetic_job(
@@ -2495,6 +2501,7 @@ def _run_agent_full_pipeline_tail(
     db.refresh(tv)
     run = db.get(AgentRun, agent_run_uuid)
     if run:
+        run.current_step = "auto_final_cut"
         _append_event(run, "auto_final_cut", "running")
     db.commit()
     fj = _synthetic_job(

@@ -492,6 +492,67 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     }
   }, [budgetTitle, budgetTopic, budgetRuntime, budgetMode, resolvedBudgetWorkspaceId, showToast]);
 
+  const continueBudgetPipeline = useCallback(async () => {
+    const pid = budgetLast?.project?.id;
+    if (!pid || String(pid).trim() === "") {
+      setBudgetErr("Run a budget pipeline once first — we need the project id from the last queued run.");
+      return;
+    }
+    setBudgetErr("");
+    const tr = Math.min(120, Math.max(2, parseInt(String(budgetRuntime).trim(), 10) || 5));
+    setBudgetBusy(true);
+    try {
+      const payload = {
+        continue_pipeline: true,
+        project_id: String(pid).trim(),
+        title: budgetTitle.trim() || "Budget pipeline test",
+        topic: "",
+        target_runtime_minutes: tr,
+        mode: budgetMode === "auto" ? "auto" : "hands-off",
+      };
+      const tid = resolvedBudgetWorkspaceId.trim();
+      if (tid) payload.tenant_id = tid;
+      const r = await adminFetch("/v1/admin/budget-pipeline-test", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const body = await parseJson(r);
+      if (!r.ok) {
+        setBudgetErr(apiErrorMessage(body) || `HTTP ${r.status}`);
+        return;
+      }
+      const data = body.data ?? null;
+      setBudgetLast(data);
+      const rid = data?.agent_run?.id;
+      if (rid) {
+        setBudgetRunHistory((h) => {
+          const next = [
+            ...(h || []),
+            {
+              ts: new Date().toISOString(),
+              agent_run_id: String(rid),
+              poll_url: data.poll_url != null ? String(data.poll_url) : null,
+              continued: true,
+            },
+          ];
+          return next.slice(-50);
+        });
+      }
+      showToast?.("Budget pipeline continued (skips completed steps)", { type: "success" });
+    } catch (e) {
+      setBudgetErr(formatUserFacingError(e));
+    } finally {
+      setBudgetBusy(false);
+    }
+  }, [
+    budgetLast,
+    budgetTitle,
+    budgetRuntime,
+    budgetMode,
+    resolvedBudgetWorkspaceId,
+    showToast,
+  ]);
+
   const lock = () => {
     setAdminKey("");
     setUnlocked(false);
@@ -658,9 +719,11 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
             <div className="panel" style={{ padding: 12, marginBottom: 12, maxWidth: 640 }}>
               <h3 style={{ margin: "0 0 8px", fontSize: "1rem" }}>Budget pipeline test</h3>
               <p className="subtle" style={{ margin: "0 0 12px", fontSize: "0.88rem" }}>
-                Same run as <code className="mono">scripts/budget_pipeline_test.py</code> — placeholder images and local
-                FFmpeg video; narration uses your workspace default TTS (not FFmpeg ding).{" "}
-                <code className="mono">full_video</code> pipeline. Requires a Celery worker processing the queue.
+                Same run as <code className="mono">scripts/budget_pipeline_test.py</code> — placeholder images; scene
+                videos off by default (timeline uses stills). Narration uses your workspace default TTS.{" "}
+                <code className="mono">full_video</code> pipeline. Requires a Celery worker.{" "}
+                <strong>Continue budget pipeline</strong> re-queues on the last project id with{" "}
+                <code className="mono">continue_from_existing</code> so completed phases are skipped.
               </p>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <label className="subtle">
@@ -711,9 +774,22 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                     </span>
                   )}
                 </p>
-                <div className="action-row" style={{ gap: 8, alignItems: "center" }}>
+                <div className="action-row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <button type="button" disabled={budgetBusy} onClick={() => void runBudgetPipeline()}>
                     {budgetBusy ? "Queueing…" : "Run budget pipeline"}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={budgetBusy || !budgetLast?.project?.id}
+                    title={
+                      budgetLast?.project?.id ?
+                        "Enqueue another agent run on this project; worker skips steps already done."
+                      : "Queue a run first to capture a project id."
+                    }
+                    onClick={() => void continueBudgetPipeline()}
+                  >
+                    {budgetBusy ? "Queueing…" : "Continue budget pipeline"}
                   </button>
                 </div>
                 {budgetErr ? <p className="err">{budgetErr}</p> : null}

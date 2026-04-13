@@ -206,7 +206,8 @@ def main() -> int:
     pipeline_options: dict[str, Any] = {
         "through": "full_video",
         "narration_granularity": "scene",
-        "auto_generate_scene_videos": True,
+        # Timeline uses stills; skip per-scene MP4 generation so a worker glitch there cannot abort the run.
+        "auto_generate_scene_videos": False,
     }
     if args.mode == "hands-off":
         pipeline_options["unattended"] = True

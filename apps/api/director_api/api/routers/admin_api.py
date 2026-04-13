@@ -12,7 +12,7 @@ from typing import Any, Iterable, Literal
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -1085,13 +1085,43 @@ class AdminBudgetPipelineTestBody(BaseModel):
     """Same autonomous brief shape as ``scripts/budget_pipeline_test.py`` (placeholder images, local FFmpeg video; narration uses workspace TTS)."""
 
     title: str = Field(default="Budget pipeline test", min_length=1, max_length=500)
-    topic: str = Field(..., min_length=1, max_length=8000)
+    topic: str = Field(default="", max_length=8000)
     target_runtime_minutes: int = Field(default=5, ge=2, le=120)
     mode: Literal["auto", "hands-off"] = "hands-off"
     tenant_id: str | None = Field(
         default=None,
         description="Workspace id; defaults to platform default tenant from settings.",
     )
+    continue_pipeline: bool = Field(
+        default=False,
+        description="If true, enqueue on ``project_id`` with continue_from_existing (skip completed phases).",
+    )
+    project_id: uuid.UUID | None = Field(
+        default=None,
+        description="Existing project to resume; required when continue_pipeline is true.",
+    )
+
+    @model_validator(mode="after")
+    def _budget_continue_rules(self) -> "AdminBudgetPipelineTestBody":
+        if self.continue_pipeline:
+            if self.project_id is None:
+                raise ValueError("project_id is required when continue_pipeline is true")
+        else:
+            if not (self.topic or "").strip():
+                raise ValueError("topic is required for a new budget pipeline run")
+        return self
+
+
+def _budget_smoke_pipeline_options(mode: str) -> dict[str, Any]:
+    """Shared pipeline_options for admin budget / CLI smoke runs."""
+    opts: dict[str, Any] = {
+        "through": "full_video",
+        "narration_granularity": "scene",
+        "auto_generate_scene_videos": False,
+    }
+    if mode == "hands-off":
+        opts["unattended"] = True
+    return opts
 
 
 @router.post("/budget-pipeline-test")
@@ -1121,34 +1151,35 @@ def admin_budget_pipeline_test(
 
     settings = resolve_runtime_settings(db, base, tid)
 
-    brief = ProjectCreate(
-        title=body.title.strip(),
-        topic=body.topic.strip(),
-        target_runtime_minutes=body.target_runtime_minutes,
-        audience="general",
-        tone="documentary",
-        narration_style="preset:narrative_documentary",
-        visual_style="preset:cinematic_documentary",
-        preferred_image_provider="placeholder",
-        preferred_video_provider="local_ffmpeg",
-        # Omit speech provider so narration uses workspace ``active_speech_provider`` (real TTS), not FFmpeg ding.
-    )
-    pipeline_options: dict[str, Any] = {
-        "through": "full_video",
-        "narration_granularity": "scene",
-        "auto_generate_scene_videos": bool(getattr(settings, "agent_run_auto_generate_scene_videos", True)),
-    }
-    if body.mode == "hands-off":
-        pipeline_options["unattended"] = True
+    po: dict[str, Any] = _budget_smoke_pipeline_options(body.mode)
 
-    create_body = AgentRunCreate(brief=brief, pipeline_options=pipeline_options)
-
-    # Platform admin smoke test: do not enforce workspace subscription gates (project cap,
-    # hands-off / full-through entitlements). Caller is already authenticated via AdminDep.
-    p = _project_from_brief(db, settings, create_body, tenant_id_override=tid)
-
-    po: dict[str, Any] = dict(create_body.pipeline_options or {})
-    po["continue_from_existing"] = False
+    if body.continue_pipeline:
+        assert body.project_id is not None
+        p = db.get(Project, body.project_id)
+        if p is None or p.tenant_id != tid:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "NOT_FOUND", "message": "project not found for this workspace"},
+            )
+        po["continue_from_existing"] = True
+    else:
+        brief = ProjectCreate(
+            title=body.title.strip(),
+            topic=(body.topic or "").strip(),
+            target_runtime_minutes=body.target_runtime_minutes,
+            audience="general",
+            tone="documentary",
+            narration_style="preset:narrative_documentary",
+            visual_style="preset:cinematic_documentary",
+            preferred_image_provider="placeholder",
+            preferred_video_provider="local_ffmpeg",
+            # Omit speech provider so narration uses workspace ``active_speech_provider`` (real TTS), not FFmpeg ding.
+        )
+        create_body = AgentRunCreate(brief=brief, pipeline_options=po)
+        # Platform admin smoke test: do not enforce workspace subscription gates (project cap,
+        # hands-off / full-through entitlements). Caller is already authenticated via AdminDep.
+        p = _project_from_brief(db, settings, create_body, tenant_id_override=tid)
+        po["continue_from_existing"] = False
 
     run = AgentRun(
         id=uuid.uuid4(),
@@ -1169,13 +1200,20 @@ def admin_budget_pipeline_test(
         agent_run_id=str(run.id),
         project_id=str(p.id),
         tenant_id=tid,
+        continue_pipeline=bool(body.continue_pipeline),
+    )
+    hint = (
+        "Continuing on existing project — worker skips phases already satisfied (oversight + resume rules). "
+        "Poll GET /v1/agent-runs/{id} until terminal status."
+        if body.continue_pipeline
+        else "Same as scripts/budget_pipeline_test.py — poll GET /v1/agent-runs/{id} until terminal status."
     )
     payload = {
         "data": {
             "agent_run": AgentRunOut.model_validate(run).model_dump(mode="json"),
             "project": ProjectOut.model_validate(p).model_dump(mode="json"),
             "poll_url": f"/v1/agent-runs/{run.id}",
-            "hint": "Same as scripts/budget_pipeline_test.py — poll GET /v1/agent-runs/{id} until terminal status.",
+            "hint": hint,
         },
         "meta": {},
     }
