@@ -75,6 +75,12 @@ function friendlyStepLine(ev) {
   return `${label}${status ? ` — ${status}` : ""}`;
 }
 
+const AGENT_RUN_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "blocked"]);
+
+function isAgentRunTerminalStatus(st) {
+  return AGENT_RUN_TERMINAL_STATUSES.has(String(st || "").trim());
+}
+
 /**
  * Hands-off-only Studio page: project list + setup guide chat + chat-style progress for autonomous runs.
  */
@@ -108,6 +114,8 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
   const [agentRunRows, setAgentRunRows] = useState([]);
   const [agentRunsLoading, setAgentRunsLoading] = useState(false);
   const [agentRunsListTick, setAgentRunsListTick] = useState(0);
+  /** Which run id is currently performing stop/delete from the sidebar list. */
+  const [runListActionId, setRunListActionId] = useState("");
 
   const lastStepsLenRef = useRef(0);
   const messageIdRef = useRef(0);
@@ -316,6 +324,68 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
       }
     },
     [selectedProjectId, pollPipeline],
+  );
+
+  const stopAgentRunInList = useCallback(
+    async (runId) => {
+      const id = String(runId || "").trim();
+      if (!id) return;
+      setRunListActionId(id);
+      setError("");
+      try {
+        const r = await api(`/v1/agent-runs/${encodeURIComponent(id)}/control`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "stop" }),
+        });
+        const b = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+        if (String(agentRunId) === id) {
+          appendMessage("assistant", "Stop requested — worker will cancel when safe.", { kind: "system" });
+        }
+        setAgentRunsListTick((n) => n + 1);
+      } catch (e) {
+        setError(formatUserFacingError(e));
+      } finally {
+        setRunListActionId("");
+      }
+    },
+    [agentRunId, appendMessage],
+  );
+
+  const deleteAgentRunInList = useCallback(
+    async (runId) => {
+      const id = String(runId || "").trim();
+      if (!id) return;
+      setRunListActionId(id);
+      setError("");
+      try {
+        const r = await api(`/v1/agent-runs/${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) {
+          const b = await parseJson(r);
+          throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+        }
+        if (String(agentRunId) === id) {
+          lastStepsLenRef.current = 0;
+          doneAnnouncedRef.current = false;
+          setAgentRunId("");
+          setRunStatus("");
+          setMessages([]);
+          appendMessage("assistant", "Run deleted. Generate a new run or pick another from the list.", { kind: "system" });
+          try {
+            if (selectedProjectId) localStorage.removeItem(storageKeyForProject(selectedProjectId));
+          } catch {
+            /* ignore */
+          }
+        }
+        setAgentRunsListTick((n) => n + 1);
+      } catch (e) {
+        setError(formatUserFacingError(e));
+      } finally {
+        setRunListActionId("");
+      }
+    },
+    [agentRunId, appendMessage, selectedProjectId],
   );
 
   useEffect(() => {
@@ -831,24 +901,69 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
               </p>
             ) : (
               <ul style={{ listStyle: "none", margin: "8px 0 0", padding: 0, maxHeight: 220, overflowY: "auto" }}>
-                {agentRunRows.map((run) => (
-                  <li key={run.id} style={{ marginBottom: 6 }}>
-                    <button
-                      type="button"
-                      className={`chat-studio__project-row${String(agentRunId) === String(run.id) ? " is-active" : ""}`}
-                      style={{ width: "100%", textAlign: "left", padding: "6px 8px" }}
-                      onClick={() => void loadAgentRunIntoPanel(String(run.id))}
+                {agentRunRows.map((run) => {
+                  const rid = String(run.id || "");
+                  const st = run.status != null ? String(run.status) : "";
+                  const terminal = isAgentRunTerminalStatus(st);
+                  const rowBusy = runListActionId === rid;
+                  return (
+                    <li
+                      key={rid}
+                      style={{
+                        marginBottom: 6,
+                        display: "flex",
+                        gap: 6,
+                        alignItems: "stretch",
+                      }}
                     >
-                      <span className="chat-studio__project-title mono" style={{ fontSize: "0.75rem", display: "block" }}>
-                        {String(run.id).slice(0, 8)}…
-                      </span>
-                      <span className="subtle chat-studio__project-meta" style={{ fontSize: "0.72rem" }}>
-                        {run.status || "—"}
-                        {run.created_at ? ` · ${String(run.created_at).replace("T", " ").slice(0, 16)}` : ""}
-                      </span>
-                    </button>
-                  </li>
-                ))}
+                      <button
+                        type="button"
+                        className={`chat-studio__project-row${String(agentRunId) === rid ? " is-active" : ""}`}
+                        style={{ flex: 1, minWidth: 0, textAlign: "left", padding: "6px 8px" }}
+                        onClick={() => void loadAgentRunIntoPanel(rid)}
+                      >
+                        <span className="chat-studio__project-title mono" style={{ fontSize: "0.75rem", display: "block" }}>
+                          {rid.slice(0, 8)}…
+                        </span>
+                        <span className="subtle chat-studio__project-meta" style={{ fontSize: "0.72rem" }}>
+                          {st || "—"}
+                          {run.created_at ? ` · ${String(run.created_at).replace("T", " ").slice(0, 16)}` : ""}
+                        </span>
+                      </button>
+                      {terminal ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          title="Remove this run from the server"
+                          disabled={rowBusy}
+                          style={{ flexShrink: 0, padding: "4px 8px", fontSize: "0.72rem" }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void deleteAgentRunInList(rid);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="secondary"
+                          title="Request stop at next safe point"
+                          disabled={rowBusy}
+                          style={{ flexShrink: 0, padding: "4px 8px", fontSize: "0.72rem" }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void stopAgentRunInList(rid);
+                          }}
+                        >
+                          Stop
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

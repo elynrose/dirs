@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -27,6 +27,73 @@ router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
 log = structlog.get_logger(__name__)
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "blocked"})
+
+
+def _apply_stop_to_agent_run(db: Session, r: AgentRun) -> AgentRun:
+    """Set stop flag (and cancel immediately if still queued). Caller must load `r` for this tenant."""
+    if r.status in _TERMINAL_STATUSES:
+        return r
+    ctrl = dict(r.pipeline_control_json) if isinstance(r.pipeline_control_json, dict) else {}
+    ctrl["stop_requested"] = True
+    ctrl["paused"] = False
+    r.pipeline_control_json = ctrl
+    flag_modified(r, "pipeline_control_json")
+    if r.status == "queued":
+        r.status = "cancelled"
+        r.error_message = "Stopped by user"
+        r.completed_at = datetime.now(timezone.utc)
+        ev = list(r.steps_json) if r.steps_json else []
+        ev.append(
+            {
+                "step": "pipeline",
+                "status": "cancelled",
+                "at": datetime.now(timezone.utc).isoformat(),
+                "reason": "user_stop_while_queued",
+            }
+        )
+        r.steps_json = ev
+        flag_modified(r, "steps_json")
+    db.commit()
+    db.refresh(r)
+    log.info("agent_run_stop_requested", agent_run_id=str(r.id), status=r.status)
+    return r
+
+
+def _handle_agent_run_control(db: Session, r: AgentRun, body: AgentRunPipelineControl) -> AgentRun:
+    """Pause, resume, or stop. Commits."""
+    if body.action == "stop":
+        return _apply_stop_to_agent_run(db, r)
+
+    if r.status in _TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "AGENT_RUN_NOT_ACTIVE", "message": "run is not active (cannot pause/resume)"},
+        )
+
+    ctrl = dict(r.pipeline_control_json) if isinstance(r.pipeline_control_json, dict) else {}
+
+    if body.action == "pause":
+        if r.status not in ("running", "paused", "queued"):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "AGENT_RUN_CANNOT_PAUSE", "message": f"cannot pause from status {r.status!r}"},
+            )
+        ctrl["paused"] = True
+        r.pipeline_control_json = ctrl
+        flag_modified(r, "pipeline_control_json")
+        db.commit()
+        db.refresh(r)
+        return r
+
+    # resume
+    ctrl["paused"] = False
+    r.pipeline_control_json = ctrl
+    flag_modified(r, "pipeline_control_json")
+    if r.status == "paused":
+        r.status = "running"
+    db.commit()
+    db.refresh(r)
+    return r
 
 
 def _project_from_brief(
@@ -163,61 +230,32 @@ def post_agent_run_control(
     if not r or r.tenant_id != settings.default_tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
 
-    if body.action == "stop":
-        if r.status in _TERMINAL_STATUSES:
-            return {"data": AgentRunOut.model_validate(r).model_dump(mode="json"), "meta": meta}
-        ctrl = dict(r.pipeline_control_json) if isinstance(r.pipeline_control_json, dict) else {}
-        ctrl["stop_requested"] = True
-        ctrl["paused"] = False
-        r.pipeline_control_json = ctrl
-        flag_modified(r, "pipeline_control_json")
-        if r.status == "queued":
-            r.status = "cancelled"
-            r.error_message = "Stopped by user"
-            r.completed_at = datetime.now(timezone.utc)
-            ev = list(r.steps_json) if r.steps_json else []
-            ev.append(
-                {
-                    "step": "pipeline",
-                    "status": "cancelled",
-                    "at": datetime.now(timezone.utc).isoformat(),
-                    "reason": "user_stop_while_queued",
-                }
-            )
-            r.steps_json = ev
-            flag_modified(r, "steps_json")
-        db.commit()
-        db.refresh(r)
-        log.info("agent_run_stop_requested", agent_run_id=str(agent_run_id), status=r.status)
+    if body.action == "stop" and r.status in _TERMINAL_STATUSES:
         return {"data": AgentRunOut.model_validate(r).model_dump(mode="json"), "meta": meta}
 
-    if r.status in _TERMINAL_STATUSES:
+    out = _handle_agent_run_control(db, r, body)
+    return {"data": AgentRunOut.model_validate(out).model_dump(mode="json"), "meta": meta}
+
+
+@router.delete("/{agent_run_id}")
+def delete_agent_run(
+    agent_run_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+) -> Response:
+    """Remove a finished agent run row (terminal status only)."""
+    r = db.get(AgentRun, agent_run_id)
+    if not r or r.tenant_id != settings.default_tenant_id:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
+    if r.status not in _TERMINAL_STATUSES:
         raise HTTPException(
             status_code=409,
-            detail={"code": "AGENT_RUN_NOT_ACTIVE", "message": "run is not active (cannot pause/resume)"},
+            detail={
+                "code": "AGENT_RUN_ACTIVE",
+                "message": "cannot delete an active run — stop it first, then delete",
+            },
         )
-
-    ctrl = dict(r.pipeline_control_json) if isinstance(r.pipeline_control_json, dict) else {}
-
-    if body.action == "pause":
-        if r.status not in ("running", "paused", "queued"):
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "AGENT_RUN_CANNOT_PAUSE", "message": f"cannot pause from status {r.status!r}"},
-            )
-        ctrl["paused"] = True
-        r.pipeline_control_json = ctrl
-        flag_modified(r, "pipeline_control_json")
-        db.commit()
-        db.refresh(r)
-        return {"data": AgentRunOut.model_validate(r).model_dump(mode="json"), "meta": meta}
-
-    # resume
-    ctrl["paused"] = False
-    r.pipeline_control_json = ctrl
-    flag_modified(r, "pipeline_control_json")
-    if r.status == "paused":
-        r.status = "running"
+    db.delete(r)
     db.commit()
-    db.refresh(r)
-    return {"data": AgentRunOut.model_validate(r).model_dump(mode="json"), "meta": meta}
+    log.info("agent_run_deleted", agent_run_id=str(agent_run_id))
+    return Response(status_code=204)

@@ -59,6 +59,12 @@ function persistLastRanBudgetProjectId(projectId) {
   }
 }
 
+const BUDGET_AGENT_RUN_TERMINAL = new Set(["succeeded", "failed", "cancelled", "blocked"]);
+
+function budgetAgentRunIsTerminal(st) {
+  return BUDGET_AGENT_RUN_TERMINAL.has(String(st || "").trim());
+}
+
 function readBudgetPipelinePersisted() {
   try {
     const raw = localStorage.getItem(BUDGET_PIPELINE_LS_KEY);
@@ -300,6 +306,9 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
   });
   /** Project id for the last budget run that was queued (Run or Continue); same id Continue re-uses. */
   const [budgetProjectId, setBudgetProjectId] = useState(() => readLastRanBudgetProjectId(readBudgetPipelinePersisted()));
+  /** agent_run_id → status from admin GET (for Stop vs Delete). */
+  const [budgetRunStatuses, setBudgetRunStatuses] = useState({});
+  const [budgetRowBusy, setBudgetRowBusy] = useState("");
 
   useEffect(() => {
     if (!unlocked) return;
@@ -343,6 +352,51 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     setBudgetProjectId(s);
     persistLastRanBudgetProjectId(s);
   }, [budgetLast?.project?.id]);
+
+  useEffect(() => {
+    if (!unlocked) return;
+    const ids = new Set();
+    for (const row of budgetRunHistory || []) {
+      const aid = row?.agent_run_id;
+      if (aid != null && String(aid).trim()) ids.add(String(aid).trim());
+    }
+    const lastAid = budgetLast?.agent_run?.id;
+    if (lastAid != null && String(lastAid).trim()) ids.add(String(lastAid).trim());
+
+    if (ids.size === 0) {
+      setBudgetRunStatuses({});
+      return;
+    }
+
+    let cancelled = false;
+    const poll = async () => {
+      const updates = {};
+      await Promise.all(
+        [...ids].map(async (rawId) => {
+          try {
+            const r = await adminFetch(`/v1/admin/agent-runs/${encodeURIComponent(rawId)}`);
+            const b = await parseJson(r);
+            if (r.ok && b?.data?.status != null) updates[rawId] = String(b.data.status);
+          } catch {
+            /* ignore */
+          }
+        }),
+      );
+      if (!cancelled) {
+        setBudgetRunStatuses((prev) => {
+          const next = { ...prev };
+          for (const [k, v] of Object.entries(updates)) next[k] = v;
+          return next;
+        });
+      }
+    };
+    void poll();
+    const t = setInterval(() => void poll(), 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [unlocked, budgetRunHistory, budgetLast?.agent_run?.id]);
 
   /** Logged-in Studio workspace (from App: auth/me + session tenant); falls back if prop not ready yet. */
   const resolvedBudgetWorkspaceId = useMemo(() => {
@@ -523,12 +577,14 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
       }
       const rid = data?.agent_run?.id;
       if (rid) {
+        const ridStr = String(rid);
+        setBudgetRunStatuses((s) => ({ ...s, [ridStr]: "queued" }));
         setBudgetRunHistory((h) => {
           const next = [
             ...(h || []),
             {
               ts: new Date().toISOString(),
-              agent_run_id: String(rid),
+              agent_run_id: ridStr,
               project_id: projId != null ? String(projId).trim() : undefined,
               poll_url: data.poll_url != null ? String(data.poll_url) : null,
             },
@@ -592,12 +648,14 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
       }
       const rid = data?.agent_run?.id;
       if (rid) {
+        const ridStr = String(rid);
+        setBudgetRunStatuses((s) => ({ ...s, [ridStr]: "queued" }));
         setBudgetRunHistory((h) => {
           const next = [
             ...(h || []),
             {
               ts: new Date().toISOString(),
-              agent_run_id: String(rid),
+              agent_run_id: ridStr,
               project_id: projId != null ? String(projId).trim() : undefined,
               poll_url: data.poll_url != null ? String(data.poll_url) : null,
               continued: true,
@@ -622,6 +680,67 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     resolvedBudgetWorkspaceId,
     showToast,
   ]);
+
+  const stopBudgetAgentRun = useCallback(
+    async (runId) => {
+      const id = String(runId || "").trim();
+      if (!id) return;
+      setBudgetRowBusy(id);
+      setBudgetErr("");
+      try {
+        const r = await adminFetch(`/v1/admin/agent-runs/${encodeURIComponent(id)}/control`, {
+          method: "POST",
+          body: JSON.stringify({ action: "stop" }),
+        });
+        const b = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+        showToast?.("Stop requested for that run", { type: "success" });
+        const r2 = await adminFetch(`/v1/admin/agent-runs/${encodeURIComponent(id)}`);
+        const b2 = await parseJson(r2);
+        if (r2.ok && b2?.data?.status != null) {
+          setBudgetRunStatuses((s) => ({ ...s, [id]: String(b2.data.status) }));
+        }
+      } catch (e) {
+        const msg = formatUserFacingError(e);
+        setBudgetErr(msg);
+        showToast?.(msg, { type: "error" });
+      } finally {
+        setBudgetRowBusy("");
+      }
+    },
+    [showToast],
+  );
+
+  const deleteBudgetAgentRun = useCallback(
+    async (runId) => {
+      const id = String(runId || "").trim();
+      if (!id) return;
+      setBudgetRowBusy(id);
+      setBudgetErr("");
+      try {
+        const r = await adminFetch(`/v1/admin/agent-runs/${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) {
+          const b = await parseJson(r);
+          throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+        }
+        showToast?.("Run deleted", { type: "success" });
+        setBudgetRunHistory((h) => (Array.isArray(h) ? h.filter((row) => String(row.agent_run_id) !== id) : h));
+        setBudgetRunStatuses((s) => {
+          const n = { ...s };
+          delete n[id];
+          return n;
+        });
+        setBudgetLast((bl) => (bl?.agent_run?.id != null && String(bl.agent_run.id) === id ? null : bl));
+      } catch (e) {
+        const msg = formatUserFacingError(e);
+        setBudgetErr(msg);
+        showToast?.(msg, { type: "error" });
+      } finally {
+        setBudgetRowBusy("");
+      }
+    },
+    [showToast],
+  );
 
   const lock = () => {
     setAdminKey("");
@@ -891,6 +1010,41 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                         Project: {budgetLast.project.id}
                       </p>
                     ) : null}
+                    {(() => {
+                      const aid = String(budgetLast.agent_run.id);
+                      const st = budgetRunStatuses[aid] ?? "";
+                      const term = budgetAgentRunIsTerminal(st);
+                      const rowBusy = budgetRowBusy === aid;
+                      return (
+                        <div
+                          className="action-row"
+                          style={{ gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}
+                        >
+                          <span className="subtle" style={{ fontSize: "0.82rem" }}>
+                            Status: {st ? <strong>{st}</strong> : <em>loading…</em>}
+                          </span>
+                          {term ? (
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={rowBusy}
+                              onClick={() => void deleteBudgetAgentRun(aid)}
+                            >
+                              Delete run
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={rowBusy}
+                              onClick={() => void stopBudgetAgentRun(aid)}
+                            >
+                              Stop run
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
                     {budgetLast.poll_url ? (
                       <p style={{ margin: "8px 0 0" }}>
                         <a href={apiPath(budgetLast.poll_url)} target="_blank" rel="noreferrer">
@@ -906,20 +1060,64 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                     <p className="subtle" style={{ margin: "0 0 6px", fontSize: "0.85rem" }}>
                       Recent runs (saved in this browser)
                     </p>
-                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: "0.82rem" }}>
+                    <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "0.82rem" }}>
                       {budgetRunHistory
                         .slice()
                         .reverse()
-                        .map((row, idx) => (
-                          <li key={`${row.ts}-${row.agent_run_id}-${idx}`} style={{ marginBottom: 4 }}>
-                            <span className="subtle">{row.ts ? String(row.ts).replace("T", " ").slice(0, 19) : ""}</span>
-                            {row.agent_run_id ? (
-                              <span className="mono" style={{ marginLeft: 8 }}>
-                                {String(row.agent_run_id)}
-                              </span>
-                            ) : null}
-                          </li>
-                        ))}
+                        .map((row, idx) => {
+                          const aid = row.agent_run_id ? String(row.agent_run_id) : "";
+                          const st = aid ? budgetRunStatuses[aid] ?? "" : "";
+                          const term = budgetAgentRunIsTerminal(st);
+                          const rowBusy = aid && budgetRowBusy === aid;
+                          return (
+                            <li
+                              key={`${row.ts}-${row.agent_run_id}-${idx}`}
+                              style={{
+                                marginBottom: 8,
+                                display: "flex",
+                                gap: 8,
+                                alignItems: "flex-start",
+                                flexWrap: "wrap",
+                              }}
+                            >
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <span className="subtle">{row.ts ? String(row.ts).replace("T", " ").slice(0, 19) : ""}</span>
+                                {aid ? (
+                                  <>
+                                    {" "}
+                                    <span className="mono" style={{ wordBreak: "break-all" }}>
+                                      {aid}
+                                    </span>
+                                    {st ? <span className="subtle" style={{ marginLeft: 6 }}>({st})</span> : null}
+                                  </>
+                                ) : null}
+                              </div>
+                              {aid ? (
+                                term ? (
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    style={{ fontSize: "0.75rem", flexShrink: 0 }}
+                                    disabled={Boolean(rowBusy)}
+                                    onClick={() => void deleteBudgetAgentRun(aid)}
+                                  >
+                                    Delete
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    style={{ fontSize: "0.75rem", flexShrink: 0 }}
+                                    disabled={Boolean(rowBusy)}
+                                    onClick={() => void stopBudgetAgentRun(aid)}
+                                  >
+                                    Stop
+                                  </button>
+                                )
+                              ) : null}
+                            </li>
+                          );
+                        })}
                     </ul>
                   </div>
                 ) : null}

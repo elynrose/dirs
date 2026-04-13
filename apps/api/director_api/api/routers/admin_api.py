@@ -11,12 +11,14 @@ from typing import Any, Iterable, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from director_api.api.routers.agent_runs import _TERMINAL_STATUSES, _handle_agent_run_control
+from director_api.api.schemas.agent_run import AgentRunOut, AgentRunPipelineControl
 from director_api.api.security_admin import assert_admin_request
 from director_api.auth.passwords import hash_password
 from director_api.db.models import (
@@ -1259,6 +1261,60 @@ def admin_list_agent_runs(
         _run_out(r, tenant_name=name_by_tid.get(str(r.tenant_id)) if r.tenant_id else None) for r in rows
     ]
     return {"data": {"agent_runs": runs_out, "total_count": total}, "meta": {}}
+
+
+@router.get("/agent-runs/{agent_run_id}")
+def admin_get_agent_run(
+    agent_run_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: None = AdminDep,
+) -> dict[str, Any]:
+    """Fetch one agent run (any workspace) — for admin UI polling."""
+    r = db.get(AgentRun, agent_run_id)
+    if not r:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
+    return {"data": AgentRunOut.model_validate(r).model_dump(mode="json"), "meta": {}}
+
+
+@router.post("/agent-runs/{agent_run_id}/control")
+def admin_agent_run_control(
+    agent_run_id: uuid.UUID,
+    body: AgentRunPipelineControl,
+    db: Session = Depends(get_db),
+    _: None = AdminDep,
+) -> dict[str, Any]:
+    """Pause, resume, or stop any agent run (platform admin). Same semantics as ``POST /v1/agent-runs/{id}/control``."""
+    r = db.get(AgentRun, agent_run_id)
+    if not r:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
+    if body.action == "stop" and r.status in _TERMINAL_STATUSES:
+        return {"data": AgentRunOut.model_validate(r).model_dump(mode="json"), "meta": {}}
+    out = _handle_agent_run_control(db, r, body)
+    return {"data": AgentRunOut.model_validate(out).model_dump(mode="json"), "meta": {}}
+
+
+@router.delete("/agent-runs/{agent_run_id}")
+def admin_delete_agent_run(
+    agent_run_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: None = AdminDep,
+) -> Response:
+    """Delete a terminal agent run row (any workspace)."""
+    r = db.get(AgentRun, agent_run_id)
+    if not r:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
+    if r.status not in _TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AGENT_RUN_ACTIVE",
+                "message": "cannot delete an active run — stop it first, then delete",
+            },
+        )
+    db.delete(r)
+    db.commit()
+    log.info("admin_agent_run_deleted", agent_run_id=str(agent_run_id))
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------
