@@ -42,6 +42,20 @@ class AgentRunCreate(BaseModel):
         return self
 
 
+class AgentRunListItem(BaseModel):
+    """Compact row for project history lists (no `steps_json` payload)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    status: str
+    current_step: str | None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+
+
 class AgentRunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

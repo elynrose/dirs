@@ -21,6 +21,21 @@ const TABS = [
 
 const LIMIT = 50;
 
+const BUDGET_PIPELINE_LS_KEY = "director_admin_budget_pipeline_v1";
+const BUDGET_PIPELINE_STATE_VERSION = 1;
+
+function readBudgetPipelinePersisted() {
+  try {
+    const raw = localStorage.getItem(BUDGET_PIPELINE_LS_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    if (d.v !== BUDGET_PIPELINE_STATE_VERSION || typeof d !== "object") return null;
+    return d;
+  } catch {
+    return null;
+  }
+}
+
 /** Shorten long ids (UUIDs) for tables; full value in tooltip. */
 function formatShortId(value) {
   const s = value == null ? "" : String(value);
@@ -217,17 +232,43 @@ export function StudioAdminPage({ showToast }) {
   const [jobStatus, setJobStatus] = useState("");
   const [entitlementDefs, setEntitlementDefs] = useState(null);
 
-  const [budgetTitle, setBudgetTitle] = useState("Budget pipeline test");
-  const [budgetTopic, setBudgetTopic] = useState(
-    "Smoke test: placeholder images, local FFmpeg video, placeholder speech — minimal cost run."
-  );
-  const [budgetRuntime, setBudgetRuntime] = useState("5");
-  const [budgetMode, setBudgetMode] = useState("hands-off");
+  const [budgetTitle, setBudgetTitle] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return typeof p?.budgetTitle === "string" ? p.budgetTitle : "Budget pipeline test";
+  });
+  const [budgetTopic, setBudgetTopic] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return typeof p?.budgetTopic === "string" ?
+        p.budgetTopic
+      : "Smoke test: placeholder images, local FFmpeg video, workspace TTS narration — minimal image API cost.";
+  });
+  const [budgetRuntime, setBudgetRuntime] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return typeof p?.budgetRuntime === "string" ? p.budgetRuntime : "5";
+  });
+  const [budgetMode, setBudgetMode] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return p?.budgetMode === "auto" || p?.budgetMode === "hands-off" ? p.budgetMode : "hands-off";
+  });
   /** Prefill with the Studio session workspace so entitlements/billing overrides match (empty = API DEFAULT_TENANT_ID). */
-  const [budgetTenant, setBudgetTenant] = useState(() => getDirectorTenantId().trim());
+  const [budgetTenant, setBudgetTenant] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    if (typeof p?.budgetTenant === "string") return p.budgetTenant;
+    return getDirectorTenantId().trim();
+  });
   const [budgetBusy, setBudgetBusy] = useState(false);
-  const [budgetErr, setBudgetErr] = useState("");
-  const [budgetLast, setBudgetLast] = useState(null);
+  const [budgetErr, setBudgetErr] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return typeof p?.budgetErr === "string" ? p.budgetErr : "";
+  });
+  const [budgetLast, setBudgetLast] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return p?.budgetLast && typeof p.budgetLast === "object" ? p.budgetLast : null;
+  });
+  const [budgetRunHistory, setBudgetRunHistory] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return Array.isArray(p?.budgetRunHistory) ? p.budgetRunHistory : [];
+  });
 
   useEffect(() => {
     if (!unlocked) return;
@@ -242,6 +283,28 @@ export function StudioAdminPage({ showToast }) {
       }
     })();
   }, [unlocked]);
+
+  useEffect(() => {
+    if (!unlocked) return;
+    try {
+      localStorage.setItem(
+        BUDGET_PIPELINE_LS_KEY,
+        JSON.stringify({
+          v: BUDGET_PIPELINE_STATE_VERSION,
+          budgetTitle,
+          budgetTopic,
+          budgetRuntime,
+          budgetMode,
+          budgetTenant,
+          budgetLast,
+          budgetErr,
+          budgetRunHistory,
+        }),
+      );
+    } catch {
+      /* quota or private mode */
+    }
+  }, [unlocked, budgetTitle, budgetTopic, budgetRuntime, budgetMode, budgetTenant, budgetLast, budgetErr, budgetRunHistory]);
 
   const tryUnlock = useCallback(async () => {
     setErr("");
@@ -402,14 +465,27 @@ export function StudioAdminPage({ showToast }) {
       });
       const body = await parseJson(r);
       if (!r.ok) {
-        setBudgetLast(null);
         setBudgetErr(apiErrorMessage(body) || `HTTP ${r.status}`);
         return;
       }
-      setBudgetLast(body.data ?? null);
+      const data = body.data ?? null;
+      setBudgetLast(data);
+      const rid = data?.agent_run?.id;
+      if (rid) {
+        setBudgetRunHistory((h) => {
+          const next = [
+            ...(h || []),
+            {
+              ts: new Date().toISOString(),
+              agent_run_id: String(rid),
+              poll_url: data.poll_url != null ? String(data.poll_url) : null,
+            },
+          ];
+          return next.slice(-50);
+        });
+      }
       showToast?.("Budget pipeline queued", { type: "success" });
     } catch (e) {
-      setBudgetLast(null);
       setBudgetErr(formatUserFacingError(e));
     } finally {
       setBudgetBusy(false);
@@ -582,8 +658,9 @@ export function StudioAdminPage({ showToast }) {
             <div className="panel" style={{ padding: 12, marginBottom: 12, maxWidth: 640 }}>
               <h3 style={{ margin: "0 0 8px", fontSize: "1rem" }}>Budget pipeline test</h3>
               <p className="subtle" style={{ margin: "0 0 12px", fontSize: "0.88rem" }}>
-                Same run as <code className="mono">scripts/budget_pipeline_test.py</code> — placeholder / local FFmpeg
-                media, <code className="mono">full_video</code> pipeline. Requires a Celery worker processing the queue.
+                Same run as <code className="mono">scripts/budget_pipeline_test.py</code> — placeholder images and local
+                FFmpeg video; narration uses your workspace default TTS (not FFmpeg ding).{" "}
+                <code className="mono">full_video</code> pipeline. Requires a Celery worker processing the queue.
               </p>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <label className="subtle">
@@ -663,6 +740,28 @@ export function StudioAdminPage({ showToast }) {
                       </p>
                     ) : null}
                     {budgetLast.hint ? <p className="subtle" style={{ margin: "8px 0 0", fontSize: "0.82rem" }}>{budgetLast.hint}</p> : null}
+                  </div>
+                ) : null}
+                {budgetRunHistory.length > 0 ? (
+                  <div style={{ marginTop: 12 }}>
+                    <p className="subtle" style={{ margin: "0 0 6px", fontSize: "0.85rem" }}>
+                      Recent runs (saved in this browser)
+                    </p>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: "0.82rem" }}>
+                      {budgetRunHistory
+                        .slice()
+                        .reverse()
+                        .map((row, idx) => (
+                          <li key={`${row.ts}-${row.agent_run_id}-${idx}`} style={{ marginBottom: 4 }}>
+                            <span className="subtle">{row.ts ? String(row.ts).replace("T", " ").slice(0, 19) : ""}</span>
+                            {row.agent_run_id ? (
+                              <span className="mono" style={{ marginLeft: 8 }}>
+                                {String(row.agent_run_id)}
+                              </span>
+                            ) : null}
+                          </li>
+                        ))}
+                    </ul>
                   </div>
                 ) : null}
               </div>

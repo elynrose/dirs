@@ -15,9 +15,10 @@ from director_api.api.deps import meta_dep, settings_dep
 from director_api.api.tenant_access import get_project_for_tenant, require_project_for_tenant
 from director_api.db.session import get_db
 from director_api.api.schemas.phase4 import CriticReportOut
+from director_api.api.schemas.agent_run import AgentRunListItem
 from director_api.api.schemas.project import JobOut, ProjectCreate, ProjectOut, ProjectPatch
 from director_api.config import Settings, get_settings
-from director_api.db.models import Asset, AuditEvent, Chapter, CriticReport, GenerationArtifact, Job, Project, Scene, TimelineVersion
+from director_api.db.models import AgentRun, Asset, AuditEvent, Chapter, CriticReport, GenerationArtifact, Job, Project, Scene, TimelineVersion
 from director_api.services import timeline_image_repair as timeline_image_repair_svc
 from director_api.services.job_quota import assert_can_enqueue
 from director_api.services.phase5_readiness import compute_phase5_readiness, get_timeline_asset_for_project
@@ -173,6 +174,51 @@ def list_active_project_jobs(
     )
     data = [JobOut.model_validate(j).model_dump(mode="json") for j in rows]
     return {"data": {"jobs": data, "count": len(data)}, "meta": meta}
+
+
+@router.get("/{project_id}/agent-runs")
+def list_project_agent_runs(
+    project_id: UUID,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Hands-off Studio: list autonomous runs for a project (newest first)."""
+    if get_project_for_tenant(db, project_id, settings.default_tenant_id) is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
+    n = max(1, min(int(limit), 200))
+    off = max(0, int(offset))
+    tid = settings.default_tenant_id
+    total = int(
+        db.scalar(
+            select(func.count()).select_from(AgentRun).where(
+                AgentRun.project_id == project_id,
+                AgentRun.tenant_id == tid,
+            )
+        )
+        or 0
+    )
+    rows = list(
+        db.scalars(
+            select(AgentRun)
+            .where(AgentRun.project_id == project_id, AgentRun.tenant_id == tid)
+            .order_by(desc(AgentRun.created_at))
+            .offset(off)
+            .limit(n)
+        ).all()
+    )
+    data = [AgentRunListItem.model_validate(r).model_dump(mode="json") for r in rows]
+    return {
+        "data": {
+            "agent_runs": data,
+            "total_count": total,
+            "offset": off,
+            "limit": n,
+        },
+        "meta": meta,
+    }
 
 
 @router.get("/{project_id}/phase5-readiness")

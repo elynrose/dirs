@@ -40,19 +40,12 @@ function maxSuffixFromIds(rows, letter) {
   return max;
 }
 
-function readChatStudioPersistedState(projectId, agentRunIdFromLs) {
+function readChatStudioPersistedState(projectId) {
   try {
     const raw = localStorage.getItem(chatStudioStateKey(projectId));
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (data.v !== CHAT_STUDIO_STATE_VERSION || !Array.isArray(data.setupMessages)) return null;
-    const runInLs = String(agentRunIdFromLs || "").trim();
-    const runInBlob = String(data.agentRunId || "").trim();
-    const runMismatch = runInLs && runInBlob && runInLs !== runInBlob;
-    const runBlobWithoutLs = !runInLs && runInBlob;
-    if (runMismatch || runBlobWithoutLs) {
-      return { setupOnly: true, setupMessages: data.setupMessages, setupInput: data.setupInput, setupMsgIdSeq: data.setupMsgIdSeq };
-    }
     return data;
   } catch {
     return null;
@@ -112,6 +105,9 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
   const [finalVideoReady, setFinalVideoReady] = useState(false);
   /** Bumped after project load so persist effect runs once skipPersistRef clears. */
   const [persistVersion, setPersistVersion] = useState(0);
+  const [agentRunRows, setAgentRunRows] = useState([]);
+  const [agentRunsLoading, setAgentRunsLoading] = useState(false);
+  const [agentRunsListTick, setAgentRunsListTick] = useState(0);
 
   const lastStepsLenRef = useRef(0);
   const messageIdRef = useRef(0);
@@ -190,22 +186,20 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
           }
         })();
         const lsRun = stored && /^[0-9a-f-]{36}$/i.test(stored.trim()) ? stored.trim() : "";
-        if (lsRun) setAgentRunId(lsRun);
 
-        const persisted = readChatStudioPersistedState(pid, lsRun);
-        if (persisted?.setupOnly) {
+        const persisted = readChatStudioPersistedState(pid);
+        const blobRun =
+          persisted?.agentRunId && /^[0-9a-f-]{36}$/i.test(String(persisted.agentRunId).trim()) ?
+            String(persisted.agentRunId).trim()
+          : "";
+
+        if (persisted) {
           setSetupMessages(Array.isArray(persisted.setupMessages) ? persisted.setupMessages : []);
-          if (typeof persisted.setupInput === "string") setSetupInput(persisted.setupInput);
+          if (typeof persisted.setupInput === "string") setSetupInput(persisted.setupInput || "");
           setupMsgIdRef.current =
             Number.isFinite(Number(persisted.setupMsgIdSeq)) && Number(persisted.setupMsgIdSeq) > 0 ?
               Number(persisted.setupMsgIdSeq)
             : maxSuffixFromIds(persisted.setupMessages, "s");
-          setMessages([]);
-          lastStepsLenRef.current = 0;
-          doneAnnouncedRef.current = false;
-        } else if (persisted && !persisted.setupOnly) {
-          setSetupMessages(Array.isArray(persisted.setupMessages) ? persisted.setupMessages : []);
-          if (typeof persisted.setupInput === "string") setSetupInput(persisted.setupInput || "");
           setMessages(Array.isArray(persisted.messages) ? persisted.messages : []);
           if (Array.isArray(persisted.pendingCharacterDrafts) && persisted.pendingCharacterDrafts.length > 0) {
             setPendingCharacterDrafts(persisted.pendingCharacterDrafts);
@@ -219,15 +213,23 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
             Number.isFinite(Number(persisted.messageIdSeq)) && Number(persisted.messageIdSeq) > 0 ?
               Number(persisted.messageIdSeq)
             : maxSuffixFromIds(persisted.messages, "m");
-          setupMsgIdRef.current =
-            Number.isFinite(Number(persisted.setupMsgIdSeq)) && Number(persisted.setupMsgIdSeq) > 0 ?
-              Number(persisted.setupMsgIdSeq)
-            : maxSuffixFromIds(persisted.setupMessages, "s");
           if (typeof persisted.runStatus === "string" && persisted.runStatus) setRunStatus(persisted.runStatus);
           if (typeof persisted.timelineVersionId === "string" && persisted.timelineVersionId) {
             setTimelineVersionId(persisted.timelineVersionId);
           }
           if (typeof persisted.finalVideoReady === "boolean") setFinalVideoReady(persisted.finalVideoReady);
+        }
+
+        const effectiveRun = blobRun || lsRun;
+        if (effectiveRun) {
+          setAgentRunId(effectiveRun);
+          if (effectiveRun !== lsRun) {
+            try {
+              localStorage.setItem(storageKeyForProject(pid), effectiveRun);
+            } catch {
+              /* ignore */
+            }
+          }
         }
 
         try {
@@ -263,9 +265,61 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
     }
   }, []);
 
+  const loadAgentRunIntoPanel = useCallback(
+    async (runId) => {
+      const rid = String(runId || "").trim();
+      if (!rid || !selectedProjectId) return;
+      skipPersistRef.current = true;
+      setError("");
+      try {
+        const r = await api(`/v1/agent-runs/${encodeURIComponent(rid)}`);
+        const b = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+        const row = b.data;
+        const steps = Array.isArray(row.steps_json) ? row.steps_json : [];
+        messageIdRef.current = 0;
+        const built = steps.map((ev) => ({
+          id: `m-${++messageIdRef.current}`,
+          role: "assistant",
+          text: friendlyStepLine(ev),
+          kind: "step",
+          raw: ev,
+        }));
+        lastStepsLenRef.current = steps.length;
+        const st = String(row.status || "");
+        doneAnnouncedRef.current = st === "succeeded";
+        if (st === "succeeded") {
+          built.push({
+            id: `m-${++messageIdRef.current}`,
+            role: "assistant",
+            text:
+              "Pipeline run finished. If the final cut step completed, you can play or download the video below.",
+            kind: "done",
+          });
+        }
+        setMessages(built);
+        setAgentRunId(rid);
+        setRunStatus(st);
+        try {
+          localStorage.setItem(storageKeyForProject(selectedProjectId), rid);
+        } catch {
+          /* ignore */
+        }
+        await pollPipeline(selectedProjectId);
+      } catch (e) {
+        setError(formatUserFacingError(e));
+      } finally {
+        queueMicrotask(() => {
+          skipPersistRef.current = false;
+          setPersistVersion((n) => n + 1);
+        });
+      }
+    },
+    [selectedProjectId, pollPipeline],
+  );
+
   useEffect(() => {
     if (!agentRunId) return;
-    doneAnnouncedRef.current = false;
     let cancelled = false;
     const tick = async () => {
       const r = await api(`/v1/agent-runs/${encodeURIComponent(agentRunId)}`);
@@ -313,6 +367,35 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
     const id = setInterval(() => void pollPipeline(selectedProjectId), 4000);
     return () => clearInterval(id);
   }, [selectedProjectId, pollPipeline]);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setAgentRunRows([]);
+      return;
+    }
+    let cancelled = false;
+    setAgentRunsLoading(true);
+    void (async () => {
+      try {
+        const r = await api(`/v1/projects/${encodeURIComponent(selectedProjectId)}/agent-runs?limit=100&offset=0`);
+        const b = await parseJson(r);
+        if (cancelled) return;
+        if (!r.ok) {
+          setAgentRunRows([]);
+          return;
+        }
+        const rows = Array.isArray(b.data?.agent_runs) ? b.data.agent_runs : [];
+        setAgentRunRows(rows);
+      } catch {
+        if (!cancelled) setAgentRunRows([]);
+      } finally {
+        if (!cancelled) setAgentRunsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProjectId, agentRunsListTick]);
 
   /** Persist setup + run transcript and generation snapshot so reload keeps state. */
   useEffect(() => {
@@ -640,8 +723,10 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
       }
       if (ar?.id) {
         lastStepsLenRef.current = 0;
+        doneAnnouncedRef.current = false;
         setAgentRunId(String(ar.id));
         appendMessage("assistant", "Run queued — tracking progress below.", { kind: "system" });
+        setAgentRunsListTick((n) => n + 1);
       }
       onReloadProjects?.();
     } catch (e) {
@@ -730,6 +815,44 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
             </li>
           ))}
         </ul>
+        {selectedProjectId ? (
+          <div className="chat-studio__prev-runs" style={{ marginTop: 12 }}>
+            <strong style={{ fontSize: "0.9rem" }}>Hands-off runs</strong>
+            <p className="subtle" style={{ margin: "4px 0 0", fontSize: "0.8rem" }}>
+              All runs for this production (newest first). Open one to reload its activity.
+            </p>
+            {agentRunsLoading ? (
+              <p className="subtle" style={{ margin: "8px 0 0" }}>
+                Loading…
+              </p>
+            ) : agentRunRows.length === 0 ? (
+              <p className="subtle" style={{ margin: "8px 0 0" }}>
+                No runs yet.
+              </p>
+            ) : (
+              <ul style={{ listStyle: "none", margin: "8px 0 0", padding: 0, maxHeight: 220, overflowY: "auto" }}>
+                {agentRunRows.map((run) => (
+                  <li key={run.id} style={{ marginBottom: 6 }}>
+                    <button
+                      type="button"
+                      className={`chat-studio__project-row${String(agentRunId) === String(run.id) ? " is-active" : ""}`}
+                      style={{ width: "100%", textAlign: "left", padding: "6px 8px" }}
+                      onClick={() => void loadAgentRunIntoPanel(String(run.id))}
+                    >
+                      <span className="chat-studio__project-title mono" style={{ fontSize: "0.75rem", display: "block" }}>
+                        {String(run.id).slice(0, 8)}…
+                      </span>
+                      <span className="subtle chat-studio__project-meta" style={{ fontSize: "0.72rem" }}>
+                        {run.status || "—"}
+                        {run.created_at ? ` · ${String(run.created_at).replace("T", " ").slice(0, 16)}` : ""}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null}
         <div className="chat-studio__roadmap subtle">
           <strong>Project setup</strong>
           <p className="chat-studio__roadmap-text">

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Drive an Auto or Hands-off agent run while avoiding paid *media* APIs (fal, cloud TTS).
+Drive an Auto or Hands-off agent run while avoiding paid *image* APIs (fal).
 
-Uses project-level providers (no FAL_KEY needed for images/video in this path):
+Uses project-level providers for cheap visuals (no FAL_KEY needed for images/video in this path):
   - preferred_image_provider: placeholder  (solid FFmpeg lavfi frame)
   - preferred_video_provider: local_ffmpeg (still → MP4 on your machine)
-  - preferred_speech_provider: placeholder (short ding + tone via FFmpeg, duration scales with script length)
+  - preferred_speech_provider: omitted — narration uses the workspace default TTS from API settings
+    (``active_speech_provider`` / OpenAI, Kokoro, etc.), not FFmpeg ding. Set ``DIRECTOR_PLACEHOLDER_MEDIA=1``
+    on the worker to force ding for any project.
 
 Studio parity: starting an agent run from the web app sends the same optional brief fields from
 Settings → Providers (image / video / speech / text) and defaults auto scene-video generation to on
@@ -144,7 +146,7 @@ def _ensure_api_auth(client: httpx.Client, base: str, args: argparse.Namespace) 
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Budget pipeline test: auto / hands-off without fal or cloud TTS.")
+    ap = argparse.ArgumentParser(description="Budget pipeline test: auto / hands-off without fal; uses workspace TTS for narration.")
     ap.add_argument(
         "--api-base",
         default=os.environ.get("DIRECTOR_API_BASE", "http://127.0.0.1:8000").rstrip("/"),
@@ -220,7 +222,6 @@ def main() -> int:
             "visual_style": "preset:cinematic_documentary",
             "preferred_image_provider": "placeholder",
             "preferred_video_provider": "local_ffmpeg",
-            "preferred_speech_provider": "placeholder",
         },
         "pipeline_options": pipeline_options,
     }

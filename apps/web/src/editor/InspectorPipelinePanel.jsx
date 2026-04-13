@@ -154,7 +154,7 @@ export function InspectorPipelinePanel({ p }) {
                   </p>
                 ) : null}
                 <ul className="pipeline-steps">
-                  {[...p.pipelineStatus.steps].reverse().map((s) => (
+                  {p.pipelineStatus.steps.map((s) => (
                     <li key={s.id} className={`pipeline-step pipeline-step--${s.status || "pending"}`}>
                       <span className="pipeline-step-label">
                         {s.status === "running" && p.pipelineStepActivityIconClass ? (

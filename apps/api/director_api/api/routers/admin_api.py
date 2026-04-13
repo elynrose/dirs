@@ -1086,7 +1086,7 @@ def admin_list_payments(
 
 
 class AdminBudgetPipelineTestBody(BaseModel):
-    """Same autonomous brief shape as ``scripts/budget_pipeline_test.py`` (cheap placeholder / local FFmpeg media)."""
+    """Same autonomous brief shape as ``scripts/budget_pipeline_test.py`` (placeholder images, local FFmpeg video; narration uses workspace TTS)."""
 
     title: str = Field(default="Budget pipeline test", min_length=1, max_length=500)
     topic: str = Field(..., min_length=1, max_length=8000)
@@ -1136,7 +1136,7 @@ def admin_budget_pipeline_test(
         visual_style="preset:cinematic_documentary",
         preferred_image_provider="placeholder",
         preferred_video_provider="local_ffmpeg",
-        preferred_speech_provider="placeholder",
+        # Omit speech provider so narration uses workspace ``active_speech_provider`` (real TTS), not FFmpeg ding.
     )
     pipeline_options: dict[str, Any] = {
         "through": "full_video",
