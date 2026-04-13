@@ -4,6 +4,14 @@ from director_api.config import Settings
 from director_api.providers.speech_route import resolve_chatterbox_ref_to_path, resolve_speech_narration_route
 
 
+def test_director_placeholder_media_does_not_force_ding_narration():
+    """DIRECTOR_PLACEHOLDER_MEDIA is for cheap images; narration uses workspace speech (see speech_route)."""
+    s = Settings(director_placeholder_media=True)
+    p, o = resolve_speech_narration_route(None, s)
+    assert p == "openai"
+    assert o.get("voice") == "alloy"
+
+
 def test_resolve_kokoro_default():
     s = Settings()
     p, o = resolve_speech_narration_route("kokoro", s)

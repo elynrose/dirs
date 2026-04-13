@@ -757,14 +757,18 @@ function resolveEffectiveAgentStepKey(run, opts = {}) {
   /** Prefer live `steps_json` over `current_step` — the worker may still hold a pre-tail latch (e.g. story_research_review) while the full-video tail runs auto_characters / auto_images / … */
   const running = lastAgentEventWithStatus(evs, "running");
   if (run.status === "running" && running?.step) return running.step;
-  if (run.current_step) return run.current_step;
-  if (running) return running.step;
-  const retry = lastAgentEventWithStatus(evs, "retry");
-  if (retry) return retry.step;
+  /**
+   * Queued/running Celery jobs are often ahead of `current_step` during the full-video tail
+   * (e.g. scene image jobs are in flight while the DB still says auto_characters).
+   */
   if (run.status === "running") {
     const fromJobs = inferAgentStepKeyFromActiveJobs(opts.activeProjectJobs);
     if (fromJobs) return fromJobs;
   }
+  if (run.current_step) return run.current_step;
+  if (running) return running.step;
+  const retry = lastAgentEventWithStatus(evs, "retry");
+  if (retry) return retry.step;
   const last = evs[evs.length - 1];
   if (last && last.step && (last.status === "succeeded" || last.status === "skipped")) {
     const through = agentThroughFromRun(run, "full_video");
@@ -772,6 +776,8 @@ function resolveEffectiveAgentStepKey(run, opts = {}) {
     const idx = order.indexOf(last.step);
     if (idx >= 0 && idx < order.length - 1) return order[idx + 1];
   }
+  const tailFromJobs = inferAgentStepKeyFromActiveJobs(opts.activeProjectJobs);
+  if (tailFromJobs) return tailFromJobs;
   return "working";
 }
 
@@ -793,10 +799,17 @@ function mergePipelineStepsWithAgentActivity(pipelineStatus, run, activeProjectJ
   if (agentSt === "cancelled") return pipelineStatus;
   if (agentSt === "running" && pipelineStopRequested(run?.pipeline_control_json)) return pipelineStatus;
 
-  const effKey =
+  let effKey =
     run && ["running", "queued"].includes(agentSt)
       ? resolveEffectiveAgentStepKey(run, { activeProjectJobs })
       : inferAgentStepKeyFromActiveJobs(activeProjectJobs || []);
+  if (
+    agentSt === "running" &&
+    (!effKey || effKey === "working" || !AGENT_STEP_TO_PIPELINE_STEP_ID[effKey])
+  ) {
+    const jk = inferAgentStepKeyFromActiveJobs(activeProjectJobs || []);
+    if (jk && AGENT_STEP_TO_PIPELINE_STEP_ID[jk]) effKey = jk;
+  }
   if (!effKey) return pipelineStatus;
 
   const targetId = AGENT_STEP_TO_PIPELINE_STEP_ID[effKey];
@@ -1761,11 +1774,12 @@ export default function App() {
   }, [loadActiveProjectJobs]);
 
   useEffect(() => {
-    if ((activePage !== "editor" && activePage !== "research_chapters") || !gatedProjectId) {
+    if (!gatedProjectId) {
       setActiveProjectJobs([]);
       return undefined;
     }
-    // Always do one immediate load so the list is populated on project open.
+    // Always do one immediate load so the list is populated on project open (any Studio page —
+    // top banner + pipeline progress need jobs even when Settings / Chat is active).
     void loadActiveProjectJobs();
     // While SSE is live it pushes jobs_update events — polling would be redundant.
     // Keep a long-interval fallback (30 s) for environments where SSE is blocked
@@ -1775,7 +1789,7 @@ export default function App() {
       : Math.min(10_000, Math.max(1500, jobPollIntervalMs * 2));
     const id = window.setInterval(() => void loadActiveProjectJobs(), bgMs);
     return () => window.clearInterval(id);
-  }, [activePage, gatedProjectId, loadActiveProjectJobs, jobPollIntervalMs, sseConnected]);
+  }, [gatedProjectId, loadActiveProjectJobs, jobPollIntervalMs, sseConnected]);
 
   const queueMediaJob = useCallback(
     async (path, body, successMessage) => {
@@ -3419,7 +3433,7 @@ export default function App() {
 
   /** Jobs that left the active list while still queued/running = finished; refresh UI (batch images, background jobs). */
   useEffect(() => {
-    if ((activePage !== "editor" && activePage !== "research_chapters") || !projectId) {
+    if (!projectId) {
       activeJobsPrevRef.current = [];
       return;
     }

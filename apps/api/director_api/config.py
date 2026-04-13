@@ -177,8 +177,9 @@ class Settings(BaseSettings):
     active_video_provider: str = "fal"
     active_speech_provider: str = "openai"
 
-    # When true, worker uses placeholder images + ding-like FFmpeg audio instead of cloud image/TTS APIs
-    # (still uses your text LLM / research keys). See scripts/budget_pipeline_test.py.
+    # When true, worker uses placeholder lavfi images (and similar) instead of cloud image APIs where
+    # applicable; narration still follows ``active_speech_provider`` / project preferred speech unless set to placeholder.
+    # See scripts/budget_pipeline_test.py.
     director_placeholder_media: bool = Field(
         default=False,
         validation_alias=AliasChoices("director_placeholder_media", "DIRECTOR_PLACEHOLDER_MEDIA"),

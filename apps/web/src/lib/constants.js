@@ -21,6 +21,7 @@ export const STUDIO_MEDIA_JOB_TYPES = new Set([
   "scene_critique",
   "chapter_critique",
   "scene_critic_revision",
+  "characters_generate",
   "narration_generate",
   "narration_generate_scene",
   "subtitles_generate",

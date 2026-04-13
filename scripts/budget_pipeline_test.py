@@ -7,7 +7,7 @@ Uses project-level providers for cheap visuals (no FAL_KEY needed for images/vid
   - preferred_video_provider: local_ffmpeg (still → MP4 on your machine)
   - preferred_speech_provider: omitted — narration uses the workspace default TTS from API settings
     (``active_speech_provider`` / OpenAI, Kokoro, etc.), not FFmpeg ding. Set ``DIRECTOR_PLACEHOLDER_MEDIA=1``
-    on the worker to force ding for any project.
+    on the worker to force placeholder *images* for any project (narration still uses real TTS unless you set speech to placeholder).
 
 Studio parity: starting an agent run from the web app sends the same optional brief fields from
 Settings → Providers (image / video / speech / text) and defaults auto scene-video generation to on
@@ -20,8 +20,8 @@ this script does not stub those.
 Prerequisites
   - API + Celery worker running, DB/Redis up (same as normal Studio).
   - ffmpeg on PATH for the worker (already required for Directely).
-  - Optional: set DIRECTOR_PLACEHOLDER_MEDIA=1 on the worker to force placeholder media for *any*
-    project (overrides Studio provider picks). Otherwise this script sets providers on the new project only.
+  - Optional: set DIRECTOR_PLACEHOLDER_MEDIA=1 on the worker to force placeholder *images* for *any*
+    project (overrides Studio image picks; narration still uses workspace TTS). Otherwise this script sets providers on the new project only.
 
 Music
   - After the run is queued, uploads a local file as a music bed (default: ~/Downloads/Desert Covenant.mp3).

@@ -31,13 +31,11 @@ def resolve_speech_narration_route(
       kokoro: voice, lang_code, speed
       chatterbox_turbo: ref_path (str filesystem or file:// URL)
       chatterbox_mtl: ref_path, language_id (str)
-      placeholder: {} (FFmpeg ding — see DIRECTOR_PLACEHOLDER_MEDIA)
+      placeholder: {} (FFmpeg ding — only when project explicitly requests placeholder/ding)
     """
     raw = (project_preferred_speech_provider or getattr(settings, "active_speech_provider", None) or "openai").strip()
     rl = raw.lower()
 
-    if getattr(settings, "director_placeholder_media", False):
-        return "placeholder", {}
     if rl in ("placeholder", "ding", "budget_tts"):
         return "placeholder", {}
 
