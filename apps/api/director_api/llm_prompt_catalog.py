@@ -77,7 +77,12 @@ LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
             "Structure for downstream quality: give each chapter a distinct narrative job (setup, turn, consequence, coda) "
             "so the program has clear arc and chapter-to-chapter variety; avoid repeating the same logline pattern "
             "for every chapter. Durations should be plausible for the beats described—later automation checks total "
-            "runtime fit per chapter."
+            "runtime fit per chapter. "
+            "Flow guidance (optional mental model — not a rigid template): across the full program, aim to cover attention "
+            "(hook), introduction of topic and voice, why the viewer should care (value), the substantive story (main content), "
+            "moments that refresh attention (pattern interrupts), a natural prompt toward reflection or action where it fits "
+            "(call to action), and a satisfying close (conclusion). Distribute these ideas across chapters as appropriate; "
+            "do not force every chapter to hit every beat or follow a fixed order."
         ),
         sort_order=30,
     ),
@@ -106,6 +111,11 @@ LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
             "Each chapter includes target_words_approx and min_words: script_text MUST be at least min_words "
             "words (count words in script_text) and should land near target_words_approx for the given "
             "target_duration_sec (~130 spoken words per minute). "
+            "Editorial flow (soft guidance only — weave naturally; never as a rigid checklist, numbered steps, or "
+            "spoken labels like 'introduction' or 'call to action'): think about hook, self/topic introduction, "
+            "what the audience gains, the core information, occasional shifts that keep listening fresh, a moment "
+            "that invites engagement or reflection where appropriate, and a clear sense of closure — spread across "
+            "the episode as the story demands, not one block per chapter in a fixed sequence."
         ),
         sort_order=40,
     ),
@@ -121,7 +131,8 @@ LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
             "(3) Limit repeated openers, slogans, or identical sentences across chapters (repetition hurts chapter review). "
             "(4) Ground imagery in claims: name places, materials, institutions where allowed_claims support it—helps "
             "visual planning and factual confidence. "
-            "(5) Vary rhythm and vocabulary between chapters while keeping one consistent narrator voice."
+            "(5) Vary rhythm and vocabulary between chapters while keeping one consistent narrator voice. "
+            "(6) Treat hook → setup → payoff → engagement → close as flexible story rhythm, not a formula to announce aloud."
         ),
         sort_order=45,
     ),
@@ -142,6 +153,7 @@ LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
             "Respect target_words_approx and min_words on the chapter object; keep spoken-doc tone (no bullets, no meta 'in this chapter'). "
             "If current_script is empty or a stub, write a complete chapter VO from the notes, title, dossier_summary, and claims. "
             "Otherwise revise current_script toward the notes while keeping strong continuity unless notes say to restructure. "
+            "Keep pacing and audience flow in mind as soft guidance only — do not insert rigid section labels or mechanical step order."
         ),
         sort_order=46,
     ),
