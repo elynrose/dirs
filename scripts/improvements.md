@@ -91,7 +91,7 @@ Both functions contain nearly identical if (t === "scene_generate_image" || t ==
 Inline components like ExportAttentionTimelineAssetsBlock, friendlyReadinessIssue-based render blocks, and other pure display components are re-evaluated on every parent render. Wrapping them in React.memo or extracting them as top-level components would prevent unnecessary reconciliation.
 
 7. Frontend prompt logic duplicates backend
-baseImagePromptFromScene and baseVideoPromptFromScene in App.jsx mirror exactly what _scene_still_prompt_for_comfy and _resolve_phase3_video_text_prompt do in worker_tasks.py. If a product change updates the backend prompt resolution (e.g. falling back to a different field), the frontend preview won't match what actually gets generated. The backend should expose the resolved prompt via an API endpoint, or document the contract explicitly as a stable interface.
+baseImagePromptFromScene and baseVideoPromptFromScene in App.jsx mirror `_scene_still_prompt_for_comfy` / `base_image_prompt_from_scene_fields` and `video_text_prompt_from_scene_fields` (including `[bracket]` narration hints). If resolution rules change again, prefer a single shared module or a small API that returns the resolved prompt for preview so Studio cannot drift.
 
 8. readDirectorUiSession whitelist of valid activePage values is hardcoded
 

@@ -157,25 +157,54 @@ function speechProviderSettingSelectValue(raw) {
   return "openai";
 }
 
-/** Matches API image prompt resolution: `prompt_package_json.image_prompt`, else narration excerpt. */
+/** Non-nested `[inner]` segments in narration (aligned with API `narration_bracket_visual`). */
+function extractBracketPhrasesFromNarration(narrationText) {
+  const out = [];
+  if (!narrationText || typeof narrationText !== "string") return out;
+  const re = /\[([^\[\]]+)\]/g;
+  let m;
+  while ((m = re.exec(narrationText)) !== null) {
+    const inner = String(m[1] || "").trim();
+    if (inner) out.push(inner);
+  }
+  return out;
+}
+
+/** Matches worker `_scene_still_prompt_for_comfy` / `base_image_prompt_from_scene_fields` (bracket hints override package image_prompt). */
 function baseImagePromptFromScene(scene) {
   if (!scene || typeof scene !== "object") return "";
+  const narr = String(scene.narration_text || "");
+  const phrases = extractBracketPhrasesFromNarration(narr);
+  if (phrases.length) {
+    const joined = phrases.slice(0, 16).join("; ");
+    return (
+      `A single photoreal documentary still — abstract tableau: ${joined}. ` +
+      "One cohesive composition; clear focal subject and setting implied by the hints."
+    ).slice(0, 4000);
+  }
   const pp = scene.prompt_package_json;
   const pkg = pp && typeof pp === "object" ? pp : {};
   const im = pkg.image_prompt;
   if (typeof im === "string" && im.trim()) return im.trim();
-  return String(scene.narration_text || "").slice(0, 1200);
+  return narr.slice(0, 1200);
 }
 
-/** Matches worker video text: `prompt_package_json.video_prompt`, else narration / purpose / visual_type. */
+/** Matches worker `video_text_prompt_from_scene_fields` (bracket hints before raw VO when no `video_prompt`). */
 function baseVideoPromptFromScene(scene) {
   if (!scene || typeof scene !== "object") return "";
   const pp = scene.prompt_package_json;
   const pkg = pp && typeof pp === "object" ? pp : {};
   const vp = pkg.video_prompt;
   if (typeof vp === "string" && vp.trim()) return vp.trim();
-  const n = String(scene.narration_text || "").trim();
-  if (n) return n.slice(0, 3000);
+  const narr = String(scene.narration_text || "").trim();
+  const phrases = extractBracketPhrasesFromNarration(narr);
+  if (phrases.length) {
+    const joined = phrases.slice(0, 16).join("; ");
+    return (
+      `Cinematic documentary shot: ${joined}. ` + "Subtle natural motion or slow camera move; one coherent beat."
+    ).slice(0, 3000);
+  }
+  if (narr) return narr.slice(0, 3000);
   const p = String(scene.purpose || scene.visual_type || "").trim();
   return p ? p.slice(0, 3000) : "";
 }
@@ -1513,6 +1542,8 @@ export default function App() {
   /** Optional 1-based story-order bounds for "All images (chapter)"; empty = full chapter. */
   const [batchImageRangeFrom, setBatchImageRangeFrom] = useState("");
   const [batchImageRangeTo, setBatchImageRangeTo] = useState("");
+  /** When narration has ``[bracket]`` hints, optionally run the text API to merge them into one still prompt (image jobs only). */
+  const [refineBracketImageWithLlm, setRefineBracketImageWithLlm] = useState(false);
 
   useEffect(() => {
     setBatchImageRangeFrom("");
@@ -3813,6 +3844,7 @@ export default function App() {
         if (m) extra.fal_image_model = m;
         const p = String(appConfig.active_image_provider || "fal").trim().toLowerCase();
         if (p) extra.image_provider = p;
+        if (refineBracketImageWithLlm) extra.refine_bracket_visual_with_llm = true;
       }
       if (path === "generate-video") {
         const m = String(appConfig.fal_video_model || "").trim();
@@ -3923,6 +3955,7 @@ export default function App() {
         if (m) extra.fal_image_model = m;
         const p = String(appConfig.active_image_provider || "fal").trim().toLowerCase();
         if (p) extra.image_provider = p;
+        if (refineBracketImageWithLlm) extra.refine_bracket_visual_with_llm = true;
         const body = await apiPostIdempotent(api, `/v1/scenes/${sid}/generate-image`, extra, idem);
         const jid = body.job?.id;
         if (jid) {
@@ -5595,7 +5628,10 @@ export default function App() {
               <h2>Prompts</h2>
               <p className="subtle">
                 System instructions for documentary text models. Workspace defaults come from the catalog; your edits are
-                stored per signed-in user (and scoped to the current workspace when using multi-tenant auth).
+                stored per signed-in user (and scoped to the current workspace when using multi-tenant auth). Scene-plan prompts
+                should mention that writers may use <code>[square brackets]</code> in <code>narration_text</code> for optional visual
+                emphasis — generation code uses those hints before raw VO when building image/video prompts (see also{" "}
+                <strong>Settings → Visual styles</strong>).
               </p>
               {llmPromptsErr ? <p className="err settings-page-error">{llmPromptsErr}</p> : null}
             </div>
@@ -6269,6 +6305,8 @@ export default function App() {
                       <p className="subtle">
                         Voice briefs passed to the text models for chapter scripts, scene plans, and narration revisions. Each production
                         stores a <code>preset:</code> or <code>user:</code> reference on the project; new agent runs use the default below.
+                        Scene VO may use <code>[brackets]</code> around visual emphases — those drive image/video prompts when present (see{" "}
+                        <strong>Visual styles</strong>).
                       </p>
                       {narrationStylesLibErr ? <p className="err">{narrationStylesLibErr}</p> : null}
                       <label htmlFor="cfg-default-narration-ref" style={{ marginTop: 12 }}>
@@ -6455,6 +6493,12 @@ export default function App() {
             <p className="subtle" style={{ marginTop: -4 }}>
               Default for new projects (<code>preset:&lt;id&gt;</code>). Override per-preset prompts below; those strings are fused into image and
               video generation.
+            </p>
+            <p className="subtle" style={{ marginTop: 10, lineHeight: 1.45 }}>
+              <strong>Visual hints in scene narration:</strong> In each scene’s VO / narration field, wrap short subjects or beats in square brackets
+              (e.g. <code>There [mermaids] were rare until one [reappeared on the beach]</code>). When present, still-image and video text prompts
+              prioritize those hints (plus this visual style and character consistency). Optional: in the Scene panel, check{" "}
+              <strong>Refine [bracket] hints with LLM</strong> before generating an image to merge hints into one precise prompt (off by default).
             </p>
             <select
               id="cfg-visual-preset"
@@ -8797,6 +8841,20 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           Video
                         </button>
                       </div>
+                      <label className="subtle" style={{ display: "flex", gap: 8, alignItems: "center", margin: "8px 0 4px", fontSize: "0.8rem", cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={refineBracketImageWithLlm}
+                          onChange={(e) => setRefineBracketImageWithLlm(e.target.checked)}
+                        />
+                        Refine <code>[bracket]</code> hints with LLM (optional; uses your configured text API)
+                      </label>
+                      <p className="subtle" style={{ margin: "0 0 8px", fontSize: "0.76rem", lineHeight: 1.45 }}>
+                        In narration, wrap key visuals in square brackets — e.g.{" "}
+                        <code>There [mermaids] were thought gone until one [reappeared on the shores of Atlantis].</code> Still images
+                        (and video text prompts) prioritize those hints, combined with the project art style. Checking the box above runs an
+                        extra LLM pass to merge hints into one precise still prompt (never automatic).
+                      </p>
                       {String(appConfig.active_video_provider || "fal").trim().toLowerCase() === "fal" &&
                       selectedFalVideoKind === "i2v" ? (
                         <p className="subtle" style={{ margin: "8px 0 0", fontSize: "0.78rem", lineHeight: 1.45 }}>

@@ -46,6 +46,13 @@ class ScenesGenerateBody(BaseModel):
 class SceneImageGenBody(BaseModel):
     generation_tier: Literal["preview", "production"] = "preview"
     image_prompt_override: str | None = Field(default=None, max_length=4000)
+    refine_bracket_visual_with_llm: bool = Field(
+        default=False,
+        description=(
+            "When narration contains [bracketed] visual hints, optionally run the text model to merge them "
+            "into one precise still prompt. Off by default; requires a configured OpenAI-compatible endpoint."
+        ),
+    )
     # Studio manual runs: overrides scene package / project.preferred_image_provider for this job only.
     image_provider: str | None = Field(default=None, max_length=64)
     fal_image_model: str | None = Field(

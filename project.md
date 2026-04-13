@@ -271,6 +271,7 @@ define scene purpose
 assign scene duration
 determine required asset types
 create prompts and references
+optional bracketed visual emphases in narration text (e.g. [subject]) for downstream image/video prompt control
 
 Outputs:
 
@@ -874,6 +875,10 @@ scene card schema
 critic report schema
 
 OpenAI function-calling guidance and OpenRouter structured outputs both support this design; local `LLMProvider` implementations must still emit JSON that validates against the same schemas (see §4.3).
+
+15.3 Narration visual hints (brackets)
+
+Scene `narration_text` may include **square-bracketed** phrases (e.g. `There [mermaids] were thought extinct until one [washed ashore].`). When at least one bracket segment is present, **still-image** and **video text** prompts are derived primarily from those hints (as an abstract tableau / motion beat), combined with the project **visual style** and character-consistency prefixes. Explicit `prompt_package_json.image_prompt` / `video_prompt` are used when there are **no** bracket segments (or when overridden by a manual image job override). An optional **LLM refine** step (user opt-in on image jobs only) merges bracket hints into one precise still prompt via the configured text API.
 
 16. Quality and evaluation framework
 Scene evaluation dimensions

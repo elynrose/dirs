@@ -123,6 +123,11 @@ def _worker_runtime_for_job(db, job: Job) -> Settings:
 def _worker_runtime_for_agent_run(db, run: AgentRun) -> Settings:
     return resolve_runtime_settings(db, get_settings(), run.tenant_id)
 from director_api.services.webhook_delivery import notify_job_terminal
+from director_api.services.narration_bracket_visual import (
+    base_image_prompt_from_scene_fields,
+    video_text_prompt_from_scene_fields,
+)
+from director_api.services.prompt_enhance import refine_bracket_visual_prompt_llm
 from director_api.services.research_service import sanitize_jsonb_text
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.tasks.celery_app import celery_app
@@ -868,10 +873,11 @@ def _package_negative_prompt(pp: Any) -> str | None:
 def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, settings: Any) -> str:
     """Same prompt recipe as scene image generation (Flux / Comfy still), without job payload overrides."""
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
-    prompt = pp.get("image_prompt") if isinstance(pp.get("image_prompt"), str) else None
-    if not prompt:
-        prompt = (scene.narration_text or "")[:1200]
-    prompt = sanitize_jsonb_text(str(prompt), 4000)
+    prompt, _, _ = base_image_prompt_from_scene_fields(
+        narration_text=scene.narration_text,
+        prompt_package_json=pp,
+        image_prompt_override=None,
+    )
     prefix = character_consistency_prefix(db, project.id, max_chars=2000)
     if prefix and not prompt_already_has_character_prefix(prompt, prefix):
         room = max(400, 4000 - len(prefix) - 3)
@@ -894,14 +900,14 @@ def _resolve_phase3_video_text_prompt(
     *,
     override: Any = None,
 ) -> str:
-    """Text sent to generative video models; optional job override, else ``prompt_package_json.video_prompt``, else VO/purpose."""
-    if isinstance(override, str) and override.strip():
-        return sanitize_jsonb_text(override.strip(), 3000)
-    vp = pp.get("video_prompt") if isinstance(pp.get("video_prompt"), str) else None
-    if vp and str(vp).strip():
-        return sanitize_jsonb_text(str(vp).strip(), 3000)
-    base = scene.narration_text or scene.purpose or scene.visual_type or "cinematic documentary scene"
-    return sanitize_jsonb_text(str(base)[:3000], 3000)
+    """Text sent to generative video models; optional job override, else package, else ``[bracket]`` hints, else VO/purpose."""
+    return video_text_prompt_from_scene_fields(
+        narration_text=scene.narration_text,
+        purpose=scene.purpose,
+        visual_type=scene.visual_type,
+        prompt_package_json=pp if isinstance(pp, dict) else {},
+        video_prompt_override=override if isinstance(override, str) else None,
+    )
 
 
 def _local_ffmpeg_motion_from_video_prompt(prompt: str) -> tuple[bool, str, str]:
@@ -3649,12 +3655,43 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
 
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
     override = payload.get("image_prompt_override")
-    if isinstance(override, str) and override.strip():
-        prompt = sanitize_jsonb_text(override.strip(), 4000)
-    else:
-        prompt = pp.get("image_prompt") if isinstance(pp.get("image_prompt"), str) else None
-        if not prompt:
-            prompt = (scene.narration_text or "")[:1200]
+    prompt, used_brackets, bracket_phrases = base_image_prompt_from_scene_fields(
+        narration_text=scene.narration_text,
+        prompt_package_json=pp,
+        image_prompt_override=override if isinstance(override, str) else None,
+    )
+    bracket_llm_refined = False
+    want_refine = bool(payload.get("refine_bracket_visual_with_llm"))
+    if (
+        bracket_phrases
+        and want_refine
+        and not (isinstance(override, str) and override.strip())
+    ):
+        refined, rerr = refine_bracket_visual_prompt_llm(
+            db,
+            settings,
+            scene_id=scene.id,
+            draft_prompt=prompt,
+            bracket_phrases=bracket_phrases,
+            narration_excerpt=scene.narration_text,
+        )
+        if refined:
+            prompt = sanitize_jsonb_text(refined, 4000)
+            bracket_llm_refined = True
+        elif rerr:
+            log.warning(
+                "bracket_visual_llm_refine_failed",
+                scene_id=str(scene.id),
+                err=str(rerr)[:500],
+            )
+
+    bracket_visual_audit: dict[str, Any] | None = None
+    if bracket_phrases:
+        bracket_visual_audit = {
+            "phrases": bracket_phrases,
+            "refined_with_llm": bracket_llm_refined,
+            "used_bracket_hints": used_brackets,
+        }
 
     prefix = character_consistency_prefix(db, project.id, max_chars=2000)
     if prefix and not prompt_already_has_character_prefix(prompt, prefix):
@@ -3704,6 +3741,8 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             "image_prompt_used": prompt[:4000],
             "routing_audit": {"requested_provider": requested, "resolved_provider": "placeholder"},
         }
+        if bracket_visual_audit:
+            image_params_ph["bracket_visual"] = bracket_visual_audit
         asset_ph = Asset(
             id=uuid.uuid4(),
             tenant_id=tenant_id,
@@ -3766,6 +3805,16 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         return out_ph
 
     if req_l not in ("fal", "comfyui", "comfy"):
+        failed_params: dict[str, Any] = {
+            "continuity_tags_json": scene.continuity_tags_json,
+            "continuity_tags_summary": scene.continuity_tags_json
+            if isinstance(scene.continuity_tags_json, list)
+            else [],
+            "image_prompt_used": prompt[:2000],
+            "routing_audit": {"requested_provider": requested, "resolved_provider": None},
+        }
+        if bracket_visual_audit:
+            failed_params["bracket_visual"] = bracket_visual_audit
         asset = Asset(
             id=uuid.uuid4(),
             tenant_id=tenant_id,
@@ -3777,14 +3826,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             timeline_sequence=_next_timeline_sequence_for_scene(db, scene.id),
             provider=str(requested)[:64],
             model_name=None,
-            params_json={
-                "continuity_tags_json": scene.continuity_tags_json,
-                "continuity_tags_summary": scene.continuity_tags_json
-                if isinstance(scene.continuity_tags_json, list)
-                else [],
-                "image_prompt_used": prompt[:2000],
-                "routing_audit": {"requested_provider": requested, "resolved_provider": None},
-            },
+            params_json=failed_params,
             error_message=(
                 f"Image provider '{requested}' is not supported; use fal, ComfyUI, or placeholder "
                 f"(see scripts/budget_pipeline_test.py / DIRECTOR_PLACEHOLDER_MEDIA)."
@@ -3833,6 +3875,8 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         "image_prompt_used": prompt[:4000],
         "routing_audit": {"requested_provider": requested, "resolved_provider": resolved_provider},
     }
+    if bracket_visual_audit:
+        image_params["bracket_visual"] = bracket_visual_audit
     if resolved_provider == "comfyui":
         image_params["comfyui_base_url"] = (settings.comfyui_base_url or "")[:256]
         image_params["comfyui_workflow_json_path"] = (settings.comfyui_workflow_json_path or "")[:512]

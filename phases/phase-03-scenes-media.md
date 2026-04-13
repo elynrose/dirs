@@ -32,7 +32,7 @@ source: "../project.md §8 Phase 3, §9.4–9.5, §14, §20 Phase 3 exit; docs/w
 
 ### Media pipelines
 
-- [x] **P3-D03** Image generation: enqueue from `POST /scenes/:id/generate-image`, persist `Asset` rows, upload to object storage, preview URL — _Celery job `scene_generate_image`, **fal** via `generate_scene_image`, files under `assets/{project_id}/{scene_id}/`; `GET /scenes/:id/assets`_
+- [x] **P3-D03** Image generation: enqueue from `POST /scenes/:id/generate-image`, persist `Asset` rows, upload to object storage, preview URL — _Celery job `scene_generate_image`, **fal** via `generate_scene_image`, files under `assets/{project_id}/{scene_id}/`; `GET /scenes/:id/assets`_ — _Optional **`[bracket]`** visual hints in `narration_text` steer prompts; optional `refine_bracket_visual_with_llm` on the request body_
 - [x] **P3-D04** Video generation: enqueue from `POST /scenes/:id/generate-video` — _job `scene_generate_video` encodes **local FFmpeg** still→MP4 from latest succeeded scene image; `provider=local_ffmpeg`; optional cloud I2V can reuse same route later_
 - [x] **P3-D05** Retry path: `POST /scenes/:id/retry` with variant prompts without orphaning old assets (history preserved) — _optional `image_prompt_override` + `generation_tier`; separate idempotency route from generate-image_
 - [x] **P3-D06** Asset approval: `POST /assets/:id/approve` (and reject path) gates “approved” assets for downstream use — _`POST /assets/:id/reject` with optional reason in `params_json.rejection`_

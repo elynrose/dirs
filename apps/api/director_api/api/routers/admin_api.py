@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -909,10 +909,19 @@ def admin_patch_tenant_billing(
 # ---------------------------------------------------------------------------
 
 
-def _project_admin_out(p: Project) -> dict[str, Any]:
+def _tenant_names_by_id(db: Session, tenant_ids: Iterable[str]) -> dict[str, str]:
+    ids = {str(x) for x in tenant_ids if x}
+    if not ids:
+        return {}
+    rows = list(db.scalars(select(Tenant).where(Tenant.id.in_(ids))).all())
+    return {t.id: t.name for t in rows}
+
+
+def _project_admin_out(p: Project, *, tenant_name: str | None = None) -> dict[str, Any]:
     return {
         "id": str(p.id),
         "tenant_id": p.tenant_id,
+        "tenant_name": tenant_name,
         "title": p.title,
         "topic": p.topic[:200] + ("…" if len(p.topic) > 200 else ""),
         "status": p.status,
@@ -949,7 +958,12 @@ def admin_list_projects(
         cq = cq.where(or_(Project.title.ilike(f"%{q.strip()}%"), Project.topic.ilike(f"%{q.strip()}%")))
     total = int(db.scalar(cq) or 0)
     rows = list(db.scalars(stmt.order_by(Project.updated_at.desc()).offset(offset).limit(limit)).all())
-    return {"data": {"projects": [_project_admin_out(p) for p in rows], "total_count": total}, "meta": {}}
+    name_by_tid = _tenant_names_by_id(db, (p.tenant_id for p in rows if p.tenant_id))
+    projects_out = [
+        _project_admin_out(p, tenant_name=name_by_tid.get(str(p.tenant_id)) if p.tenant_id else None)
+        for p in rows
+    ]
+    return {"data": {"projects": projects_out, "total_count": total}, "meta": {}}
 
 
 @router.get("/projects/{project_id}")
@@ -957,9 +971,11 @@ def admin_get_project(project_id: uuid.UUID, db: Session = Depends(get_db), _: N
     p = db.get(Project, project_id)
     if not p:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
+    name_by_tid = _tenant_names_by_id(db, [p.tenant_id] if p.tenant_id else [])
+    tn = name_by_tid.get(str(p.tenant_id)) if p.tenant_id else None
     return {
         "data": {
-            **_project_admin_out(p),
+            **_project_admin_out(p, tenant_name=tn),
             "topic_full": p.topic,
         },
         "meta": {},
@@ -980,7 +996,9 @@ def admin_patch_project(
     db.commit()
     db.refresh(p)
     invalidate_runtime_settings_cache(p.tenant_id)
-    return {"data": _project_admin_out(p), "meta": {}}
+    name_by_tid = _tenant_names_by_id(db, [p.tenant_id] if p.tenant_id else [])
+    tn = name_by_tid.get(str(p.tenant_id)) if p.tenant_id else None
+    return {"data": _project_admin_out(p, tenant_name=tn), "meta": {}}
 
 
 @router.delete("/projects/{project_id}")
@@ -1002,12 +1020,13 @@ def admin_delete_project(project_id: uuid.UUID, db: Session = Depends(get_db), _
 # ---------------------------------------------------------------------------
 
 
-def _pay_out(e: BillingPaymentEvent) -> dict[str, Any]:
+def _pay_out(e: BillingPaymentEvent, *, tenant_name: str | None = None) -> dict[str, Any]:
     return {
         "id": str(e.id),
         "stripe_event_id": e.stripe_event_id,
         "event_type": e.event_type,
         "tenant_id": e.tenant_id,
+        "tenant_name": tenant_name,
         "stripe_object_id": e.stripe_object_id,
         "amount_cents": e.amount_cents,
         "currency": e.currency,
@@ -1036,7 +1055,16 @@ def admin_list_payments(
         rows = list(
             db.scalars(stmt.order_by(BillingPaymentEvent.created_at.desc()).offset(offset).limit(limit)).all()
         )
-        return {"data": {"events": [_pay_out(e) for e in rows], "total_count": total}, "meta": {}}
+        tids = {str(e.tenant_id) for e in rows if e.tenant_id}
+        name_by_tid: dict[str, str] = {}
+        if tids:
+            tenants = list(db.scalars(select(Tenant).where(Tenant.id.in_(tids))).all())
+            name_by_tid = {t.id: t.name for t in tenants}
+        events_out = [
+            _pay_out(e, tenant_name=name_by_tid.get(str(e.tenant_id)) if e.tenant_id else None)
+            for e in rows
+        ]
+        return {"data": {"events": events_out, "total_count": total}, "meta": {}}
     except SQLAlchemyError as e:
         log.warning("admin_payments_list_failed", error=str(e))
         try:
@@ -1159,10 +1187,11 @@ def admin_budget_pipeline_test(
     return JSONResponse(status_code=202, content=payload)
 
 
-def _run_out(r: AgentRun) -> dict[str, Any]:
+def _run_out(r: AgentRun, *, tenant_name: str | None = None) -> dict[str, Any]:
     return {
         "id": str(r.id),
         "tenant_id": r.tenant_id,
+        "tenant_name": tenant_name,
         "project_id": str(r.project_id),
         "status": r.status,
         "current_step": r.current_step,
@@ -1192,7 +1221,11 @@ def admin_list_agent_runs(
         cq = cq.where(AgentRun.project_id == project_id)
     total = int(db.scalar(cq) or 0)
     rows = list(db.scalars(stmt.order_by(AgentRun.created_at.desc()).offset(offset).limit(limit)).all())
-    return {"data": {"agent_runs": [_run_out(r) for r in rows], "total_count": total}, "meta": {}}
+    name_by_tid = _tenant_names_by_id(db, (r.tenant_id for r in rows if r.tenant_id))
+    runs_out = [
+        _run_out(r, tenant_name=name_by_tid.get(str(r.tenant_id)) if r.tenant_id else None) for r in rows
+    ]
+    return {"data": {"agent_runs": runs_out, "total_count": total}, "meta": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -1200,10 +1233,11 @@ def admin_list_agent_runs(
 # ---------------------------------------------------------------------------
 
 
-def _job_out(j: Job) -> dict[str, Any]:
+def _job_out(j: Job, *, tenant_name: str | None = None) -> dict[str, Any]:
     return {
         "id": str(j.id),
         "tenant_id": j.tenant_id,
+        "tenant_name": tenant_name,
         "project_id": str(j.project_id) if j.project_id else None,
         "type": j.type,
         "status": j.status,
@@ -1232,5 +1266,9 @@ def admin_list_jobs(
         cq = cq.where(Job.status == status.strip())
     total = int(db.scalar(cq) or 0)
     rows = list(db.scalars(stmt.order_by(Job.created_at.desc()).offset(offset).limit(limit)).all())
-    return {"data": {"jobs": [_job_out(j) for j in rows], "total_count": total}, "meta": {}}
+    name_by_tid = _tenant_names_by_id(db, (j.tenant_id for j in rows if j.tenant_id))
+    jobs_out = [
+        _job_out(j, tenant_name=name_by_tid.get(str(j.tenant_id)) if j.tenant_id else None) for j in rows
+    ]
+    return {"data": {"jobs": jobs_out, "total_count": total}, "meta": {}}
 

@@ -195,6 +195,7 @@ def _enqueue_scene_image_job(
             "tenant_id": settings.default_tenant_id,
             "generation_tier": body.generation_tier,
             "image_prompt_override": body.image_prompt_override,
+            "refine_bracket_visual_with_llm": bool(body.refine_bracket_visual_with_llm),
             "image_provider": body.image_provider,
             "fal_image_model": body.fal_image_model,
         },

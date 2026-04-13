@@ -149,6 +149,56 @@ def enhance_image_retry_prompt(
     return _chat_json_text_field(settings, system=system, user=user, field="text", max_out_tokens=2048)
 
 
+def refine_bracket_visual_prompt_llm(
+    db: Session,
+    settings: Settings,
+    *,
+    scene_id: uuid.UUID,
+    draft_prompt: str,
+    bracket_phrases: list[str],
+    narration_excerpt: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Optional LLM pass: merge ``[bracket]`` hints into one precise still prompt. User must opt in at job time."""
+    sc = db.get(Scene, scene_id)
+    if not sc:
+        return None, "scene not found"
+    ch = db.get(Chapter, sc.chapter_id)
+    if not ch:
+        return None, "chapter not found"
+    proj = db.get(Project, ch.project_id)
+    if not proj or proj.tenant_id != settings.default_tenant_id:
+        return None, "project not found"
+
+    prev = _previous_scene_in_chapter(db, sc)
+    prev_block = _summarize_previous_scene(prev) if prev else "This is the first scene in the chapter — no prior beat."
+    bible = character_bible_for_llm_context(db, proj.id, max_chars=4000)
+    if not bible.strip():
+        bible = "(No project character bible yet — infer generic documentary consistency.)"
+
+    hints = "; ".join(bracket_phrases[:16])
+    narr_ctx = (narration_excerpt or sc.narration_text or "")[:4000]
+
+    system = (
+        "The user marked visual emphasis in their scene narration using [bracketed] phrases. "
+        "You must produce ONE fluent English prompt for a photoreal documentary still image generator. "
+        "Merge ALL bracket hints into a single coherent scene (same world state, one moment in time). "
+        "Match the project's visual style when given. Do not paste voice-over script; describe only what the camera sees. "
+        "No markdown, no bullet labels. "
+        f'Respond with JSON only: {{"text": "<single image prompt>"}}.'
+    )
+    user = (
+        f"Project title: {proj.title}\n"
+        f"Project topic: {str(proj.topic or '')[:1500]}\n\n"
+        f"Scene purpose: {str(sc.purpose or '')[:1200]}\n\n"
+        f"CHARACTER BIBLE (consistency):\n{bible}\n\n"
+        f"PREVIOUS SCENE (continuity):\n{prev_block}\n\n"
+        f"USER BRACKET HINTS (must all inform the still):\n{hints}\n\n"
+        f"DRAFT VISUAL PROMPT (improve or replace; keep intent):\n{draft_prompt.strip()[:3500]}\n\n"
+        f"FULL NARRATION (context only — do not quote verbatim):\n{narr_ctx}"
+    )
+    return _chat_json_text_field(settings, system=system, user=user, field="text", max_out_tokens=2048)
+
+
 def enhance_scene_vo_script(
     db: Session,
     settings: Settings,

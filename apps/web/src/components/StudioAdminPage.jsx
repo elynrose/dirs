@@ -694,10 +694,22 @@ export function StudioAdminPage({ showToast }) {
             <AdminProjectsTable data={list} onRefresh={loadTab} showToast={showToast} />
           ) : null}
           {tab === "runs" && list?.agent_runs ? (
-            <AdminGenericTable rows={list.agent_runs} columns={["id", "tenant_id", "project_id", "status", "created_at"]} />
+            <AdminGenericTable
+              rows={list.agent_runs}
+              columns={["id", "tenant_name", "project_id", "status", "created_at"]}
+              getCellTitle={(row, c) =>
+                c === "tenant_name" && row.tenant_id ? `Workspace id: ${row.tenant_id}` : undefined
+              }
+            />
           ) : null}
           {tab === "jobs" && list?.jobs ? (
-            <AdminGenericTable rows={list.jobs} columns={["id", "tenant_id", "type", "status", "created_at"]} />
+            <AdminGenericTable
+              rows={list.jobs}
+              columns={["id", "tenant_name", "type", "status", "created_at"]}
+              getCellTitle={(row, c) =>
+                c === "tenant_name" && row.tenant_id ? `Workspace id: ${row.tenant_id}` : undefined
+              }
+            />
           ) : null}
         </>
       )}
@@ -863,7 +875,12 @@ function AdminStripePanel({ data, onRefresh, showToast }) {
   );
 }
 
-function AdminGenericTable({ rows, columns }) {
+function adminColumnHeaderLabel(c) {
+  if (c === "tenant_name") return "tenant";
+  return c;
+}
+
+function AdminGenericTable({ rows, columns, getCellTitle }) {
   const r = Array.isArray(rows) ? rows : [];
   const isIdColumn = (c) => c === "id" || (typeof c === "string" && c.endsWith("_id"));
 
@@ -874,7 +891,7 @@ function AdminGenericTable({ rows, columns }) {
           <tr>
             {columns.map((c) => (
               <th key={c} style={{ textAlign: "left" }}>
-                {c}
+                {adminColumnHeaderLabel(c)}
               </th>
             ))}
           </tr>
@@ -884,9 +901,11 @@ function AdminGenericTable({ rows, columns }) {
             <tr key={row.id ?? JSON.stringify(row)}>
               {columns.map((c) => {
                 const v = row[c];
+                const titleAttr =
+                  typeof getCellTitle === "function" ? getCellTitle(row, c) ?? undefined : undefined;
                 if (v == null) {
                   return (
-                    <td key={c} className="mono">
+                    <td key={c} className="mono" title={titleAttr}>
                       —
                     </td>
                   );
@@ -894,13 +913,13 @@ function AdminGenericTable({ rows, columns }) {
                 const s = String(v);
                 if (isIdColumn(c) && s.length > 14) {
                   return (
-                    <td key={c}>
+                    <td key={c} title={titleAttr}>
                       <TruncId id={s} />
                     </td>
                   );
                 }
                 return (
-                  <td key={c} className="mono">
+                  <td key={c} className={c === "tenant_name" ? undefined : "mono"} title={titleAttr}>
                     {s}
                   </td>
                 );
@@ -1848,7 +1867,13 @@ function AdminPaymentsTable({ events, totalCount }) {
           <code>STRIPE_WEBHOOK_SECRET</code> and a reachable <code>/v1/billing/stripe/webhook</code>).
         </p>
       ) : (
-        <AdminGenericTable rows={rows} columns={["created_at", "event_type", "tenant_id", "amount_cents", "stripe_event_id"]} />
+        <AdminGenericTable
+          rows={rows}
+          columns={["created_at", "event_type", "tenant_name", "amount_cents", "stripe_event_id"]}
+          getCellTitle={(row, c) =>
+            c === "tenant_name" && row.tenant_id ? `Workspace id: ${row.tenant_id}` : undefined
+          }
+        />
       )}
     </>
   );
@@ -1916,7 +1941,9 @@ function AdminProjectsTable({ data, onRefresh, showToast }) {
               {editing === p.id ? (
                 <>
                   <td className="mono">{p.id}</td>
-                  <td className="mono">{p.tenant_id}</td>
+                  <td title={p.tenant_id ? `Workspace id: ${p.tenant_id}` : undefined}>
+                    {p.tenant_name != null && String(p.tenant_name).trim() !== "" ? p.tenant_name : "—"}
+                  </td>
                   <td>
                     <input value={title} onChange={(e) => setTitle(e.target.value)} />
                   </td>
@@ -1936,7 +1963,9 @@ function AdminProjectsTable({ data, onRefresh, showToast }) {
               ) : (
                 <>
                   <td className="mono">{p.id}</td>
-                  <td className="mono">{p.tenant_id}</td>
+                  <td title={p.tenant_id ? `Workspace id: ${p.tenant_id}` : undefined}>
+                    {p.tenant_name != null && String(p.tenant_name).trim() !== "" ? p.tenant_name : "—"}
+                  </td>
                   <td>{p.title}</td>
                   <td>{p.workflow_phase}</td>
                   <td>{p.status ?? "—"}</td>

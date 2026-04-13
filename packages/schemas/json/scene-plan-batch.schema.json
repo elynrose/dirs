@@ -27,7 +27,12 @@
           "order_index": { "type": "integer", "minimum": 0 },
           "purpose": { "type": "string", "minLength": 1, "maxLength": 2000 },
           "planned_duration_sec": { "type": "integer", "minimum": 3, "maximum": 600 },
-          "narration_text": { "type": "string", "minLength": 1, "maxLength": 12000 },
+          "narration_text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000,
+            "description": "Spoken VO for this beat. Optional: wrap short visual emphases in [square brackets] so image/video prompts can prioritize those hints; generation still applies project visual style and character consistency."
+          },
           "visual_type": { "type": "string", "minLength": 1, "maxLength": 64 },
           "prompt_package_json": { "type": "object" },
           "continuity_tags_json": {
