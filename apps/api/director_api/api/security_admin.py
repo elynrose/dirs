@@ -3,7 +3,7 @@
 Either:
 
 - ``X-Director-Admin-Key`` matches ``DIRECTOR_ADMIN_API_KEY`` (automation / legacy), or
-- ``Authorization: Bearer`` JWT + ``X-Tenant-Id`` and the user is ``admin`` or ``owner`` in that workspace.
+- ``Authorization: Bearer`` JWT + ``X-Tenant-Id`` and the user has membership role ``admin`` in that workspace.
 """
 
 from __future__ import annotations
@@ -92,12 +92,12 @@ def _assert_jwt_workspace_admin(request: Request, db: Session, settings) -> None
             detail={"code": "FORBIDDEN", "message": "not a member of this workspace"},
         )
     role = (row.role or "").strip().lower()
-    if role not in ("admin", "owner"):
+    if role != "admin":
         raise HTTPException(
             status_code=403,
             detail={
                 "code": "FORBIDDEN",
-                "message": "workspace admin or owner role required for admin API access",
+                "message": "workspace admin role required for admin API access",
             },
         )
 

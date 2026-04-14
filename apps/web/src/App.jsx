@@ -1067,13 +1067,13 @@ export default function App() {
     jobPollIntervalMs,
   );
 
-  /** SaaS: Studio Admin is limited to workspace **admin** or **owner**; legacy mode keeps Admin for operators. */
+  /** SaaS: Studio Admin only for workspace membership role **admin** (not owner/member); legacy mode keeps Admin for operators. */
   const canAccessStudioAdmin = useMemo(() => {
     if (authBootstrap.mode !== "saas") return true;
     if (!accountProfile?.active_tenant_id || !Array.isArray(accountProfile.tenants)) return false;
     const row = accountProfile.tenants.find((x) => x.id === accountProfile.active_tenant_id);
     const r = String(row?.role || "").toLowerCase();
-    return r === "admin" || r === "owner";
+    return r === "admin";
   }, [authBootstrap.mode, accountProfile]);
 
   const studioPageRails = useMemo(() => {

@@ -1,7 +1,7 @@
 """Platform admin API — CRUD for users, tenants, memberships, plans, billing, projects, payment audit.
 
 Auth: ``X-Director-Admin-Key`` matching ``DIRECTOR_ADMIN_API_KEY``, **or** (when auth is enabled)
-``Authorization: Bearer`` plus ``X-Tenant-Id`` for a user whose membership role is **admin** or **owner**.
+``Authorization: Bearer`` plus ``X-Tenant-Id`` for a user whose membership role is **admin** (not owner/member).
 """
 
 from __future__ import annotations
