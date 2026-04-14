@@ -29,7 +29,7 @@ def test_compute_pipeline_status_characters_row_after_scenes_pending_when_empty(
     mock_scene_counts.return_value = (2, 0, 0, 0)
     mock_narr_cov.return_value = (0, 0)
     mock_p5.return_value = {"ready": False, "issues": []}
-    db.scalar.side_effect = [1, 1, 0]
+    db.scalar.side_effect = [1, 1, 0, 0]
     scalars_result = MagicMock()
     scalars_result.all.return_value = []
     db.scalars.return_value = scalars_result
@@ -38,7 +38,8 @@ def test_compute_pipeline_status_characters_row_after_scenes_pending_when_empty(
     assert out["ok"] is True
     steps = out["steps"]
     ids = [s["id"] for s in steps]
-    assert ids.index("characters") == ids.index("scenes") + 1
+    assert ids.index("story_research_review") == ids.index("scenes") + 1
+    assert ids.index("characters") == ids.index("story_research_review") + 1
     assert ids.index("images") == ids.index("characters") + 1
     char_step = next(s for s in steps if s["id"] == "characters")
     assert char_step["label"] == "Character bible"
@@ -67,7 +68,7 @@ def test_compute_pipeline_status_characters_done_when_rows_exist(
     mock_scene_counts.return_value = (2, 1, 0, 1)
     mock_narr_cov.return_value = (0, 0)
     mock_p5.return_value = {"ready": False, "issues": []}
-    db.scalar.side_effect = [1, 1, 3]
+    db.scalar.side_effect = [1, 1, 3, 0]
     scalars_result = MagicMock()
     scalars_result.all.return_value = []
     db.scalars.return_value = scalars_result

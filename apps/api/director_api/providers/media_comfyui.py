@@ -223,7 +223,6 @@ def _pick_output_video(entry: dict[str, Any]) -> dict[str, str] | None:
         node_out = outputs.get(nid)
         if not isinstance(node_out, dict):
             continue
-        animated = bool(node_out.get("animated"))
         images = node_out.get("images")
         if not isinstance(images, list):
             continue

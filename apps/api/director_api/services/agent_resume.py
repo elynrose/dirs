@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from director_api.db.models import Asset, Chapter, Project, ResearchDossier, Scene
+from director_api.db.models import Chapter, Project, ResearchDossier, Scene
 
 
 def workflow_phase_rank(phase: str | None) -> int:

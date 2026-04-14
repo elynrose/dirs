@@ -9,10 +9,33 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from director_api.db.models import Chapter, Project, ProjectCharacter, ResearchDossier, Scene, TimelineVersion
+from director_api.db.models import (
+    Chapter,
+    CriticReport,
+    Project,
+    ProjectCharacter,
+    ResearchDossier,
+    TimelineVersion,
+)
 from director_api.services.agent_resume import workflow_phase_rank
 from director_api.services.phase5_readiness import compute_phase5_readiness, scene_image_video_counts, scenes_spoken_narration_coverage
 from ffmpeg_pipelines.paths import path_is_readable_file
+
+
+def _story_research_review_done(db: Session, project_id: UUID) -> bool:
+    """True when the worker's one-shot story-vs-research critic row exists (same latch as agent tail)."""
+    n = db.scalar(
+        select(func.count())
+        .select_from(CriticReport)
+        .where(
+            CriticReport.project_id == project_id,
+            CriticReport.target_type == "project",
+            CriticReport.target_id == project_id,
+            CriticReport.meta_json.isnot(None),
+            CriticReport.meta_json["kind"].astext == "story_research_review",
+        )
+    )
+    return int(n or 0) > 0
 
 
 def compute_pipeline_status(
@@ -67,7 +90,8 @@ def compute_pipeline_status(
     research_done = rank >= 3 and int(dossier_n) > 0
     outline_done = rank >= 4
     chapters_done = rank >= 5
-    scenes_done = scenes_tot > 0
+    scenes_done = rank >= 6 or scenes_tot > 0
+    story_research_done = _story_research_review_done(db, project_id)
     characters_done = int(char_n) > 0
     critique_blocked = p.workflow_phase == "critique_review"
 
@@ -77,6 +101,12 @@ def compute_pipeline_status(
         {"id": "outline", "label": "Chapter outline", "status": st(outline_done)},
         {"id": "chapters", "label": "Chapter scripts", "status": st(chapters_done)},
         {"id": "scenes", "label": "Scene planning", "status": st(scenes_done)},
+        {
+            "id": "story_research_review",
+            "label": "Story vs research",
+            "status": st(story_research_done),
+            "detail": "—",
+        },
         {
             "id": "characters",
             "label": "Character bible",
@@ -92,7 +122,7 @@ def compute_pipeline_status(
         {
             "id": "video_clips",
             "label": "Scene videos (optional)",
-            "status": "pending",
+            "status": "done" if scenes_tot > 0 and scenes_vid >= scenes_tot else "pending",
             "detail": f"{scenes_vid}/{scenes_tot} with video",
         },
         {

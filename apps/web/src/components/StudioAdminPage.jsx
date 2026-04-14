@@ -84,11 +84,63 @@ function formatShortId(value) {
   return `${s.slice(0, 6)}…${s.slice(-4)}`;
 }
 
-function TruncId({ id, className }) {
+async function copyTextToClipboard(text) {
+  const s = text == null ? "" : String(text);
+  if (!s) return false;
+  try {
+    await navigator.clipboard.writeText(s);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function TruncId({ id, className, copyable, onCopy }) {
   const full = id == null ? "" : String(id);
   const short = formatShortId(full);
+  const title = copyable ? `${full} — click to copy` : full;
+  const handleCopy = async (e) => {
+    if (!copyable || !full) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const ok = await copyTextToClipboard(full);
+    if (ok) onCopy?.();
+  };
+  const kbd = (e) => {
+    if (!copyable) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      void handleCopy(e);
+    }
+  };
   return (
-    <span className={className || "mono"} title={full} style={{ cursor: full.length > 14 ? "help" : undefined }}>
+    <span
+      className={className || "mono"}
+      title={title}
+      aria-label={copyable ? `Workspace id ${full}, click to copy` : undefined}
+      style={{
+        cursor: copyable ? "pointer" : full.length > 14 ? "help" : undefined,
+        textDecoration: copyable ? "underline dotted" : undefined,
+        textUnderlineOffset: copyable ? 2 : undefined,
+      }}
+      onClick={copyable ? handleCopy : undefined}
+      onKeyDown={copyable ? kbd : undefined}
+      role={copyable ? "button" : undefined}
+      tabIndex={copyable ? 0 : undefined}
+    >
       {short}
     </span>
   );
@@ -291,6 +343,10 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     const p = readBudgetPipelinePersisted();
     return p?.budgetMode === "auto" || p?.budgetMode === "hands-off" ? p.budgetMode : "hands-off";
   });
+  const [budgetFrameAspect, setBudgetFrameAspect] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return p?.budgetFrameAspect === "9:16" ? "9:16" : "16:9";
+  });
   const [budgetBusy, setBudgetBusy] = useState(false);
   const [budgetErr, setBudgetErr] = useState(() => {
     const p = readBudgetPipelinePersisted();
@@ -335,6 +391,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
           budgetTopic,
           budgetRuntime,
           budgetMode,
+          budgetFrameAspect,
           budgetLast,
           budgetErr,
           budgetRunHistory,
@@ -343,7 +400,17 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     } catch {
       /* quota or private mode */
     }
-  }, [unlocked, budgetTitle, budgetTopic, budgetRuntime, budgetMode, budgetLast, budgetErr, budgetRunHistory]);
+  }, [
+    unlocked,
+    budgetTitle,
+    budgetTopic,
+    budgetRuntime,
+    budgetMode,
+    budgetFrameAspect,
+    budgetLast,
+    budgetErr,
+    budgetRunHistory,
+  ]);
 
   useEffect(() => {
     const id = budgetLast?.project?.id;
@@ -555,6 +622,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
         topic,
         target_runtime_minutes: tr,
         mode: budgetMode === "auto" ? "auto" : "hands-off",
+        frame_aspect_ratio: budgetFrameAspect === "9:16" ? "9:16" : "16:9",
       };
       const tid = resolvedBudgetWorkspaceId.trim();
       if (tid) payload.tenant_id = tid;
@@ -598,7 +666,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     } finally {
       setBudgetBusy(false);
     }
-  }, [budgetTitle, budgetTopic, budgetRuntime, budgetMode, resolvedBudgetWorkspaceId, showToast]);
+  }, [budgetTitle, budgetTopic, budgetRuntime, budgetMode, budgetFrameAspect, resolvedBudgetWorkspaceId, showToast]);
 
   const continueBudgetPipeline = useCallback(async () => {
     const pid =
@@ -626,6 +694,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
         topic: "",
         target_runtime_minutes: tr,
         mode: budgetMode === "auto" ? "auto" : "hands-off",
+        frame_aspect_ratio: budgetFrameAspect === "9:16" ? "9:16" : "16:9",
       };
       const tid = resolvedBudgetWorkspaceId.trim();
       if (tid) payload.tenant_id = tid;
@@ -677,6 +746,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     budgetTitle,
     budgetRuntime,
     budgetMode,
+    budgetFrameAspect,
     resolvedBudgetWorkspaceId,
     showToast,
   ]);
@@ -948,6 +1018,17 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                   <select value={budgetMode} onChange={(e) => setBudgetMode(e.target.value)} style={{ maxWidth: 220 }}>
                     <option value="hands-off">Hands-off (unattended)</option>
                     <option value="auto">Auto</option>
+                  </select>
+                </label>
+                <label className="subtle" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  Picture frame (aspect ratio)
+                  <select
+                    value={budgetFrameAspect}
+                    onChange={(e) => setBudgetFrameAspect(e.target.value === "9:16" ? "9:16" : "16:9")}
+                    style={{ maxWidth: 220 }}
+                  >
+                    <option value="16:9">16:9 landscape</option>
+                    <option value="9:16">9:16 portrait (shorts)</option>
                   </select>
                 </label>
                 <p className="subtle" style={{ margin: 0, fontSize: "0.85rem" }}>
@@ -1777,7 +1858,11 @@ function AdminTenantsTable({ data, onRefresh, showToast }) {
               {editing === t.id ? (
                 <>
                   <td>
-                    <TruncId id={t.id} />
+                    <TruncId
+                      id={t.id}
+                      copyable
+                      onCopy={() => showToast?.("Workspace id copied", { type: "success" })}
+                    />
                   </td>
                   <td>
                     <input value={editName} onChange={(e) => setEditName(e.target.value)} />
@@ -1798,7 +1883,11 @@ function AdminTenantsTable({ data, onRefresh, showToast }) {
               ) : (
                 <>
                   <td>
-                    <TruncId id={t.id} />
+                    <TruncId
+                      id={t.id}
+                      copyable
+                      onCopy={() => showToast?.("Workspace id copied", { type: "success" })}
+                    />
                   </td>
                   <td>{t.name}</td>
                   <td>{t.slug ?? "—"}</td>

@@ -171,6 +171,12 @@ def main() -> int:
         help="Brief topic (still goes through the real text LLM).",
     )
     ap.add_argument("--runtime", type=int, default=5, help="target_runtime_minutes (2–120).")
+    ap.add_argument(
+        "--frame-aspect-ratio",
+        choices=("16:9", "9:16"),
+        default="16:9",
+        help='Delivery frame: 16:9 landscape or 9:16 portrait (matches Studio brief / admin budget test).',
+    )
     ap.add_argument("--poll-sec", type=float, default=4.0, help="Interval when polling agent run status.")
     ap.add_argument("--max-wait-sec", type=float, default=7200.0, help="Give up after this many seconds.")
     ap.add_argument(
@@ -223,6 +229,7 @@ def main() -> int:
             "visual_style": "preset:cinematic_documentary",
             "preferred_image_provider": "placeholder",
             "preferred_video_provider": "local_ffmpeg",
+            "frame_aspect_ratio": str(args.frame_aspect_ratio),
         },
         "pipeline_options": pipeline_options,
     }

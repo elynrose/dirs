@@ -66,7 +66,6 @@ def build_research_package(
                 "disputed": False,
             }
         )
-    source_ids = [s["id"] for s in sources]
     claims = []
     for i, s in enumerate(sources):
         excerpt = ((s.get("extracted_facts_json") or {}).get("excerpt") or "").strip()

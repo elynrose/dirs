@@ -25,35 +25,19 @@ import json
 import shutil
 import subprocess
 import tempfile
-import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.orm.attributes import flag_modified
-
-from celery.exceptions import SoftTimeLimitExceeded
-
-
-class AgentRunStopRequested(Exception):
-    """Raised to exit long synchronous phase work after ``_agent_run_checkpoint`` marks the run cancelled."""
-
-
-class AgentRunPausedYield(BaseException):
-    """Pause uses re-queue instead of ``time.sleep`` so ``--pool=solo`` workers stay available.
-
-    Subclass of ``BaseException`` (not ``Exception``) so nested ``except Exception`` blocks
-    in ``run_agent_run`` do not swallow the yield.
-    """
-
 
 from director_api.agents import phase2_llm, phase3_llm, phase4_llm
 from director_api.agents.openai_client import openai_compatible_configured
 from director_api.agents.parallel_openai_agents import (
     agents_sdk_import_ok,
-    run_chapter_critiques_parallel_sync,
     run_scene_critiques_parallel_sync,
 )
 from director_api.config import Settings, get_settings
@@ -114,14 +98,6 @@ from director_api.services.runtime_settings import resolve_runtime_settings
 from director_api.services.job_worker_gate import acquire_job_for_work
 from director_api.services.llm_prompt_runtime import llm_prompt_map_scope
 from director_api.services.llm_prompt_service import build_resolved_prompt_map
-
-
-def _worker_runtime_for_job(db, job: Job) -> Settings:
-    return resolve_runtime_settings(db, get_settings(), job.tenant_id)
-
-
-def _worker_runtime_for_agent_run(db, run: AgentRun) -> Settings:
-    return resolve_runtime_settings(db, get_settings(), run.tenant_id)
 from director_api.services.webhook_delivery import notify_job_terminal
 from director_api.services.narration_bracket_visual import (
     base_image_prompt_from_scene_fields,
@@ -131,16 +107,6 @@ from director_api.services.prompt_enhance import refine_bracket_visual_prompt_ll
 from director_api.services.research_service import sanitize_jsonb_text
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.tasks.celery_app import celery_app
-
-# On Windows ``--pool=solo``, Celery's *hard* time limit can terminate the whole worker, not just the task.
-# Must stay above ``Settings.ffmpeg_timeout_sec`` (single subprocess) and typical chained FFmpeg wall time.
-_CELERY_PHASE3_SOFT_SEC = 7200
-_CELERY_PHASE3_HARD_SEC = 8100
-_CELERY_PHASE5_SOFT_SEC = 7200
-_CELERY_PHASE5_HARD_SEC = 9000
-_CELERY_AGENT_RUN_SOFT_SEC = 14_400
-_CELERY_AGENT_RUN_HARD_SEC = 15_300
-
 from director_api.validation.character_schema import validate_character_bible_batch
 from director_api.validation.phase2_schemas import (
     validate_chapter_outline_batch,
@@ -165,7 +131,37 @@ from ffmpeg_pipelines.overlay_video import burn_overlays_on_video
 from ffmpeg_pipelines.paths import mkdir_parent, path_from_storage_url, path_is_readable_file, path_stat
 from ffmpeg_pipelines.slideshow import compile_image_slideshow
 from ffmpeg_pipelines.still_to_video import encode_image_to_mp4
-from ffmpeg_pipelines.video_chain import compile_video_concat
+
+
+class AgentRunStopRequested(Exception):
+    """Raised to exit long synchronous phase work after ``_agent_run_checkpoint`` marks the run cancelled."""
+
+
+class AgentRunPausedYield(BaseException):
+    """Pause uses re-queue instead of ``time.sleep`` so ``--pool=solo`` workers stay available.
+
+    Subclass of ``BaseException`` (not ``Exception``) so nested ``except Exception`` blocks
+    in ``run_agent_run`` do not swallow the yield.
+    """
+
+
+# On Windows ``--pool=solo``, Celery's *hard* time limit can terminate the whole worker, not just the task.
+# Must stay above ``Settings.ffmpeg_timeout_sec`` (single subprocess) and typical chained FFmpeg wall time.
+_CELERY_PHASE3_SOFT_SEC = 7200
+_CELERY_PHASE3_HARD_SEC = 8100
+_CELERY_PHASE5_SOFT_SEC = 7200
+_CELERY_PHASE5_HARD_SEC = 9000
+_CELERY_AGENT_RUN_SOFT_SEC = 14_400
+_CELERY_AGENT_RUN_HARD_SEC = 15_300
+
+
+def _worker_runtime_for_job(db, job: Job) -> Settings:
+    return resolve_runtime_settings(db, get_settings(), job.tenant_id)
+
+
+def _worker_runtime_for_agent_run(db, run: AgentRun) -> Settings:
+    return resolve_runtime_settings(db, get_settings(), run.tenant_id)
+
 
 configure_logging()
 log = get_logger(__name__)

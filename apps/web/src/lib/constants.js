@@ -191,13 +191,14 @@ export const RUN_STEP_LABEL = {
 /** Ordered stages per agent `through` mode (used for progress bar). */
 export const AGENT_PROGRESS_ORDER = {
   chapters: ["director", "research", "outline", "chapters"],
-  critique: ["director", "research", "outline", "chapters", "scenes"],
+  critique: ["director", "research", "outline", "chapters", "scenes", "story_research_review"],
   full_video: [
     "director",
     "research",
     "outline",
     "chapters",
     "scenes",
+    "story_research_review",
     "auto_characters",
     "auto_images",
     "auto_videos",
@@ -215,6 +216,7 @@ export const RESTART_AUTOMATION_STEPS = [
   { key: "outline", label: "Outline" },
   { key: "chapters", label: "Chapter scripts" },
   { key: "scenes", label: "Scene plan" },
+  { key: "story_research_review", label: "Story vs research" },
   { key: "auto_characters", label: "Character bible" },
   { key: "auto_images", label: "Scene images" },
   { key: "auto_videos", label: "Scene videos" },
@@ -228,8 +230,7 @@ export const AGENT_STEP_TO_PIPELINE_STEP_ID = {
   outline: "outline",
   chapters: "chapters",
   scenes: "scenes",
-  /** Worker-only step (not a pipeline row); tie banner to the next stage. */
-  story_research_review: "images",
+  story_research_review: "story_research_review",
   auto_characters: "characters",
   auto_images: "images",
   auto_videos: "video_clips",
@@ -246,6 +247,7 @@ export const PIPELINE_STEP_TO_RERUN_FROM = {
   outline: "outline",
   chapters: "chapters",
   scenes: "scenes",
+  story_research_review: "story_research_review",
   characters: "auto_characters",
   images: "auto_images",
   video_clips: "auto_videos",

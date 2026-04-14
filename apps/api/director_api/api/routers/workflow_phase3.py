@@ -58,7 +58,7 @@ from director_api.services.scene_clip_upload import (
     validate_explicit_clip_kind,
 )
 from director_api.storage.filesystem import FilesystemStorage
-from director_api.tasks.job_enqueue import enqueue_job_task, enqueue_run_phase3_job
+from director_api.tasks.job_enqueue import enqueue_run_phase3_job
 from ffmpeg_pipelines.paths import path_from_storage_url, path_is_readable_file
 
 router = APIRouter(tags=["phase3"])

@@ -69,11 +69,11 @@ def classify_from_filename_and_hint(
 
     if ext in _IMAGE_EXTS:
         return "image", ext
-    if ext in _VIDEO_EXTS and ext not in _AMBIGUOUS_EXTS:
+    if ext in _VIDEO_EXTS and ext not in AMBIGUOUS_EXTS:
         return "video", ext
     if ext in _AUDIO_EXTS:
         return "audio", ext
-    if ext in _AMBIGUOUS_EXTS:
+    if ext in AMBIGUOUS_EXTS:
         return "video", ext  # refined later via ffprobe
     # Default: treat unknown as video attempt (common for misnamed files)
     return "video", ext if ext != ".bin" else ".mp4"

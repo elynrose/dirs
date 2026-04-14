@@ -137,7 +137,7 @@ def enhance_image_retry_prompt(
         "(1) continuity with the PREVIOUS SCENE summary when relevant, "
         "(2) character/visual consistency from the CHARACTER BIBLE when relevant. "
         "Keep a single fluent English prompt suitable for an image model (no markdown, no bullet labels). "
-        f'Respond with a JSON object only: {{"text": "<improved prompt>"}}.'
+        'Respond with a JSON object only: {"text": "<improved prompt>"}.'
     )
     user = (
         f"Project title: {proj.title}\n"
@@ -184,7 +184,7 @@ def refine_bracket_visual_prompt_llm(
         "Merge ALL bracket hints into a single coherent scene (same world state, one moment in time). "
         "Match the project's visual style when given. Do not paste voice-over script; describe only what the camera sees. "
         "No markdown, no bullet labels. "
-        f'Respond with JSON only: {{"text": "<single image prompt>"}}.'
+        'Respond with JSON only: {"text": "<single image prompt>"}.'
     )
     user = (
         f"Project title: {proj.title}\n"

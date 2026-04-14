@@ -22,7 +22,7 @@ from director_api.db.models import AgentRun, Asset, AuditEvent, Chapter, CriticR
 from director_api.services import timeline_image_repair as timeline_image_repair_svc
 from director_api.services.job_quota import assert_can_enqueue
 from director_api.services.phase5_readiness import compute_phase5_readiness, get_timeline_asset_for_project
-from director_api.tasks.job_enqueue import enqueue_job_task, enqueue_run_phase3_job
+from director_api.tasks.job_enqueue import enqueue_run_phase3_job
 from director_api.services.tenant_entitlements import assert_can_create_project
 from director_api.storage.project_storage_cleanup import remove_generated_project_files
 from director_api.validation.brief import validate_documentary_brief

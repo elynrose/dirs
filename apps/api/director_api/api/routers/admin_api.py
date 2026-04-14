@@ -6,7 +6,7 @@ Auth: header ``X-Director-Admin-Key`` must match ``DIRECTOR_ADMIN_API_KEY``.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Iterable, Literal
 
 import structlog
@@ -18,7 +18,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from director_api.api.routers.agent_runs import _TERMINAL_STATUSES, _handle_agent_run_control
-from director_api.api.schemas.agent_run import AgentRunOut, AgentRunPipelineControl
+from director_api.api.schemas.agent_run import AgentRunCreate, AgentRunOut, AgentRunPipelineControl
+from director_api.api.schemas.project import FrameAspectRatio, ProjectCreate, ProjectOut
 from director_api.api.security_admin import assert_admin_request
 from director_api.auth.passwords import hash_password
 from director_api.db.models import (
@@ -1090,6 +1091,10 @@ class AdminBudgetPipelineTestBody(BaseModel):
     topic: str = Field(default="", max_length=8000)
     target_runtime_minutes: int = Field(default=5, ge=2, le=120)
     mode: Literal["auto", "hands-off"] = "hands-off"
+    frame_aspect_ratio: FrameAspectRatio | None = Field(
+        default="16:9",
+        description='Delivery frame: "16:9" landscape or "9:16" portrait (matches Studio brief).',
+    )
     tenant_id: str | None = Field(
         default=None,
         description="Workspace id; defaults to platform default tenant from settings.",
@@ -1134,8 +1139,6 @@ def admin_budget_pipeline_test(
 ) -> JSONResponse:
     """Enqueue a budget/smoke pipeline run (parity with the CLI script; requires Celery worker)."""
     from director_api.api.routers.agent_runs import _project_from_brief
-    from director_api.api.schemas.agent_run import AgentRunCreate, AgentRunOut
-    from director_api.api.schemas.project import ProjectCreate, ProjectOut
     from director_api.tasks.worker_tasks import run_agent_run
 
     base = get_settings()
@@ -1175,6 +1178,7 @@ def admin_budget_pipeline_test(
             visual_style="preset:cinematic_documentary",
             preferred_image_provider="placeholder",
             preferred_video_provider="local_ffmpeg",
+            frame_aspect_ratio=body.frame_aspect_ratio or "16:9",
             # Omit speech provider so narration uses workspace ``active_speech_provider`` (real TTS), not FFmpeg ding.
         )
         create_body = AgentRunCreate(brief=brief, pipeline_options=po)

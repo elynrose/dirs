@@ -11,7 +11,7 @@ from typing import Any
 
 import structlog
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from director_api.config import Settings
