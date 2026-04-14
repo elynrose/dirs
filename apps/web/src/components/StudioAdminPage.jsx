@@ -2238,6 +2238,7 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
   const [tenantId, setTenantId] = useState("");
   const [patchJson, setPatchJson] = useState("{}");
   const [loadBusy, setLoadBusy] = useState(false);
+  const [searchHits, setSearchHits] = useState([]);
 
   const patchObj = useMemo(() => {
     try {
@@ -2258,27 +2259,48 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
     }
   };
 
+  const fetchBillingForTenant = async (tid) => {
+    const r = await adminFetch(`/v1/admin/tenant-billing/${encodeURIComponent(tid)}`);
+    const body = await parseJson(r);
+    if (!r.ok) {
+      showToast?.(apiErrorMessage(body) || "Failed", { type: "error" });
+      setPatchJson("{}");
+      return false;
+    }
+    setTenantId(tid);
+    setPatchJson(safeJsonStringify(body.data));
+    if (body.meta?.billing_row_present === false) {
+      showToast?.("No billing row yet — edit JSON or entitlements, then PATCH to create the subscription.", {
+        type: "info",
+        durationMs: 7000,
+      });
+    } else {
+      showToast?.("Loaded billing row", { type: "success" });
+    }
+    return true;
+  };
+
   const loadOne = async () => {
-    const tid = tenantId.trim();
-    if (!tid) return;
+    const q = tenantId.trim();
+    if (!q) return;
     setLoadBusy(true);
+    setSearchHits([]);
     try {
-      const r = await adminFetch(`/v1/admin/tenant-billing/${encodeURIComponent(tid)}`);
-      const body = await parseJson(r);
-      if (!r.ok) {
-        showToast?.(apiErrorMessage(body) || "Failed", { type: "error" });
-        setPatchJson("{}");
-        return;
+      const sr = await adminFetch(`/v1/admin/tenant-billing/search?q=${encodeURIComponent(q)}`);
+      const sb = await parseJson(sr);
+      if (sr.ok && Array.isArray(sb.data?.items)) {
+        const hits = sb.data.items;
+        if (hits.length === 1) {
+          await fetchBillingForTenant(hits[0].tenant_id);
+          return;
+        }
+        if (hits.length > 1) {
+          setSearchHits(hits);
+          showToast?.("Multiple workspaces matched — pick one below.", { type: "info", durationMs: 7000 });
+          return;
+        }
       }
-      setPatchJson(safeJsonStringify(body.data));
-      if (body.meta?.billing_row_present === false) {
-        showToast?.("No billing row yet — edit JSON or entitlements, then PATCH to create the subscription.", {
-          type: "info",
-          durationMs: 7000,
-        });
-      } else {
-        showToast?.("Loaded billing row", { type: "success" });
-      }
+      await fetchBillingForTenant(q);
     } catch (e) {
       showToast?.(formatUserFacingError(e), { type: "error" });
     } finally {
@@ -2311,12 +2333,15 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
       <div className="panel" style={{ padding: 12, marginBottom: 16 }}>
         <strong>Tenant billing</strong>
         <p className="subtle">
-          Load returns the billing row if it exists; if the workspace has no row yet, you get a blank template (same
-          shape). PATCH creates the row when missing — set <code>plan_id</code>, <code>status</code> (e.g. active or
-          trialing), and/or <code>entitlements_override_json</code> without Stripe.
+          <strong>Load</strong> looks up by <strong>user email</strong>, <strong>user full name</strong>,{" "}
+          <strong>workspace name</strong>, <strong>workspace slug</strong>, or exact <strong>workspace id</strong>. If
+          several workspaces match, choose one in the results. Load returns the billing row if it exists; if the
+          workspace has no row yet, you get a blank template (same shape). PATCH creates the row when missing — set{" "}
+          <code>plan_id</code>, <code>status</code> (e.g. active or trialing), and/or{" "}
+          <code>entitlements_override_json</code> without Stripe.
         </p>
         <input
-          placeholder="tenant id"
+          placeholder="email, user name, workspace name, slug, or workspace id"
           value={tenantId}
           onChange={(e) => setTenantId(e.target.value)}
           className="mono"
@@ -2327,6 +2352,75 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
             {loadBusy ? "Loading…" : "Load"}
           </button>
         </div>
+        {searchHits.length > 0 ? (
+          <div style={{ marginBottom: 12, overflowX: "auto" }}>
+            <p className="subtle" style={{ marginBottom: 6 }}>
+              Search results ({searchHits.length})
+            </p>
+            <table className="usage-table" style={{ fontSize: "0.82rem", width: "100%" }}>
+              <thead>
+                <tr>
+                  <th>workspace</th>
+                  <th>user</th>
+                  <th>match</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {searchHits.map((row, idx) => (
+                  <tr key={`${row.tenant_id}-${row.user_id ?? "t"}-${idx}`}>
+                    <td>
+                      <span className="mono">{row.tenant_name || row.tenant_id}</span>
+                      <div className="subtle mono" style={{ fontSize: "0.75rem" }}>
+                        {row.tenant_id}
+                      </div>
+                    </td>
+                    <td>
+                      {row.user_email ? (
+                        <>
+                          {row.user_email}
+                          {row.user_full_name ? (
+                            <div className="subtle" style={{ fontSize: "0.75rem" }}>
+                              {row.user_full_name}
+                            </div>
+                          ) : null}
+                          {row.role ? (
+                            <div className="subtle" style={{ fontSize: "0.75rem" }}>
+                              role: {row.role}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="subtle">—</span>
+                      )}
+                    </td>
+                    <td className="subtle">{row.match_type ?? "—"}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={loadBusy}
+                        onClick={() => {
+                          void (async () => {
+                            setLoadBusy(true);
+                            setSearchHits([]);
+                            try {
+                              await fetchBillingForTenant(row.tenant_id);
+                            } finally {
+                              setLoadBusy(false);
+                            }
+                          })();
+                        }}
+                      >
+                        Use workspace
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
         <p className="subtle" style={{ marginBottom: 6 }}>
           <strong>entitlements_override_json</strong> — same permission keys as plans; merged on top of the subscribed
           plan for this workspace.
@@ -2347,8 +2441,8 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
       <p className="subtle">Total: {data.total_count ?? items.length}</p>
       {items.length === 0 ? (
         <p className="subtle" style={{ marginTop: 8 }}>
-          No tenant billing rows in the list yet. Use Load + PATCH above for a workspace id (row is created on first PATCH
-          if missing), or complete Stripe checkout from the Account page.
+          No tenant billing rows in the list yet. Use Load + PATCH above (search by user email / name or workspace name;
+          row is created on first PATCH if missing), or complete Stripe checkout from the Account page.
         </p>
       ) : null}
       <div style={{ overflowX: "auto" }}>
@@ -2376,13 +2470,11 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
                     type="button"
                     className="secondary"
                     onClick={() => {
-                      setTenantId(row.tenant_id);
                       void (async () => {
                         setLoadBusy(true);
+                        setSearchHits([]);
                         try {
-                          const r = await adminFetch(`/v1/admin/tenant-billing/${encodeURIComponent(row.tenant_id)}`);
-                          const body = await parseJson(r);
-                          if (r.ok) setPatchJson(safeJsonStringify(body.data));
+                          await fetchBillingForTenant(row.tenant_id);
                         } finally {
                           setLoadBusy(false);
                         }

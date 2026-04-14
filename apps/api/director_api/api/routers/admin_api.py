@@ -856,6 +856,74 @@ def admin_list_tenant_billing(
         }
 
 
+@router.get("/tenant-billing/search")
+def admin_search_tenant_billing(
+    db: Session = Depends(get_db),
+    _: None = AdminDep,
+    q: str = Query(..., min_length=1, max_length=320),
+) -> dict[str, Any]:
+    """Resolve workspace ids for tenant billing from user email, user name, workspace name, slug, or exact tenant id."""
+    raw = (q or "").strip()
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(
+        *,
+        tenant_id: str,
+        tenant_name: str | None,
+        match_type: str,
+        user_id: int | None = None,
+        user_email: str | None = None,
+        user_full_name: str | None = None,
+        role: str | None = None,
+    ) -> None:
+        slot = f"u:{user_id}" if user_id is not None else "_"
+        key = (tenant_id, slot)
+        if key in seen:
+            return
+        seen.add(key)
+        items.append(
+            {
+                "tenant_id": tenant_id,
+                "tenant_name": tenant_name,
+                "match_type": match_type,
+                "user_id": user_id,
+                "user_email": user_email,
+                "user_full_name": user_full_name,
+                "role": role,
+            }
+        )
+
+    t_exact = db.get(Tenant, raw)
+    if t_exact:
+        _add(tenant_id=t_exact.id, tenant_name=t_exact.name, match_type="tenant_id")
+
+    pat = f"%{raw}%"
+    for t in db.scalars(
+        select(Tenant).where(or_(Tenant.name.ilike(pat), Tenant.slug.ilike(pat))).limit(30)
+    ).all():
+        _add(tenant_id=t.id, tenant_name=t.name, match_type="tenant_name_or_slug")
+
+    for u in db.scalars(
+        select(User).where(or_(User.email.ilike(pat), User.full_name.ilike(pat))).limit(30)
+    ).all():
+        mems = list(db.scalars(select(TenantMembership).where(TenantMembership.user_id == u.id)).all())
+        for m in mems:
+            tn = db.get(Tenant, m.tenant_id)
+            fn = (u.full_name or "").strip() or None
+            _add(
+                tenant_id=m.tenant_id,
+                tenant_name=tn.name if tn else m.tenant_id,
+                match_type="user_member",
+                user_id=u.id,
+                user_email=u.email,
+                user_full_name=fn,
+                role=m.role,
+            )
+
+    return {"data": {"items": items, "query": raw}, "meta": {}}
+
+
 @router.get("/tenant-billing/{tenant_id}")
 def admin_get_tenant_billing(tenant_id: str, db: Session = Depends(get_db), _: None = AdminDep) -> dict[str, Any]:
     tid = (tenant_id or "").strip()
