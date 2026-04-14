@@ -436,6 +436,64 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("telegram_webhook_secret", "TELEGRAM_WEBHOOK_SECRET"),
     )
+    # Notify on failed / cancelled / blocked runs (Telegram); includes Retry when possible.
+    telegram_notify_pipeline_failures: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "telegram_notify_pipeline_failures",
+            "TELEGRAM_NOTIFY_PIPELINE_FAILURES",
+        ),
+    )
+    # Absolute Studio URL for Telegram deep links (e.g. https://studio.example.com).
+    director_public_app_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("director_public_app_url", "DIRECTOR_PUBLIC_APP_URL"),
+    )
+    # Public API base for OAuth redirects (e.g. https://api.example.com). If unset, auth-url uses the incoming request host.
+    public_api_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("public_api_base_url", "PUBLIC_API_BASE_URL"),
+    )
+    # YouTube Data API v3 (optional). Refresh token is stored per workspace in app_settings.
+    youtube_client_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("youtube_client_id", "YOUTUBE_CLIENT_ID"),
+    )
+    youtube_client_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("youtube_client_secret", "YOUTUBE_CLIENT_SECRET"),
+    )
+    youtube_refresh_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("youtube_refresh_token", "YOUTUBE_REFRESH_TOKEN"),
+    )
+    youtube_auto_upload_after_export: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "youtube_auto_upload_after_export",
+            "YOUTUBE_AUTO_UPLOAD_AFTER_EXPORT",
+        ),
+    )
+    youtube_default_privacy: str = Field(
+        default="unlisted",
+        validation_alias=AliasChoices("youtube_default_privacy", "YOUTUBE_DEFAULT_PRIVACY"),
+        description='Video privacy: "public", "unlisted", or "private".',
+    )
+    youtube_share_watch_link_in_telegram: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "youtube_share_watch_link_in_telegram",
+            "YOUTUBE_SHARE_WATCH_LINK_IN_TELEGRAM",
+        ),
+    )
+    # When true, automated final_cut jobs burn subtitles.vtt into the MP4 when the file exists.
+    burn_subtitles_in_final_cut_default: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "burn_subtitles_in_final_cut_default",
+            "BURN_SUBTITLES_IN_FINAL_CUT_DEFAULT",
+        ),
+    )
 
     # ------------------------------------------------------------------
     # Phase 4 — critic

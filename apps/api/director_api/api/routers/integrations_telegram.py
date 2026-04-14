@@ -17,7 +17,11 @@ from director_api.config import Settings, get_settings
 from director_api.db.models import AppSetting, AgentRun, TelegramChatStudioSession
 from director_api.db.session import get_db
 from director_api.services.runtime_settings import resolve_runtime_settings
-from director_api.services.telegram_client import telegram_send_message
+from director_api.services.agent_run_retry import enqueue_continue_agent_run
+from director_api.services.telegram_client import (
+    telegram_answer_callback_query,
+    telegram_send_message,
+)
 from director_api.services.telegram_studio_bridge import (
     get_or_create_telegram_studio_session,
     get_telegram_studio_session_row,
@@ -210,6 +214,43 @@ async def telegram_webhook(
         body: dict[str, Any] = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail={"code": "BAD_JSON", "message": "expected JSON body"}) from None
+
+    cb = body.get("callback_query")
+    if isinstance(cb, dict):
+        cq_id = cb.get("id")
+        data_raw = cb.get("data")
+        data = data_raw.strip() if isinstance(data_raw, str) else ""
+        msg_cb = cb.get("message")
+        chat_cb = msg_cb.get("chat") if isinstance(msg_cb, dict) else None
+        chat_id_raw_cb = chat_cb.get("id") if isinstance(chat_cb, dict) else None
+        incoming_chat_cb = str(chat_id_raw_cb).strip() if chat_id_raw_cb is not None else ""
+        sh_cb = (x_telegram_bot_api_secret_token or "").strip()
+        rt_cb = _find_runtime_settings_for_telegram_chat(
+            db, base, incoming_chat_id=incoming_chat_cb, secret_header=sh_cb
+        )
+        token_cb = (rt_cb.telegram_bot_token or "").strip() if rt_cb else ""
+        if token_cb and cq_id:
+            if data.startswith("retry_ar:"):
+                rid = data.split(":", 1)[1].strip()
+                ok = False
+                msg_txt = "Workspace not linked to this chat"
+                if rt_cb:
+                    try:
+                        ou = uuid.UUID(rid)
+                    except ValueError:
+                        msg_txt = "Invalid run id"
+                    else:
+                        ok, msg_txt, _new_id = enqueue_continue_agent_run(db, old_run_id=ou)
+                try:
+                    telegram_answer_callback_query(token_cb, str(cq_id), text=(msg_txt or "")[:200])
+                except Exception as exc:
+                    log.warning("telegram_callback_answer_failed", error=str(exc))
+            else:
+                try:
+                    telegram_answer_callback_query(token_cb, str(cq_id), text="Unknown action")
+                except Exception:
+                    pass
+        return {"ok": True}
 
     msg = body.get("message") or body.get("edited_message")
     if not isinstance(msg, dict):

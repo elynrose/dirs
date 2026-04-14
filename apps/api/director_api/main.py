@@ -20,6 +20,7 @@ from director_api.api.routers import (
     fal_catalog,
     health,
     integrations_telegram,
+    integrations_youtube,
     jobs,
     narration_styles,
     project_characters,
@@ -157,6 +158,7 @@ app.include_router(fal_catalog.router, prefix="/v1")
 app.include_router(jobs.router, prefix="/v1")
 app.include_router(settings.router, prefix="/v1")
 app.include_router(integrations_telegram.router, prefix="/v1")
+app.include_router(integrations_youtube.router, prefix="/v1")
 app.include_router(prompts.router, prefix="/v1")
 app.include_router(narration_styles.router, prefix="/v1")
 

@@ -236,6 +236,8 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             "webhook_signing_secret",
             "telegram_bot_token",
             "telegram_webhook_secret",
+            "youtube_client_secret",
+            "youtube_refresh_token",
         }
     )
     for sk in _optional_secret_keys:
@@ -247,6 +249,23 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             clean["telegram_chat_id"] = tc
         else:
             clean.pop("telegram_chat_id", None)
+    if "telegram_notify_pipeline_failures" in clean:
+        clean["telegram_notify_pipeline_failures"] = bool(clean["telegram_notify_pipeline_failures"])
+    if "youtube_auto_upload_after_export" in clean:
+        clean["youtube_auto_upload_after_export"] = bool(clean["youtube_auto_upload_after_export"])
+    if "youtube_share_watch_link_in_telegram" in clean:
+        clean["youtube_share_watch_link_in_telegram"] = bool(clean["youtube_share_watch_link_in_telegram"])
+    if "burn_subtitles_in_final_cut_default" in clean:
+        clean["burn_subtitles_in_final_cut_default"] = bool(clean["burn_subtitles_in_final_cut_default"])
+    if "youtube_default_privacy" in clean:
+        pv = str(clean["youtube_default_privacy"] or "").strip().lower()
+        if pv not in ("public", "unlisted", "private"):
+            pv = "unlisted"
+        clean["youtube_default_privacy"] = pv
+    for _url_key in ("director_public_app_url", "public_api_base_url", "youtube_client_id"):
+        if _url_key in clean and isinstance(clean[_url_key], str):
+            v = clean[_url_key].strip()
+            clean[_url_key] = v or None
     return clean
 
 

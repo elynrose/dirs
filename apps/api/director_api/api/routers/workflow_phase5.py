@@ -26,6 +26,7 @@ from director_api.api.routers.workflow_phase3 import _chapter_or_404, _scene_or_
 from director_api.services.tenant_entitlements import assert_subtitles_allowed
 from director_api.api.schemas.phase5 import (
     ExportBundleBody,
+    FinalCutBody,
     FineCutBody,
     MusicBedCreate,
     MusicBedOut,
@@ -1037,7 +1038,7 @@ def subtitles_generate(
 @router.post("/projects/{project_id}/final-cut")
 def final_cut(
     project_id: UUID,
-    body: RoughCutBody,
+    body: FinalCutBody,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
@@ -1067,6 +1068,7 @@ def final_cut(
             "project_id": str(project_id),
             "tenant_id": settings.default_tenant_id,
             "allow_unapproved_media": body.allow_unapproved_media,
+            "burn_subtitles_into_video": body.burn_subtitles_into_video,
         },
         project_id=project_id,
     )

@@ -974,6 +974,8 @@ export default function App() {
   const [musicBedPick, setMusicBedPick] = useState("");
   /** Rough-cut: dissolve between consecutive stills (timeline ``clip_crossfade_sec``). */
   const [clipCrossfadeSec, setClipCrossfadeSec] = useState(0);
+  /** When true, POST /final-cut sends ``burn_subtitles_into_video`` (requires ``subtitles.vtt`` on disk). */
+  const [burnSubtitlesOnFinalCut, setBurnSubtitlesOnFinalCut] = useState(false);
   const [musicUploadLicense, setMusicUploadLicense] = useState("");
   const musicFileInputRef = useRef(null);
   const sceneClipFileInputRef = useRef(null);
@@ -1283,6 +1285,24 @@ export default function App() {
       /* ignore */
     }
   }, [refreshAccountProfile, showToast]);
+
+  /** Deep link from Telegram “Open Studio” (and bookmarks): ``?agentRun=<uuid>`` */
+  useEffect(() => {
+    if (!authBootstrap.done || authBootstrap.needLogin) return;
+    try {
+      const u = new URL(window.location.href);
+      const ar = u.searchParams.get("agentRun") || u.searchParams.get("run");
+      const t = ar && String(ar).trim();
+      if (t && /^[0-9a-f-]{36}$/i.test(t)) {
+        setAgentRunId(t);
+        u.searchParams.delete("agentRun");
+        u.searchParams.delete("run");
+        window.history.replaceState({}, "", `${u.pathname}${u.search}${u.hash}`);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [authBootstrap.done, authBootstrap.needLogin]);
 
   useEffect(() => {
     const ent = accountProfile?.entitlements;
@@ -1960,6 +1980,10 @@ export default function App() {
       timeline_version_id: tv,
       allow_unapproved_media: pipelineMode === "unattended",
     };
+    const finalBody = {
+      ...bodyBase,
+      burn_subtitles_into_video: burnSubtitlesOnFinalCut,
+    };
     const roughPath = `/v1/projects/${projectId}/rough-cut`;
     const finalPath = `/v1/projects/${projectId}/final-cut`;
     const pollOpts = {
@@ -1985,7 +2009,7 @@ export default function App() {
         throw new Error(sync.error ? humanizeErrorText(sync.error) : "Could not save mix to timeline before final cut.");
       }
       setMessage("Final cut running (step 2 of 2)…");
-      const fb = await apiPostIdempotent(api, finalPath, bodyBase, idem);
+      const fb = await apiPostIdempotent(api, finalPath, finalBody, idem);
       const fid = fb.job?.id;
       if (!fid) throw new Error("Final cut did not return a job id.");
       setMediaJobId(fid);
@@ -2009,6 +2033,7 @@ export default function App() {
     jobPollIntervalMs,
     patchTimelineMixToServer,
     loadActiveProjectJobs,
+    burnSubtitlesOnFinalCut,
   ]);
 
   const saveTimelineMixToServer = useCallback(async () => {
@@ -3337,6 +3362,10 @@ export default function App() {
       setSettingsBusy(false);
     }
   };
+
+  useEffect(() => {
+    setBurnSubtitlesOnFinalCut(Boolean(appConfig.burn_subtitles_in_final_cut_default));
+  }, [appConfig.burn_subtitles_in_final_cut_default]);
 
   useEffect(() => {
     if (!studioReady || !agentRunId) return undefined;
@@ -7156,6 +7185,21 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                     <p className="subtle" style={{ fontSize: "0.82rem", marginTop: 0, marginBottom: 0 }}>
                       Use the same value for Telegram <code>setWebhook</code> <code>secret_token</code> (see curl above).
                     </p>
+                    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", marginTop: 14 }}>
+                      <input
+                        type="checkbox"
+                        disabled={telegramPlanLocked}
+                        checked={Boolean(appConfig.telegram_notify_pipeline_failures)}
+                        onChange={(e) =>
+                          setAppConfig((p) => ({ ...p, telegram_notify_pipeline_failures: e.target.checked }))
+                        }
+                      />
+                      <span style={{ fontSize: "0.88rem", lineHeight: 1.45 }}>
+                        <strong>Notify on Telegram</strong> when a pipeline run fails, is cancelled, or stops (blocked).
+                        Messages can include <strong>Open Studio</strong> and <strong>Retry</strong> when{" "}
+                        <strong>Public Studio URL</strong> is set below.
+                      </span>
+                    </label>
                     <div className="action-row" style={{ marginTop: 12 }}>
                       <button
                         type="button"
@@ -7166,6 +7210,154 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         {telegramTestLoading ? "Testing…" : "Test Telegram connection"}
                       </button>
                     </div>
+                  </div>
+                </details>
+                <details className="settings-section" defaultOpen>
+                  <summary className="settings-section-summary">
+                    <span className="settings-section-heading">YouTube &amp; export links</span>
+                  </summary>
+                  <div className="settings-section-body">
+                    <p className="subtle" style={{ marginTop: -4 }}>
+                      OAuth uses Google&apos;s consent screen. Register redirect URI{" "}
+                      <code>
+                        {(appConfig.public_api_base_url || "").replace(/\/$/, "") || "(set PUBLIC_API_BASE_URL)"}
+                        /v1/integrations/youtube/oauth-callback
+                      </code>{" "}
+                      in Google Cloud Console for your OAuth client.
+                    </p>
+                    <label htmlFor="cfg-public-api-base">PUBLIC_API_BASE_URL (API base as Telegram / Google reach it, no trailing slash)</label>
+                    <input
+                      id="cfg-public-api-base"
+                      placeholder="https://api.yourdomain.com"
+                      value={appConfig.public_api_base_url || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, public_api_base_url: e.target.value }))}
+                    />
+                    <label htmlFor="cfg-director-public-url" style={{ marginTop: 12 }}>
+                      DIRECTOR_PUBLIC_APP_URL (Studio in the browser — for Telegram deep links)
+                    </label>
+                    <input
+                      id="cfg-director-public-url"
+                      placeholder="https://studio.yourdomain.com"
+                      value={appConfig.director_public_app_url || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, director_public_app_url: e.target.value }))}
+                    />
+                    <label htmlFor="cfg-youtube-client-id" style={{ marginTop: 12 }}>
+                      YouTube OAuth client ID
+                    </label>
+                    <input
+                      id="cfg-youtube-client-id"
+                      value={appConfig.youtube_client_id || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, youtube_client_id: e.target.value }))}
+                    />
+                    <label htmlFor="cfg-youtube-client-secret" style={{ marginTop: 12 }}>
+                      YouTube OAuth client secret
+                    </label>
+                    <input
+                      id="cfg-youtube-client-secret"
+                      type="password"
+                      autoComplete="off"
+                      value={appConfig.youtube_client_secret || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, youtube_client_secret: e.target.value }))}
+                    />
+                    <p className="subtle" style={{ fontSize: "0.85rem", marginTop: 8 }}>
+                      After saving client id + secret, open Google consent (stores refresh token in workspace settings).
+                    </p>
+                    <div className="action-row" style={{ marginTop: 8, flexWrap: "wrap", gap: 8 }}>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={settingsBusy}
+                        onClick={async () => {
+                          setError("");
+                          try {
+                            const r = await api("/v1/integrations/youtube/auth-url");
+                            const b = await parseJson(r);
+                            if (!r.ok) throw new Error(apiErrorMessage(b));
+                            const u = b.data?.authorize_url;
+                            if (!u) throw new Error("No authorize_url from API");
+                            window.open(u, "_blank", "noopener,noreferrer");
+                            showToast("Complete sign-in in the new tab, then save settings if you changed client id/secret.", {
+                              type: "success",
+                              durationMs: 8000,
+                            });
+                          } catch (e) {
+                            setError(formatUserFacingError(e));
+                          }
+                        }}
+                      >
+                        Connect YouTube (OAuth)
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={settingsBusy}
+                        onClick={async () => {
+                          setError("");
+                          try {
+                            const r = await api("/v1/integrations/youtube/disconnect", { method: "POST" });
+                            const b = await parseJson(r);
+                            if (!r.ok) throw new Error(apiErrorMessage(b));
+                            await loadAppSettings();
+                            showToast("YouTube disconnected for this workspace.", { type: "success" });
+                          } catch (e) {
+                            setError(formatUserFacingError(e));
+                          }
+                        }}
+                      >
+                        Disconnect YouTube
+                      </button>
+                    </div>
+                    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", marginTop: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appConfig.youtube_auto_upload_after_export)}
+                        onChange={(e) =>
+                          setAppConfig((p) => ({ ...p, youtube_auto_upload_after_export: e.target.checked }))
+                        }
+                      />
+                      <span style={{ fontSize: "0.88rem", lineHeight: 1.45 }}>
+                        <strong>Auto-upload to YouTube</strong> after each successful final cut (uses default privacy
+                        below). Requires a connected YouTube account.
+                      </span>
+                    </label>
+                    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", marginTop: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appConfig.youtube_share_watch_link_in_telegram)}
+                        onChange={(e) =>
+                          setAppConfig((p) => ({ ...p, youtube_share_watch_link_in_telegram: e.target.checked }))
+                        }
+                      />
+                      <span style={{ fontSize: "0.88rem", lineHeight: 1.45 }}>
+                        When a pipeline succeeds, send the <strong>YouTube watch link</strong> on Telegram (if an upload
+                        ran for that export).
+                      </span>
+                    </label>
+                    <label htmlFor="cfg-youtube-privacy" style={{ marginTop: 12 }}>
+                      Default YouTube privacy
+                    </label>
+                    <select
+                      id="cfg-youtube-privacy"
+                      value={appConfig.youtube_default_privacy || "unlisted"}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, youtube_default_privacy: e.target.value }))}
+                    >
+                      <option value="public">public</option>
+                      <option value="unlisted">unlisted</option>
+                      <option value="private">private</option>
+                    </select>
+                    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", marginTop: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appConfig.burn_subtitles_in_final_cut_default)}
+                        onChange={(e) =>
+                          setAppConfig((p) => ({ ...p, burn_subtitles_in_final_cut_default: e.target.checked }))
+                        }
+                      />
+                      <span style={{ fontSize: "0.88rem", lineHeight: 1.45 }}>
+                        <strong>Hands-off / agent runs:</strong> burn project subtitles into the final MP4 when{" "}
+                        <code>subtitles.vtt</code> exists (same as the per-export checkbox under Compile video).
+                      </span>
+                    </label>
                   </div>
                 </details>
                 <details className="settings-section" defaultOpen>
@@ -9722,6 +9914,30 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         </span>
                       </label>
                     </div>
+                    <div
+                      style={{
+                        marginTop: 12,
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        background: "var(--panel-elevated-bg, rgba(0,0,0,0.04))",
+                      }}
+                    >
+                      <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", fontSize: "0.85rem" }}>
+                        <input
+                          type="checkbox"
+                          checked={burnSubtitlesOnFinalCut}
+                          disabled={busy || !projectId}
+                          onChange={(e) => setBurnSubtitlesOnFinalCut(e.target.checked)}
+                        />
+                        <span>
+                          <strong>Burn subtitles into final MP4</strong>
+                          <span className="subtle" style={{ display: "block", marginTop: 4, lineHeight: 1.45 }}>
+                            When project <code>subtitles.vtt</code> exists under <code>exports/</code> (from Subtitles generate), re-encode the final cut with captions drawn on-frame. Workspace default:{" "}
+                            {appConfig.burn_subtitles_in_final_cut_default ? "on" : "off"} — toggle is saved under Settings → YouTube &amp; export links.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
                     <div className="action-row">
                       <button
                         type="button"
@@ -9788,6 +10004,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                             {
                               timeline_version_id: timelineVersionId,
                               allow_unapproved_media: pipelineMode === "unattended",
+                              burn_subtitles_into_video: burnSubtitlesOnFinalCut,
                             },
                             "Final cut queued…",
                           );

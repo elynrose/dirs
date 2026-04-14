@@ -78,6 +78,15 @@ class FineCutBody(BaseModel):
     )
 
 
+class FinalCutBody(RoughCutBody):
+    """Final mux: optional burn-in of project ``subtitles.vtt`` when present."""
+
+    burn_subtitles_into_video: bool | None = Field(
+        default=None,
+        description="When true, burn subtitles into final_cut.mp4. None = use workspace default burn_subtitles_in_final_cut_default.",
+    )
+
+
 class ExportBundleBody(BaseModel):
     timeline_version_id: UUID
     include_subtitles: bool = True

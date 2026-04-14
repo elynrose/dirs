@@ -2523,6 +2523,7 @@ def _run_agent_full_pipeline_tail(
             "project_id": str(pid),
             "tenant_id": tenant_id,
             "allow_unapproved_media": allow_unapproved_media,
+            "burn_subtitles_into_video": bool(getattr(settings, "burn_subtitles_in_final_cut_default", False)),
         },
     )
     _final_cut(db, fj, settings)
@@ -5857,8 +5858,36 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
             except OSError:
                 pass
 
+    burn_key = (payload or {}).get("burn_subtitles_into_video", None)
+    if burn_key is None:
+        burn_subs = bool(getattr(settings, "burn_subtitles_in_final_cut_default", False))
+    else:
+        burn_subs = bool(burn_key)
+    sub_path = storage_root / "exports" / str(project_id) / "subtitles.vtt"
+    if burn_subs and path_is_readable_file(sub_path):
+        from director_api.services.video_subtitle_burn import burn_webvtt_onto_mp4
+
+        burn_webvtt_onto_mp4(
+            video_in=out_final,
+            vtt_path=sub_path,
+            video_out=out_final,
+            ffmpeg_bin=ffmpeg_bin,
+            timeout_sec=float(settings.ffmpeg_timeout_sec),
+        )
+        mux_meta = {**mux_meta, "subtitles_burned": True, "subtitles_source": str(sub_path.resolve())}
+
     tv.render_status = "final_compiled"
     tv.output_url = f"file://{out_final.resolve()}"
+    from director_api.services.youtube_pipeline import try_youtube_auto_upload
+
+    try_youtube_auto_upload(
+        db,
+        settings,
+        tenant_id=tenant,
+        project_id=project_id,
+        project_title=(project.title or "Export"),
+        timeline_version_id=tv_id,
+    )
     return {
         "timeline_version_id": str(tv.id),
         "output_url": tv.output_url,
