@@ -69,6 +69,7 @@ import { StudioPanelErrorBoundary } from "./components/StudioPanelErrorBoundary.
 import { ChatStudioPage } from "./components/ChatStudioPage.jsx";
 import { StudioAccountPage } from "./components/StudioAccountPage.jsx";
 import { StudioAdminPage } from "./components/StudioAdminPage.jsx";
+import { StudioLegalPage } from "./components/StudioLegalPage.jsx";
 import {
   clearDirectorAuthSession,
   getDirectorAuthToken,
@@ -91,8 +92,12 @@ const STUDIO_PAGE_RAILS = [
 
 const STUDIO_PAGE_IDS = new Set(STUDIO_PAGE_RAILS.map((r) => r.id));
 
+/** In-app legal views (not shown in the primary rail). */
+const LEGAL_PAGE_IDS = new Set(["terms", "privacy", "copyright"]);
+
 function normalizeDirectorActivePage(v) {
   const id = typeof v === "string" ? v.trim() : "";
+  if (LEGAL_PAGE_IDS.has(id)) return id;
   return STUDIO_PAGE_IDS.has(id) ? id : "editor";
 }
 
@@ -1062,11 +1067,25 @@ export default function App() {
     jobPollIntervalMs,
   );
 
+  /** SaaS: Studio Admin is limited to workspace **admin** or **owner**; legacy mode keeps Admin for operators. */
+  const canAccessStudioAdmin = useMemo(() => {
+    if (authBootstrap.mode !== "saas") return true;
+    if (!accountProfile?.active_tenant_id || !Array.isArray(accountProfile.tenants)) return false;
+    const row = accountProfile.tenants.find((x) => x.id === accountProfile.active_tenant_id);
+    const r = String(row?.role || "").toLowerCase();
+    return r === "admin" || r === "owner";
+  }, [authBootstrap.mode, accountProfile]);
+
   const studioPageRails = useMemo(() => {
     const ent = accountProfile?.entitlements;
-    if (!ent || ent.chat_enabled !== false) return STUDIO_PAGE_RAILS;
-    return STUDIO_PAGE_RAILS.filter((t) => t.id !== "chat");
-  }, [accountProfile]);
+    let rows = !ent || ent.chat_enabled !== false ? STUDIO_PAGE_RAILS : STUDIO_PAGE_RAILS.filter((t) => t.id !== "chat");
+    if (!canAccessStudioAdmin) rows = rows.filter((t) => t.id !== "admin");
+    return rows;
+  }, [accountProfile, canAccessStudioAdmin]);
+
+  useEffect(() => {
+    if (!canAccessStudioAdmin && activePage === "admin") setActivePage("editor");
+  }, [canAccessStudioAdmin, activePage]);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -5421,7 +5440,20 @@ export default function App() {
             <i className="fa-solid fa-bars" aria-hidden="true" />
           </button>
           <div className="topbar-brand">
-          <h1>Directely Studio</h1>
+            <div className="studio-brand studio-brand--topbar">
+              <img
+                src="/images/directely-logo.png"
+                alt=""
+                width={40}
+                height={40}
+                className="studio-brand__mark"
+                decoding="async"
+              />
+              <h1 className="studio-brand__heading">
+                <span className="studio-brand__wordmark">Directely</span>
+                <span className="studio-brand__suffix"> Studio</span>
+              </h1>
+            </div>
           {authBootstrap.mode === "saas" && saasTenants.length > 1 ? (
             <label className="subtle topbar-saas-workspace">
               Workspace
@@ -5637,7 +5669,9 @@ export default function App() {
         </nav>
         <div className="app-shell__main">
       <StudioPanelErrorBoundary resetKey={activePage}>
-      {activePage === "chat" ? (
+      {activePage === "terms" || activePage === "privacy" || activePage === "copyright" ? (
+        <StudioLegalPage docId={activePage} setActivePage={setActivePage} />
+      ) : activePage === "chat" ? (
         <ChatStudioPage
           appConfig={appConfig}
           stylePresets={stylePresets}
@@ -10165,6 +10199,26 @@ export TELEGRAM_WEBHOOK_SECRET='…'
       </StudioPanelErrorBoundary>
         </div>
       </div>
+      <footer className="studio-footer">
+        <nav className="studio-footer__nav" aria-label="Legal and copyright">
+          <button type="button" className="studio-footer__link" onClick={() => setActivePage("terms")}>
+            Terms of Service
+          </button>
+          <span className="studio-footer__sep" aria-hidden="true">
+            ·
+          </span>
+          <button type="button" className="studio-footer__link" onClick={() => setActivePage("privacy")}>
+            Privacy Policy
+          </button>
+          <span className="studio-footer__sep" aria-hidden="true">
+            ·
+          </span>
+          <button type="button" className="studio-footer__link" onClick={() => setActivePage("copyright")}>
+            Copyright
+          </button>
+        </nav>
+        <p className="studio-footer__copy subtle">© 2026 Directely. All rights reserved.</p>
+      </footer>
     </div>
     <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     <ShortcutHelp open={showShortcutHelp} onClose={() => setShowShortcutHelp(false)} />

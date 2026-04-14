@@ -149,6 +149,48 @@ body:has(.studio-preauth-shell) {
   line-height: 1.2;
 }
 
+/* Logo + wordmark (header + login) */
+.studio-brand {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.studio-brand__mark {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.studio-brand--preauth .studio-brand__mark {
+  width: 56px;
+  height: 56px;
+}
+
+.studio-brand__heading {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.studio-brand--topbar .studio-brand__heading {
+  font-size: 1.05rem;
+}
+
+.studio-brand__wordmark {
+  font-weight: 700;
+}
+
+.studio-brand__suffix {
+  font-weight: 600;
+  opacity: 0.88;
+}
+
 .topbar-actions {
   display: flex;
   flex-wrap: wrap;
@@ -184,6 +226,126 @@ body:has(.studio-preauth-shell) {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* App footer — legal links + copyright */
+.studio-footer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 16px 18px;
+  margin-top: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+}
+
+.studio-footer__nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 10px;
+  font-size: 0.82rem;
+}
+
+.studio-footer__link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--link-color, #93c5fd);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.studio-footer__link:hover {
+  color: var(--text-primary, #e5e5e5);
+}
+
+.studio-footer__sep {
+  opacity: 0.45;
+  user-select: none;
+}
+
+.studio-footer__copy {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+/* Legal document reader */
+.legal-page {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 20px 22px 28px;
+}
+
+.legal-page__header {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.legal-page__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.legal-page__tab {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.2);
+  color: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.legal-page__tab:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.legal-page__tab--active {
+  border-color: rgba(147, 197, 253, 0.45);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.legal-page__header h2 {
+  margin: 0 0 6px;
+  font-size: 1.35rem;
+}
+
+.legal-page__updated {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.legal-page__body {
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.legal-page__section {
+  margin-bottom: 1.25rem;
+}
+
+.legal-page__section h3 {
+  margin: 0 0 8px;
+  font-size: 1.02rem;
+}
+
+.legal-page__section p {
+  margin: 0 0 10px;
+}
+
+.legal-page__section p:last-child {
+  margin-bottom: 0;
 }
 
 .studio-error-boundary {
@@ -707,8 +869,14 @@ body:has(.studio-preauth-shell) {
     min-height: 2.75rem;
   }
 
-  .topbar-brand h1 {
+  .topbar-brand h1,
+  .studio-brand--topbar .studio-brand__heading {
     font-size: 0.95rem;
+  }
+
+  .studio-brand--topbar .studio-brand__mark {
+    width: 34px;
+    height: 34px;
   }
 
   .topbar-actions {

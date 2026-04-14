@@ -154,7 +154,20 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
   return (
     <div className="studio-preauth-shell">
       <div className="studio-preauth-shell__card studio-preauth-glass studio-preauth-shell__card--narrow">
-        <h1 style={{ fontSize: "1.25rem", marginBottom: 8 }}>Directely Studio</h1>
+        <div className="studio-brand studio-brand--preauth" style={{ marginBottom: 12 }}>
+          <img
+            src="/images/directely-logo.png"
+            alt=""
+            width={56}
+            height={56}
+            className="studio-brand__mark"
+            decoding="async"
+          />
+          <h1 className="studio-brand__heading">
+            <span className="studio-brand__wordmark">Directely</span>
+            <span className="studio-brand__suffix"> Studio</span>
+          </h1>
+        </div>
         <p className="subtle" style={{ marginBottom: 12 }}>
           Sign in to your workspace. After you sign in, use <strong>Upgrade</strong> in the header to view plans and subscribe with Stripe.
         </p>

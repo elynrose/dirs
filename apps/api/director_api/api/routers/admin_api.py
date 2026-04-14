@@ -1,6 +1,7 @@
 """Platform admin API — CRUD for users, tenants, memberships, plans, billing, projects, payment audit.
 
-Auth: header ``X-Director-Admin-Key`` must match ``DIRECTOR_ADMIN_API_KEY``.
+Auth: ``X-Director-Admin-Key`` matching ``DIRECTOR_ADMIN_API_KEY``, **or** (when auth is enabled)
+``Authorization: Bearer`` plus ``X-Tenant-Id`` for a user whose membership role is **admin** or **owner**.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session
 from director_api.api.routers.agent_runs import _TERMINAL_STATUSES, _handle_agent_run_control
 from director_api.api.schemas.agent_run import AgentRunCreate, AgentRunOut, AgentRunPipelineControl
 from director_api.api.schemas.project import FrameAspectRatio, ProjectCreate, ProjectOut
-from director_api.api.security_admin import assert_admin_request
+from director_api.api.security_admin import assert_platform_admin_access
 from director_api.auth.passwords import hash_password
 from director_api.db.models import (
     AgentRun,
@@ -50,8 +51,8 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-def admin_auth_dep(request: Request) -> None:
-    assert_admin_request(request)
+def admin_auth_dep(request: Request, db: Session = Depends(get_db)) -> None:
+    assert_platform_admin_access(request, db)
 
 
 AdminDep = Depends(admin_auth_dep)
