@@ -3136,6 +3136,7 @@ export default function App() {
   }, [gatedProjectId, loadPipelineStatus]);
 
   useEffect(() => {
+    if (!studioReady) return undefined;
     let cancelled = false;
     const check = async () => {
       try {
@@ -3153,14 +3154,17 @@ export default function App() {
         }
       }
     };
-    // Always do one check on mount/project-change for fast initial state.
+    // One check after auth bootstrap (same as loadProjects) — avoids 401 before Bearer + tenant.
     check();
     // While SSE is live it sends celery_status events every 30 s — fall back
     // to a 60 s HTTP poll as a safety net only (e.g. SSE blocked by a proxy).
     const intervalMs = sseConnected ? 60_000 : 15_000;
     const id = setInterval(check, intervalMs);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [sseConnected]);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [sseConnected, studioReady]);
 
   const restartCelery = useCallback(async () => {
     setCeleryRestarting(true);
@@ -5136,9 +5140,17 @@ export default function App() {
 
   openProjectRef.current = openProject;
 
+  /** Restore open project from `director_ui_session` only after auth bootstrap (avoids 401 / "missing credentials" vs project load). */
   useEffect(() => {
+    if (!authBootstrap.done) return;
     if (sessionRestoreStartedRef.current) return;
     sessionRestoreStartedRef.current = true;
+
+    if (authBootstrap.mode === "saas" && authBootstrap.needLogin) {
+      setUiSessionReady(true);
+      return;
+    }
+
     const session = readDirectorUiSession();
     const pid = session?.projectId?.trim();
     const rid = session?.agentRunId?.trim();
@@ -5191,7 +5203,7 @@ export default function App() {
         setUiSessionReady(true);
       }
     })();
-  }, []);
+  }, [authBootstrap.done, authBootstrap.mode, authBootstrap.needLogin]);
 
   useEffect(() => {
     if (!uiSessionReady) return;
