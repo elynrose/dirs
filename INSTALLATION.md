@@ -178,6 +178,16 @@ cd /path/to/director && docker compose down
 4. **nginx** — example site file: [`scripts/nginx/directely.com.conf`](scripts/nginx/directely.com.conf). It serves `/var/www/directely` and proxies `/v1/` to `127.0.0.1:8000`.  
    Install: copy to `/etc/nginx/sites-available/`, enable under `sites-enabled`, `sudo nginx -t && sudo systemctl restart nginx` (use **restart** after changing `root`, not only `reload`, if workers keep old config).
 
+   **If the Studio loads (JS/CSS OK) but every `/v1/...` call is HTTP 502:** nginx is working; the **API process is not accepting connections** where nginx expects it (default `127.0.0.1:8000`). That is not fixed by editing `proxy_pass` to your public IP — the browser must not talk to Uvicorn directly; nginx must, on loopback.
+
+   On the server over SSH:
+
+   ```bash
+   curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/v1/health
+   ```
+
+   You want `200`. If you see `000` / “Connection refused”, start the API (see §6 / your `director-api.service`) and confirm `API_HOST` / `API_PORT` match nginx’s upstream port. Then `sudo systemctl reload nginx` if you only changed API, or fix the API unit and `systemctl restart director-api`.
+
 5. **TLS** (after DNS is correct):
 
    ```bash
