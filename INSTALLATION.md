@@ -242,3 +242,15 @@ The JSON should show a non-empty **`url`** pointing at your host. Use **Test Tel
 - **`url` empty in `getWebhookInfo`**: Directely will not receive messages; run `setWebhook` as above.
 - **Changed the secret in Studio**: run `setWebhook` again with the new `secret_token`.
 - **Local dev**: expose the API with a tunnel (ngrok, Cloudflare Tunnel, …) and use `https://YOUR-TUNNEL-HOST/v1/integrations/telegram/webhook` as `url`.
+
+## 10. OpenClaw / MCP (chat → documentary agent runs)
+
+The repo includes **`apps/mcp-director`**: a small **Model Context Protocol** server that calls the same HTTP API as Studio (`/v1/chat-studio/setup-guide`, `/v1/agent-runs`). OpenClaw (or Cursor, Claude Desktop, etc.) can use it so the model **chats to refine a brief**, then **queues a full pipeline run**.
+
+See **`apps/mcp-director/README.md`** for install (`pip install -e .` in a venv), env vars (`DIRECTOR_API_BASE_URL`, optional `DIRECTOR_API_TOKEN` + `DIRECTOR_TENANT_ID`), and **OpenClaw** `mcp add` examples. Run locally with:
+
+```bash
+cd apps/mcp-director && python3 -m venv .venv && . .venv/bin/activate && pip install -e .
+export DIRECTOR_API_BASE_URL=http://127.0.0.1:8000
+python -m director_mcp
+```

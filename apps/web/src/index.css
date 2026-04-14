@@ -1031,7 +1031,7 @@ h3 {
   max-width: 100%;
   width: 100%;
   height: auto;
-  max-height: min(70vh, 100%);
+  max-height: none;
   object-fit: contain;
 }
 .editor-card-split-stack > .editor-card {
