@@ -40,6 +40,7 @@ def refine_scene_plan_batch(
     planning_hints: dict[str, Any] | None = None,
     target_duration_sec: int | None = None,
     character_bible: str | None = None,
+    frame_aspect_ratio: str | None = None,
     usage_sink: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Return scene-plan-batch/v1 or None to keep seed."""
@@ -73,11 +74,19 @@ def refine_scene_plan_batch(
             "When a scene’s narration implies a named or recurring character, align image_prompt and video_prompt "
             "(framing and motion) with their visual bible (wardrobe, face, age) and do not contradict it."
         )
+    far = (frame_aspect_ratio or "").strip()
+    if far in ("16:9", "9:16"):
+        sys += (
+            f" User JSON includes frame_aspect_ratio={far!r}: compose every image_prompt and video_prompt for this "
+            "delivery shape—widescreen landscape (16:9) vs vertical portrait (9:16). Do not assume the other format."
+        )
     user_obj: dict[str, Any] = {
         "seed": seed_batch,
         "chapter_title": chapter_title,
         "topic": project_topic[:4000],
     }
+    if far in ("16:9", "9:16"):
+        user_obj["frame_aspect_ratio"] = far
     if target_duration_sec is not None and int(target_duration_sec) > 0:
         user_obj["chapter_target_duration_sec"] = int(target_duration_sec)
     if planning_hints:
@@ -116,6 +125,7 @@ def extend_scene_plan_batch(
     target_duration_sec: int | None = None,
     scene_clip_sec: int = 10,
     character_bible: str | None = None,
+    frame_aspect_ratio: str | None = None,
     usage_sink: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Return scene-plan-batch/v1 with exactly one new scene appended in narrative terms, or None on failure."""
@@ -132,6 +142,12 @@ def extend_scene_plan_batch(
         sys += (
             " User JSON may include character_bible: align image_prompt and video_prompt with recurring figures when narration implies them."
         )
+    far = (frame_aspect_ratio or "").strip()
+    if far in ("16:9", "9:16"):
+        sys += (
+            f" User JSON includes frame_aspect_ratio={far!r}: compose image_prompt and video_prompt for this delivery "
+            "shape (16:9 landscape vs 9:16 portrait)."
+        )
     user_obj: dict[str, Any] = {
         "existing_scenes": existing_scenes,
         "chapter_title": chapter_title,
@@ -140,6 +156,8 @@ def extend_scene_plan_batch(
         "topic": (project_topic or "")[:4000],
         "scene_clip_duration_sec": int(scene_clip_sec),
     }
+    if far in ("16:9", "9:16"):
+        user_obj["frame_aspect_ratio"] = far
     if target_duration_sec is not None and int(target_duration_sec) > 0:
         user_obj["chapter_target_duration_sec"] = int(target_duration_sec)
     if (character_bible or "").strip():

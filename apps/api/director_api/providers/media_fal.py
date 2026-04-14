@@ -9,6 +9,12 @@ from fal_client import SyncClient
 
 from director_api.config import Settings
 from director_api.services.media_models_catalog import fal_video_endpoint_is_image_to_video
+from director_api.services.project_frame import (
+    coerce_frame_aspect_ratio,
+    fal_aspect_ratio_string,
+    fal_image_size_enum,
+    fal_resolution_string,
+)
 from director_api.services.research_service import sanitize_jsonb_text
 
 _FAL_DETAIL_MAX = 2000
@@ -256,6 +262,7 @@ def generate_scene_image(
     *,
     model_path: str | None = None,
     negative_prompt: str | None = None,
+    frame_aspect_ratio: str | None = None,
 ) -> dict[str, Any]:
     """
     Sync image generation via fal.run. Returns {ok, bytes?, content_type?, error?, model?}.
@@ -265,19 +272,23 @@ def generate_scene_image(
     model_path = (model_path or settings.fal_smoke_model or "fal-ai/fast-sdxl").strip().lstrip("/")
     url = f"https://fal.run/{model_path}"
     neg = sanitize_jsonb_text((negative_prompt or "").strip(), 2000)
+    far = coerce_frame_aspect_ratio(frame_aspect_ratio)
+    ar = fal_aspect_ratio_string(far)
+    size_enum = fal_image_size_enum(far)
+    w, h = (1280, 720) if far == "16:9" else (720, 1280)
     body: dict[str, object] = {
         "prompt": prompt[:4000],
-        "aspect_ratio": "16:9",
-        "image_size": "landscape_16_9",
-        "width": 1280,
-        "height": 720,
+        "aspect_ratio": ar,
+        "image_size": size_enum,
+        "width": w,
+        "height": h,
     }
     if neg:
         body["negative_prompt"] = neg
     minimal: dict[str, object] = {"prompt": prompt[:4000]}
     if neg:
         minimal["negative_prompt"] = neg
-    aspect_only: dict[str, object] = {"prompt": prompt[:4000], "aspect_ratio": "16:9"}
+    aspect_only: dict[str, object] = {"prompt": prompt[:4000], "aspect_ratio": ar}
     if neg:
         aspect_only["negative_prompt"] = neg
     try:
@@ -485,6 +496,7 @@ def generate_scene_video_fal(
     image_url: str | None = None,
     image_bytes: bytes | None = None,
     image_content_type: str | None = None,
+    frame_aspect_ratio: str | None = None,
 ) -> dict[str, Any]:
     """Sync video via fal.run (text-to-video or image-to-video). Returns {ok, bytes?, content_type?, error?, model?}."""
     if not settings.fal_key:
@@ -587,13 +599,16 @@ def generate_scene_video_fal(
 
     d = max(1, min(int(duration_sec), 30))
     p = prompt[:4000]
+    far = coerce_frame_aspect_ratio(frame_aspect_ratio)
+    ar = fal_aspect_ratio_string(far)
+    res_s = fal_resolution_string(far)
     body = {
         "prompt": p,
         "duration": d,
-        "aspect_ratio": "16:9",
-        "resolution": "1280x720",
+        "aspect_ratio": ar,
+        "resolution": res_s,
     }
-    aspect_body = {"prompt": p, "duration": d, "aspect_ratio": "16:9"}
+    aspect_body = {"prompt": p, "duration": d, "aspect_ratio": ar}
     minimal_body = {"prompt": p, "duration": d}
     try:
         with httpx.Client(timeout=600.0) as client:

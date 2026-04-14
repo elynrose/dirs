@@ -131,7 +131,12 @@ def project_start(
         pmap = build_resolved_prompt_map(db, settings.default_tenant_id, auth.user_id)
         with llm_prompt_map_scope(pmap):
             pack = phase2_llm.enrich_director_pack(
-                pack, p.title, p.topic, settings, usage_sink=llm_u
+                pack,
+                p.title,
+                p.topic,
+                settings,
+                usage_sink=llm_u,
+                frame_aspect_ratio=str(getattr(p, "frame_aspect_ratio", None) or "16:9"),
             )
     if llm_u:
         persist_llm_usage_entries(

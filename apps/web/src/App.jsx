@@ -906,6 +906,8 @@ export default function App() {
   /** `user:<uuid>` while editing a custom style, else null */
   const [narEditingRef, setNarEditingRef] = useState(null);
   const [title, setTitle] = useState("Agent run — test");
+  /** Locked to the open project after load; drives new agent-run brief before a project exists. */
+  const [frameAspectRatio, setFrameAspectRatio] = useState("16:9");
   const [topic, setTopic] = useState(
     "Urban community gardens and neighborhood food security in one mid-size city.",
   );
@@ -3630,6 +3632,7 @@ export default function App() {
             tone: "documentary",
             narration_style,
             visual_style: `preset:${visId || "cinematic_documentary"}`,
+            frame_aspect_ratio: frameAspectRatio === "9:16" ? "9:16" : "16:9",
             ...briefPreferredMediaProvidersFromAppConfig(appConfig),
           },
           pipeline_options,
@@ -5059,6 +5062,7 @@ export default function App() {
       setTitle(p.title || "");
       setTopic(p.topic || "");
       setRuntime(Number(p.target_runtime_minutes || 15));
+      setFrameAspectRatio(p.frame_aspect_ratio === "9:16" ? "9:16" : "16:9");
       setUseAllApprovedSceneMedia(Boolean(p.use_all_approved_scene_media));
 
       const cr = await api(`/v1/projects/${pid}/chapters`);
@@ -5317,6 +5321,7 @@ export default function App() {
     setTitle("New documentary");
     setTopic("Describe your topic, audience, and the story you want to tell.");
     setRuntime(15);
+    setFrameAspectRatio("16:9");
     queueMicrotask(() => {
       document.getElementById("studio-pipeline-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -9523,6 +9528,8 @@ export TELEGRAM_WEBHOOK_SECRET='…'
             setTopic,
             runtime,
             setRuntime,
+            frameAspectRatio,
+            setFrameAspectRatio,
             busy,
             startAgentRun,
             continuePipelineAuto,

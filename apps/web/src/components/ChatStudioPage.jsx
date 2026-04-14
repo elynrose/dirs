@@ -89,6 +89,7 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
   const [title, setTitle] = useState("");
   const [topic, setTopic] = useState("");
   const [runtime, setRuntime] = useState(10);
+  const [frameAspectRatio, setFrameAspectRatio] = useState("16:9");
   /** Per-production overrides; empty string = fall back to workspace defaults in `buildBriefPayload`. */
   const [narrationStyleRef, setNarrationStyleRef] = useState("");
   const [visualStyleRef, setVisualStyleRef] = useState("");
@@ -152,6 +153,7 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
         setTitle("");
         setTopic("");
         setRuntime(10);
+        setFrameAspectRatio("16:9");
         setNarrationStyleRef("");
         setVisualStyleRef("");
         setAudience("general");
@@ -173,6 +175,7 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
         setTitle(String(p.title || ""));
         setTopic(String(p.topic || ""));
         setRuntime(Number(p.target_runtime_minutes) || 10);
+        setFrameAspectRatio(p.frame_aspect_ratio === "9:16" ? "9:16" : "16:9");
         setNarrationStyleRef(p.narration_style != null ? String(p.narration_style) : "");
         setVisualStyleRef(p.visual_style != null ? String(p.visual_style) : "");
         setAudience(p.audience != null && String(p.audience).trim() ? String(p.audience) : "general");
@@ -539,8 +542,21 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
       music_preference: String(musicPreference || "").trim() || undefined,
       research_min_sources:
         researchMinSources !== "" && Number.isFinite(Number(researchMinSources)) ? Number(researchMinSources) : undefined,
+      frame_aspect_ratio: frameAspectRatio === "9:16" ? "9:16" : "16:9",
     }),
-    [title, topic, runtime, audience, tone, narrationStyleRef, visualStyleRef, factualStrictness, musicPreference, researchMinSources],
+    [
+      title,
+      topic,
+      runtime,
+      audience,
+      tone,
+      narrationStyleRef,
+      visualStyleRef,
+      factualStrictness,
+      musicPreference,
+      researchMinSources,
+      frameAspectRatio,
+    ],
   );
 
   const applyBriefPatchToState = useCallback((patch) => {
@@ -562,6 +578,9 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
     if (patch.research_min_sources != null) {
       const n = Number(patch.research_min_sources);
       if (Number.isFinite(n) && n >= 1 && n <= 100) setResearchMinSources(n);
+    }
+    if (patch.frame_aspect_ratio === "16:9" || patch.frame_aspect_ratio === "9:16") {
+      setFrameAspectRatio(patch.frame_aspect_ratio);
     }
   }, []);
 
@@ -688,6 +707,7 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
       tone: String(tone || "").trim() || "documentary",
       narration_style,
       visual_style,
+      frame_aspect_ratio: frameAspectRatio === "9:16" ? "9:16" : "16:9",
       ...briefPreferredMediaProvidersFromAppConfig(appConfig),
     };
     if (factualStrictness === "strict" || factualStrictness === "balanced" || factualStrictness === "creative") {
@@ -713,6 +733,7 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
     factualStrictness,
     musicPreference,
     researchMinSources,
+    frameAspectRatio,
   ]);
 
   const onGenerate = async () => {
@@ -971,8 +992,8 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
         <div className="chat-studio__roadmap subtle">
           <strong>Project setup</strong>
           <p className="chat-studio__roadmap-text">
-            Use the setup chat in the main panel to tune title, description, runtime, narration and visual style, and
-            characters before you press Generate.
+            Use the setup chat in the main panel to tune title, description, runtime, picture frame (16:9 or 9:16),
+            narration and visual style, and characters before you press Generate.
           </p>
         </div>
       </aside>
@@ -999,8 +1020,8 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
               Project setup
             </h3>
             <p className="subtle chat-studio__section-hint">
-              Chat with the guide to set title, description, length, narration and visual style, and characters. This uses
-              your workspace text model (same as the rest of Directely).
+              Chat with the guide to set title, description, length, narration and visual style, picture frame (16:9 vs
+              9:16), and characters. This uses your workspace text model (same as the rest of Directely).
             </p>
             {setupErr ? (
               <p className="err chat-studio__err" role="alert">
@@ -1017,7 +1038,7 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
               {setupMessages.length === 0 ? (
                 <p className="subtle chat-studio__setup-empty">
                   Example: “10-minute film on urban beekeeping for a general audience, warm tone, archival look, two main
-                  characters.”
+                  characters, 16:9 landscape.” (Or 9:16 for vertical — the guide will confirm frame if you don’t specify.)
                 </p>
               ) : null}
               {setupMessages.map((m) => (
@@ -1081,10 +1102,27 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
             </div>
 
             <p className="chat-studio__sr-summary" aria-live="polite">
-              Brief: {title || "Untitled"} · {topic.trim().length} characters in description · {runtime} minutes target.
+              Brief: {title || "Untitled"} · {topic.trim().length} characters in description · {runtime} min ·{" "}
+              {frameAspectRatio === "9:16" ? "9:16 portrait" : "16:9 landscape"}.
             </p>
 
             <div className="chat-studio__composer chat-studio__composer--run">
+              {!selectedProjectId ? (
+                <div style={{ marginBottom: 10 }}>
+                  <label htmlFor="chat-studio-frame" className="subtle" style={{ display: "block", marginBottom: 4 }}>
+                    Picture frame (locked when the project is created)
+                  </label>
+                  <select
+                    id="chat-studio-frame"
+                    value={frameAspectRatio === "9:16" ? "9:16" : "16:9"}
+                    onChange={(e) => setFrameAspectRatio(e.target.value)}
+                    disabled={busy}
+                  >
+                    <option value="16:9">16:9 landscape</option>
+                    <option value="9:16">9:16 portrait</option>
+                  </select>
+                </div>
+              ) : null}
               <div className="chat-studio__actions">
                 <button type="button" disabled={busy} onClick={() => void onGenerate()}>
                   {busy ? "Working…" : "Generate"}

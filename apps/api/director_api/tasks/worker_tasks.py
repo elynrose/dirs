@@ -828,7 +828,7 @@ def _normalize_image_bytes_to_dims(
         out_path.unlink(missing_ok=True)
 
 
-def _normalize_video_bytes_16x9(settings: Any, data: bytes) -> bytes:
+def _normalize_video_bytes_to_dims(settings: Any, data: bytes, target_w: int, target_h: int) -> bytes:
     ffmpeg_bin = (getattr(settings, "ffmpeg_bin", None) or "ffmpeg").strip() or "ffmpeg"
     if not shutil.which(ffmpeg_bin):
         return data
@@ -844,7 +844,7 @@ def _normalize_video_bytes_16x9(settings: Any, data: bytes) -> bytes:
             "-i",
             str(in_path),
             "-vf",
-            f"scale={_TARGET_W_16_9}:{_TARGET_H_16_9}:force_original_aspect_ratio=increase,crop={_TARGET_W_16_9}:{_TARGET_H_16_9},setsar=1",
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},setsar=1",
             "-c:v",
             "libx264",
             "-preset",
@@ -1063,7 +1063,12 @@ def _ensure_director_pack(db, project: Project, settings: Any) -> None:
     llm_u: list[dict[str, Any]] = []
     if openai_compatible_configured(settings):
         pack = phase2_llm.enrich_director_pack(
-            pack, project.title, project.topic, settings, usage_sink=llm_u
+            pack,
+            project.title,
+            project.topic,
+            settings,
+            usage_sink=llm_u,
+            frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
         )
     _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
     validate_director_pack(pack)
@@ -3438,6 +3443,7 @@ def _phase3_scenes_plan_for_chapter(db, chapter: Chapter, project: Project, sett
             planning_hints=plan_hints,
             target_duration_sec=chapter.target_duration_sec,
             character_bible=char_ctx or None,
+            frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             usage_sink=llm_u,
         )
     _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
@@ -3587,6 +3593,7 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
             target_duration_sec=chapter.target_duration_sec,
             scene_clip_sec=clip,
             character_bible=char_ctx or None,
+            frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             usage_sink=llm_u,
         )
     if not batch:
@@ -3664,6 +3671,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
     if project.tenant_id != job.tenant_id:
         raise ValueError("job tenant does not match project")
     tenant_id = str(payload.get("tenant_id") or project.tenant_id)
+    exp_w, exp_h = _project_export_dimensions(project)
 
     ar_uuid = _payload_agent_run_uuid(payload)
     if ar_uuid is not None and _agent_run_checkpoint(db, ar_uuid) == "stop":
@@ -3778,9 +3786,11 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             raw_png = render_placeholder_scene_png_bytes(
                 ffmpeg_bin=(settings.ffmpeg_bin or "ffmpeg").strip() or "ffmpeg",
                 timeout_sec=min(float(settings.ffmpeg_timeout_sec), 120.0),
+                width=exp_w,
+                height=exp_h,
             )
-            img_bytes, content_type, norm_trusted = _normalize_image_bytes_16x9(
-                settings, raw_png, "image/png"
+            img_bytes, content_type, norm_trusted = _normalize_image_bytes_to_dims(
+                settings, raw_png, "image/png", exp_w, exp_h
             )
             if not (norm_trusted or _image_bytes_magic_ok(img_bytes)):
                 raise RuntimeError("placeholder PNG normalize failed or invalid magic")
@@ -3929,13 +3939,17 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         res = generate_scene_image_comfyui(settings, str(prompt), negative_prompt=scene_neg)
     else:
         res = generate_scene_image(
-            settings, str(prompt), model_path=fal_image_override, negative_prompt=scene_neg
+            settings,
+            str(prompt),
+            model_path=fal_image_override,
+            negative_prompt=scene_neg,
+            frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
         )
 
     if res.get("ok") and res.get("bytes"):
         content_type = str(res.get("content_type") or "image/png")
-        img_bytes, content_type, norm_trusted = _normalize_image_bytes_16x9(
-            settings, res["bytes"], content_type
+        img_bytes, content_type, norm_trusted = _normalize_image_bytes_to_dims(
+            settings, res["bytes"], content_type, exp_w, exp_h
         )
         if not (norm_trusted or _image_bytes_magic_ok(img_bytes)):
             asset.status = "failed"
@@ -4012,6 +4026,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
     if project.tenant_id != job.tenant_id:
         raise ValueError("job tenant does not match project")
     tenant_id = str(payload.get("tenant_id") or project.tenant_id)
+    exp_w, exp_h = _project_export_dimensions(project)
 
     ar_uuid = _payload_agent_run_uuid(payload)
     if ar_uuid is not None and _agent_run_checkpoint(db, ar_uuid) == "stop":
@@ -4198,8 +4213,8 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                 db.add(img_asset)
                 db.flush()
                 ct = str(ires.get("content_type") or "image/png")
-                img_bytes, ct, norm_trusted = _normalize_image_bytes_16x9(
-                    settings, ires["bytes"], ct
+                img_bytes, ct, norm_trusted = _normalize_image_bytes_to_dims(
+                    settings, ires["bytes"], ct, exp_w, exp_h
                 )
                 if not (norm_trusted or _image_bytes_magic_ok(img_bytes)):
                     img_asset.status = "failed"
@@ -4403,6 +4418,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                 model=fal_video_override,
                 image_bytes=scene_image_bytes,
                 image_content_type=scene_image_ct,
+                frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             )
         else:
             vres = generate_scene_video_comfyui(
@@ -4414,7 +4430,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         if vres.get("ok") and vres.get("bytes"):
             storage = FilesystemStorage(settings.local_storage_root)
             key = f"assets/{project.id}/{scene.id}/{asset.id}.mp4"
-            vbytes = _normalize_video_bytes_16x9(settings, vres["bytes"])
+            vbytes = _normalize_video_bytes_to_dims(settings, vres["bytes"], exp_w, exp_h)
             url = storage.put_bytes(key, vbytes)
             _bind_asset_local_file(asset, url, key)
             asset.status = "succeeded"
@@ -4600,8 +4616,8 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
     out_path = storage.get_path(key)
 
     try:
-        w = int(settings.ffmpeg_output_width)
-        h = int(settings.ffmpeg_output_height)
+        w = exp_w
+        h = exp_h
         tmo = float(settings.ffmpeg_timeout_sec)
         if use_slideshow:
             slides = [(p, per_slide_sec) for _a, p in resolved_paths]
@@ -5946,6 +5962,7 @@ def _rough_cut(
     project = db.get(Project, project_id)
     if not project or project.tenant_id != tenant:
         raise ValueError("project not found")
+    ew, eh = _project_export_dimensions(project)
 
     storage_root = Path(settings.local_storage_root).resolve()
     allow_unapproved = bool((payload or {}).get("allow_unapproved_media"))
@@ -6027,8 +6044,8 @@ def _rough_cut(
                 compile_meta = compile_mixed_visual_timeline(
                     mixed_segments,
                     out_path,
-                    width=int(settings.ffmpeg_output_width),
-                    height=int(settings.ffmpeg_output_height),
+                    width=ew,
+                    height=eh,
                     ffmpeg_bin=ffmpeg_bin,
                     ffprobe_bin=ffprobe_bin,
                     timeout_sec=float(settings.ffmpeg_timeout_sec),
@@ -6054,8 +6071,8 @@ def _rough_cut(
                 compile_meta = compile_mixed_visual_timeline(
                     mixed_segments,
                     out_path,
-                    width=int(settings.ffmpeg_output_width),
-                    height=int(settings.ffmpeg_output_height),
+                    width=ew,
+                    height=eh,
                     ffmpeg_bin=ffmpeg_bin,
                     ffprobe_bin=ffprobe_bin,
                     timeout_sec=float(settings.ffmpeg_timeout_sec),
@@ -6071,8 +6088,8 @@ def _rough_cut(
                 compile_meta = compile_mixed_visual_timeline(
                     video_segments,
                     out_path,
-                    width=int(settings.ffmpeg_output_width),
-                    height=int(settings.ffmpeg_output_height),
+                    width=ew,
+                    height=eh,
                     ffmpeg_bin=ffmpeg_bin,
                     ffprobe_bin=ffprobe_bin,
                     timeout_sec=float(settings.ffmpeg_timeout_sec),
@@ -6091,8 +6108,8 @@ def _rough_cut(
                 compile_meta = compile_image_slideshow(
                     slides,
                     out_path,
-                    width=int(settings.ffmpeg_output_width),
-                    height=int(settings.ffmpeg_output_height),
+                    width=ew,
+                    height=eh,
                     ffmpeg_bin=ffmpeg_bin,
                     timeout_sec=float(settings.ffmpeg_timeout_sec),
                     motion="none",

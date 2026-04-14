@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from director_api.db.models import Chapter, Project
+from director_api.services.project_frame import image_prompt_aspect_phrase
 from director_api.services.research_service import sanitize_jsonb_text
 
 # Match HTTP + worker gates to ``build_scene_plan_batch`` (script preferred, else summary).
@@ -52,11 +53,15 @@ def resolve_chapter_narration_tts_body(chapter: Chapter, scenes: list[Any]) -> s
 
 
 # Seed image prompts: richer than a raw narration paste; still capped in ``build_scene_plan_batch``.
-_IMAGE_PROMPT_BOILERPLATE = (
-    "Cinematic documentary photograph, 16:9, one frozen moment in time, sharp focal subject, "
-    "readable environment, natural light, photoreal, no typography or watermark on the image. "
-    "Visual treatment: "
-)
+
+
+def _image_prompt_boilerplate_for_project(project: Project) -> str:
+    shape = image_prompt_aspect_phrase(getattr(project, "frame_aspect_ratio", None))
+    return (
+        f"Cinematic documentary photograph, {shape}, sharp focal subject, "
+        "readable environment, natural light, photoreal, no typography or watermark on the image. "
+        "Visual treatment: "
+    )
 
 _DEFAULT_SCENE_NEGATIVE_PROMPT = (
     "text, watermark, logo, subtitles, UI, deformed anatomy, extra limbs, blurry, low resolution, "
@@ -316,9 +321,10 @@ def build_scene_plan_batch(
         purpose = sanitize_jsonb_text(narr_clean.replace("\n", " ")[:280], 300) or f"Beat {idx + 1}"
         # Cap style so long presets cannot consume the whole 4000-char budget before narration.
         _tail = ". What we see (from this beat): "
-        _style_cap = max(120, 4000 - len(_IMAGE_PROMPT_BOILERPLATE) - len(_tail) - 1000)
+        _boiler = _image_prompt_boilerplate_for_project(project)
+        _style_cap = max(120, 4000 - len(_boiler) - len(_tail) - 1000)
         style = sanitize_jsonb_text(resolved_visual, min(3000, _style_cap))
-        head = f"{_IMAGE_PROMPT_BOILERPLATE}{style}{_tail}"
+        head = f"{_boiler}{style}{_tail}"
         narr_room = max(200, 4000 - len(head))
         narr_excerpt = narr_clean[: min(1400, narr_room)]
         _vp_room = max(120, 3000 - len(_VIDEO_PROMPT_LEAD))
@@ -394,13 +400,14 @@ def build_extend_scene_deterministic(
         resolved_visual = (project.visual_style or "cinematic documentary natural light").strip()
     vtype = (last_visual_type or "").strip() or _visual_type_for_project(project, style_for_hints=resolved_visual)
     _ext_tail = ". Seamless continuation of the prior beat. What we see (from this beat): "
-    _style_cap_e = max(120, 4000 - len(_IMAGE_PROMPT_BOILERPLATE) - len(_ext_tail) - 1000)
+    _boiler_e = _image_prompt_boilerplate_for_project(project)
+    _style_cap_e = max(120, 4000 - len(_boiler_e) - len(_ext_tail) - 1000)
     style = sanitize_jsonb_text(resolved_visual, min(3000, _style_cap_e))
     words = max(1, len(new_narr.split()))
     planned = max(5, min(600, int(round(words / 130.0 * 60))))
     purpose = sanitize_jsonb_text(new_narr.replace("\n", " ")[:280], 300) or "Extended beat"
     chapter_tag = sanitize_jsonb_text(chapter.title, 120)
-    head = f"{_IMAGE_PROMPT_BOILERPLATE}{style}{_ext_tail}"
+    head = f"{_boiler_e}{style}{_ext_tail}"
     narr_room = max(200, 4000 - len(head))
     narr_excerpt = new_narr[: min(1400, narr_room)]
     _vp_room_e = max(120, 3000 - len(_VIDEO_PROMPT_LEAD))

@@ -23,6 +23,7 @@ from director_api.services.telegram_studio_bridge import (
     get_telegram_studio_session_row,
     is_pipeline_trigger_message,
     merge_brief_snapshot,
+    parse_standalone_frame_aspect,
     project_create_from_brief_snapshot,
     trim_chat_messages,
     validate_brief_for_pipeline,
@@ -43,9 +44,13 @@ def _help_text() -> str:
     return (
         "Directely (Telegram)\n\n"
         "We use the same Chat Studio assistant as the web app to shape your documentary brief.\n"
+        "You must choose a **picture frame** for all generated video and stills:\n"
+        "• **16:9** — landscape (YouTube-style)\n"
+        "• **9:16** — vertical (Shorts / Reels / TikTok)\n"
+        "Send a message with only `16:9` or `9:16`, or tell the assistant — they will ask.\n\n"
         "Reply with details about your topic; when things are ready, the assistant will ask you to send RUN alone "
         "to start the full hands-off pipeline to final video.\n\n"
-        "Shortcuts: send RUN, GO, or START alone to queue the pipeline (after you've discussed the brief).\n\n"
+        "Shortcuts: send RUN, GO, or START alone to queue the pipeline (after you've discussed the brief and chosen 16:9 or 9:16).\n\n"
         "Commands:\n"
         "/start — this help\n"
         "/help — this help"
@@ -270,9 +275,48 @@ async def telegram_webhook(
                 log.warning("telegram_help_send_failed", error=str(exc))
         return {"ok": True}
 
+    fa_only = parse_standalone_frame_aspect(text)
+    if fa_only:
+        row_f = get_or_create_telegram_studio_session(db, tenant_id, chat_key)
+        merged_f: dict[str, Any] = dict(row_f.brief_snapshot_json or {})
+        merged_f["frame_aspect_ratio"] = fa_only
+        row_f.brief_snapshot_json = merged_f
+        flag_modified(row_f, "brief_snapshot_json")
+        db.add(row_f)
+        db.commit()
+        label = "landscape" if fa_only == "16:9" else "vertical / Shorts"
+        try:
+            telegram_send_message(
+                token,
+                chat_expected,
+                _truncate_telegram(
+                    f"Picture frame saved: {fa_only} ({label}).\n"
+                    "Keep chatting with the assistant, then send RUN alone when your brief is ready."
+                ),
+            )
+        except Exception as exc:
+            log.warning("telegram_frame_ack_send_failed", error=str(exc))
+        return {"ok": True}
+
     if is_pipeline_trigger_message(text):
         row = get_telegram_studio_session_row(db, tenant_id, chat_key)
         snap: dict[str, Any] = dict(row.brief_snapshot_json or {}) if row else {}
+        far_gate = str(snap.get("frame_aspect_ratio") or "").strip()
+        if far_gate not in ("16:9", "9:16"):
+            try:
+                telegram_send_message(
+                    token,
+                    chat_expected,
+                    _truncate_telegram(
+                        "Before RUN, choose the picture frame for your video:\n"
+                        "• Send **16:9** alone for landscape (YouTube-style)\n"
+                        "• Send **9:16** alone for vertical (Shorts / Reels)\n\n"
+                        "Or describe it in chat with the assistant — then send RUN again."
+                    ),
+                )
+            except Exception:
+                pass
+            return {"ok": True}
         try:
             pc = project_create_from_brief_snapshot(snap)
             validate_brief_for_pipeline(pc)

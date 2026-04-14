@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import HTTPException
@@ -21,6 +22,14 @@ _PIPELINE_TRIGGER_TOKENS = frozenset({"run", "go", "start"})
 def is_pipeline_trigger_message(text: str) -> bool:
     t = (text or "").strip().lower()
     return t in _PIPELINE_TRIGGER_TOKENS
+
+
+def parse_standalone_frame_aspect(text: str) -> str | None:
+    """If the user sent only 16:9 or 9:16 (optional spaces), return that token; else None."""
+    t = re.sub(r"\s+", "", (text or "").strip().lower())
+    if t in ("16:9", "9:16"):
+        return t
+    return None
 
 
 def merge_brief_snapshot(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -81,6 +90,9 @@ def project_create_from_brief_snapshot(snap: dict[str, Any]) -> ProjectCreate:
     bl = snap.get("budget_limit")
     if isinstance(bl, (int, float)):
         kwargs["budget_limit"] = float(bl)
+    far = snap.get("frame_aspect_ratio")
+    if isinstance(far, str) and far.strip() in ("16:9", "9:16"):
+        kwargs["frame_aspect_ratio"] = far.strip()
     return ProjectCreate(**kwargs)
 
 

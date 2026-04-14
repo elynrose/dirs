@@ -28,6 +28,7 @@ _BRIEF_PATCH_KEYS = frozenset(
         "preferred_image_provider",
         "preferred_video_provider",
         "preferred_speech_provider",
+        "frame_aspect_ratio",
     }
 )
 
@@ -90,6 +91,11 @@ def _sanitize_brief_patch(raw: Any) -> dict[str, Any]:
         if k.startswith("preferred_") and k.endswith("_provider"):
             if isinstance(v, str) and v.strip():
                 out[k] = v.strip()[:200]
+            continue
+        if k == "frame_aspect_ratio":
+            if v in ("16:9", "9:16"):
+                out[k] = v
+            continue
     return out
 
 
@@ -139,6 +145,11 @@ def _build_system_prompt(
     base = f"""You are Directely's Chat Studio setup guide. Help the user shape a documentary project before they run
 the hands-off pipeline. Be concise and practical; ask one or two focused questions when something important is missing.
 
+Early in the conversation, ask which **picture frame** they want for all generated stills and video (unless
+`frame_aspect_ratio` is already set in the brief snapshot): **16:9** landscape (YouTube-style) or **9:16** portrait
+(Shorts / Reels / TikTok). When they decide, set `brief_patch.frame_aspect_ratio` to exactly `"16:9"` or `"9:16"`.
+Do not skip this — delivery geometry is locked per project.
+
 {_PIPELINE_OVERVIEW}
 
 Style catalog (use narration_style as preset:<id> or user:<uuid> for custom workspace styles; visual_style as preset:<id>):
@@ -152,7 +163,8 @@ You MUST respond with a single JSON object (no markdown) using these keys:
 - "brief_patch" (object, optional): only fields you are confident about; omit the key if unsure. Allowed keys:
   title, topic, target_runtime_minutes (2–120), audience, tone, narration_style, visual_style,
   factual_strictness (strict|balanced|creative), music_preference, research_min_sources (1–100),
-  preferred_text_provider, preferred_image_provider, preferred_video_provider, preferred_speech_provider.
+  preferred_text_provider, preferred_image_provider, preferred_video_provider, preferred_speech_provider,
+  frame_aspect_ratio ("16:9" or "9:16" only — required before saying the brief is ready to generate).
 - "character_drafts" (array, optional): up to 8 entries with name, role_in_story, visual_description,
   time_place_scope_notes (string or null). Use when characters would help consistency.
 - "notes_for_user" (string, optional): very short checklist (e.g. what to clarify next, or "Ready to generate.").
@@ -163,7 +175,12 @@ Stay factual; do not promise real research results. Prefer preset narration/visu
 
 --- Telegram mode ---
 The user is messaging via Telegram. Use the same JSON response format.
-When you have enough detail for a solid documentary brief, ask them to start the automated pipeline by sending a message that contains ONLY the trigger word RUN (letters R-U-N, nothing else in the message). You may say something like: "When you're ready, send RUN as its own message and I'll enqueue the full hands-off pipeline."
+You must confirm **16:9 vs 9:16** (picture frame) before you tell them to send RUN. They can also send a message
+containing only `16:9` or `9:16` to record the choice without extra prose.
+When you have enough detail for a solid documentary brief **and** `frame_aspect_ratio` is set in the merged snapshot
+(or in your brief_patch this turn), ask them to start the automated pipeline by sending a message that contains ONLY
+the trigger word RUN (letters R-U-N, nothing else in the message). You may say something like: "When you're ready,
+send RUN as its own message and I'll enqueue the full hands-off pipeline."
 Do not say the pipeline has started or is queued until they send that RUN message. Until then, keep refining the brief through dialogue."""
     return base
 

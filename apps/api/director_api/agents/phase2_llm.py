@@ -282,17 +282,26 @@ def enrich_director_pack(
     topic: str,
     settings: Settings,
     usage_sink: list[dict[str, Any]] | None = None,
+    *,
+    frame_aspect_ratio: str | None = None,
 ) -> dict[str, Any]:
     """Return validated-shaped director pack; on failure return input."""
     sys = get_llm_prompt_text("phase2_director_enrich")
-    user = json.dumps(
-        {
-            "seed_pack": pack,
-            "title": project_title,
-            "topic": topic,
-        },
-        ensure_ascii=False,
-    )
+    far = (frame_aspect_ratio or "").strip()
+    if far in ("16:9", "9:16"):
+        sys += (
+            f" User JSON includes frame_aspect_ratio={far!r}: this is the locked delivery geometry for all program "
+            "visuals (landscape 16:9 vs vertical 9:16). Reflect it in style_notes or production_constraints when it "
+            "affects composition (establishing vs tall portrait framing, safe title areas, etc.)."
+        )
+    user_obj: dict[str, Any] = {
+        "seed_pack": pack,
+        "title": project_title,
+        "topic": topic,
+    }
+    if far in ("16:9", "9:16"):
+        user_obj["frame_aspect_ratio"] = far
+    user = json.dumps(user_obj, ensure_ascii=False)
     out = _chat_json_object(
         settings, system=sys, user=user, service_type="phase2_director_enrich", usage_sink=usage_sink
     )

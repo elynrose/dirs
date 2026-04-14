@@ -217,6 +217,21 @@ export function InspectorPipelinePanel({ p }) {
                 <textarea id="topic" value={p.topic} onChange={(e) => p.setTopic(e.target.value)} rows={3} />
                 <label htmlFor="runtime">Runtime minutes</label>
                 <input id="runtime" type="number" min={5} max={120} value={p.runtime} onChange={(e) => p.setRuntime(e.target.value)} />
+                <label htmlFor="frameAspect">Picture frame</label>
+                <select
+                  id="frameAspect"
+                  value={p.frameAspectRatio === "9:16" ? "9:16" : "16:9"}
+                  onChange={(e) => p.setFrameAspectRatio(e.target.value)}
+                  disabled={Boolean(p.projectId)}
+                  title={
+                    p.projectId ?
+                      "Frame is fixed for this project (set when it was created)."
+                    : "16:9 landscape or 9:16 vertical — used for generated stills, scene clips, and exports."
+                  }
+                >
+                  <option value="16:9">16:9 landscape (YouTube-style)</option>
+                  <option value="9:16">9:16 portrait (shorts / Reels)</option>
+                </select>
                 <div className="pipeline-mode-row brief-pipeline-controls-row">
                   <span className="pipeline-mode-label">Pipeline</span>
                   <div className="segmented segmented--pipeline-three" role="group" aria-label="Pipeline mode">

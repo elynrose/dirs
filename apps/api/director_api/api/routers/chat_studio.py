@@ -38,6 +38,7 @@ def _brief_snapshot_from_project(p: Project) -> dict[str, Any]:
         "preferred_image_provider": p.preferred_image_provider,
         "preferred_video_provider": p.preferred_video_provider,
         "preferred_speech_provider": p.preferred_speech_provider,
+        "frame_aspect_ratio": getattr(p, "frame_aspect_ratio", None) or "16:9",
     }
 
 
