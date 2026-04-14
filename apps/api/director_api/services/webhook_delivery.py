@@ -59,6 +59,8 @@ def _infer_job_entity(job: Job) -> tuple[str | None, str | None]:
         return "timeline_version", p.get("timeline_version_id")
     if t == "export":
         return "project", p.get("project_id")
+    if t == "youtube_upload":
+        return "timeline_version", p.get("timeline_version_id")
     if t == "subtitles_generate":
         return "project", p.get("project_id")
     if t in ("research_run", "script_outline", "script_chapters", "script_chapter_regenerate"):

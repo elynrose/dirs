@@ -236,10 +236,15 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             "webhook_signing_secret",
             "telegram_bot_token",
             "telegram_webhook_secret",
+            "youtube_client_secret",
+            "youtube_refresh_token",
         }
     )
     for sk in _optional_secret_keys:
         if sk in clean and isinstance(clean[sk], str) and not clean[sk].strip():
+            clean.pop(sk, None)
+        elif sk in clean and isinstance(clean[sk], str) and clean[sk].strip() == "***":
+            # Studio sends masked placeholders on save — do not persist.
             clean.pop(sk, None)
     if "telegram_chat_id" in clean:
         tc = str(clean["telegram_chat_id"]).strip()

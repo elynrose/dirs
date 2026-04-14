@@ -437,6 +437,36 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("telegram_webhook_secret", "TELEGRAM_WEBHOOK_SECRET"),
     )
 
+    # YouTube Data API v3 (optional OAuth refresh upload). Store refresh token in workspace app_settings or env.
+    youtube_client_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("youtube_client_id", "YOUTUBE_CLIENT_ID"),
+    )
+    youtube_client_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("youtube_client_secret", "YOUTUBE_CLIENT_SECRET"),
+    )
+    youtube_refresh_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("youtube_refresh_token", "YOUTUBE_REFRESH_TOKEN"),
+    )
+    youtube_auto_upload_after_pipeline: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "youtube_auto_upload_after_pipeline",
+            "YOUTUBE_AUTO_UPLOAD_AFTER_PIPELINE",
+        ),
+        description="When true and OAuth is configured, enqueue youtube_upload after a succeeded full agent run.",
+    )
+    default_burn_subtitles_in_final_video: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "default_burn_subtitles_in_final_video",
+            "DEFAULT_BURN_SUBTITLES_IN_FINAL_VIDEO",
+        ),
+        description="If true, burn project subtitles.vtt into final_cut when timeline does not set burn_subtitles_into_video=false.",
+    )
+
     # ------------------------------------------------------------------
     # Phase 4 — critic
     # ------------------------------------------------------------------

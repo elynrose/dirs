@@ -17,7 +17,7 @@ from director_api.config import Settings, get_settings
 from director_api.db.models import AppSetting, AgentRun, TelegramChatStudioSession
 from director_api.db.session import get_db
 from director_api.services.runtime_settings import resolve_runtime_settings
-from director_api.services.telegram_client import telegram_send_message
+from director_api.services.telegram_client import telegram_answer_callback_query, telegram_send_message
 from director_api.services.telegram_studio_bridge import (
     get_or_create_telegram_studio_session,
     get_telegram_studio_session_row,
@@ -150,6 +150,107 @@ def _truncate_telegram(s: str) -> str:
     return t[: _TELEGRAM_MAX_OUT - 1] + "…"
 
 
+def _telegram_handle_callback_query(
+    db: Session,
+    base: Settings,
+    *,
+    cb: dict[str, Any],
+    auth_on: bool,
+    secret_header: str,
+) -> dict[str, bool]:
+    """Inline keyboard callbacks (e.g. Retry after a failed pipeline)."""
+    from director_api.tasks.worker_tasks import run_agent_run as run_agent_run_task
+
+    msg_inner = cb.get("message")
+    if not isinstance(msg_inner, dict):
+        return {"ok": True}
+    chat = msg_inner.get("chat")
+    chat_id_raw = chat.get("id") if isinstance(chat, dict) else None
+    if chat_id_raw is None:
+        return {"ok": True}
+    incoming_chat = str(chat_id_raw).strip()
+    sh = (secret_header or "").strip()
+    rt = _find_runtime_settings_for_telegram_chat(db, base, incoming_chat_id=incoming_chat, secret_header=sh)
+    if rt is None:
+        return {"ok": True}
+    token = (rt.telegram_bot_token or "").strip()
+    chat_expected = (rt.telegram_chat_id or "").strip()
+    cq_id = str(cb.get("id") or "").strip()
+    if not token or not chat_expected or not cq_id:
+        return {"ok": True}
+    if not _normalize_chat_id(incoming_chat, chat_expected):
+        return {"ok": True}
+
+    data = str(cb.get("data") or "").strip()
+    if not data.startswith("retry:"):
+        return {"ok": True}
+    rest = data[6:].strip()
+    try:
+        old_aid = uuid.UUID(rest)
+    except ValueError:
+        try:
+            telegram_answer_callback_query(token, cq_id, text="Could not parse run id.")
+        except Exception:
+            pass
+        return {"ok": True}
+
+    old = db.get(AgentRun, old_aid)
+    if not old or old.tenant_id != rt.default_tenant_id:
+        try:
+            telegram_answer_callback_query(token, cq_id, text="Run not found for this workspace.")
+        except Exception:
+            pass
+        return {"ok": True}
+    if old.status not in ("failed", "cancelled", "blocked"):
+        try:
+            telegram_answer_callback_query(token, cq_id, text="Run is not in a retriable state.")
+        except Exception:
+            pass
+        return {"ok": True}
+
+    po: dict[str, Any] = dict(old.pipeline_options_json or {})
+    po["continue_from_existing"] = True
+    po.setdefault("through", "full_video")
+    po.setdefault("unattended", True)
+    try:
+        assert_agent_run_pipeline_allowed(po, db=db, tenant_id=rt.default_tenant_id, auth_enabled=auth_on)
+    except Exception as exc:
+        try:
+            telegram_answer_callback_query(token, cq_id, text=str(exc)[:180])
+        except Exception:
+            pass
+        return {"ok": True}
+
+    new_run = AgentRun(
+        id=uuid.uuid4(),
+        tenant_id=old.tenant_id,
+        project_id=old.project_id,
+        started_by_user_id=None,
+        status="queued",
+        steps_json=[],
+        pipeline_options_json=po,
+        pipeline_control_json={},
+    )
+    db.add(new_run)
+    db.commit()
+    db.refresh(new_run)
+    run_agent_run_task.delay(str(new_run.id))
+    log.info("telegram_retry_agent_run_enqueued", old_agent_run_id=str(old_aid), new_agent_run_id=str(new_run.id))
+    try:
+        telegram_answer_callback_query(token, cq_id, text="Queued new run.")
+    except Exception:
+        pass
+    try:
+        telegram_send_message(
+            token,
+            chat_expected,
+            _truncate_telegram(f"Retry queued.\nNew run id: {new_run.id}\nProject unchanged."),
+        )
+    except Exception as exc:
+        log.warning("telegram_retry_ack_send_failed", error=str(exc))
+    return {"ok": True}
+
+
 def _enqueue_pipeline_from_brief(
     db: Session,
     rt: Settings,
@@ -210,6 +311,16 @@ async def telegram_webhook(
         body: dict[str, Any] = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail={"code": "BAD_JSON", "message": "expected JSON body"}) from None
+
+    cb_raw = body.get("callback_query")
+    if isinstance(cb_raw, dict) and (cb_raw.get("data") or "").strip():
+        return _telegram_handle_callback_query(
+            db,
+            base,
+            cb=cb_raw,
+            auth_on=auth_on,
+            secret_header=(x_telegram_bot_api_secret_token or "").strip(),
+        )
 
     msg = body.get("message") or body.get("edited_message")
     if not isinstance(msg, dict):

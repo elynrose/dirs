@@ -34,6 +34,7 @@ from director_api.api.schemas.phase5 import (
     TimelineVersionCreate,
     TimelineVersionOut,
     TimelineVersionPatch,
+    YouTubeUploadBody,
 )
 from director_api.config import Settings, get_settings
 from director_api.db.models import Chapter, Job, MusicBed, NarrationTrack, Project, Scene, TimelineVersion
@@ -1067,6 +1068,74 @@ def final_cut(
             "project_id": str(project_id),
             "tenant_id": settings.default_tenant_id,
             "allow_unapproved_media": body.allow_unapproved_media,
+        },
+        project_id=project_id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    enqueue_job_task(run_phase5_job, job.id)
+    response_body = {
+        "job": {"id": str(job.id), "status": job.status, "poll_url": f"/v1/jobs/{job.id}"},
+        "meta": meta,
+    }
+    store_idempotency(
+        db,
+        tenant_id=settings.default_tenant_id,
+        route=route,
+        key=key,
+        h=h,
+        response_status=202,
+        response_body=response_body,
+    )
+    return JSONResponse(status_code=202, content=response_body)
+
+
+@router.post("/projects/{project_id}/youtube-upload")
+def youtube_upload(
+    project_id: UUID,
+    body: YouTubeUploadBody,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    """Queue upload of ``final_cut.mp4`` for this timeline to YouTube (OAuth refresh token in workspace settings)."""
+    _project_or_404(db, settings, project_id)
+    tv = db.get(TimelineVersion, body.timeline_version_id)
+    if not tv or tv.tenant_id != settings.default_tenant_id or tv.project_id != project_id:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": "timeline version not found for this project"},
+        )
+    key = require_idempotency_key(idempotency_key)
+    route = f"POST /v1/projects/{project_id}/youtube-upload"
+    h = body_hash(body.model_dump(mode="json"))
+    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    if replay:
+        return replay
+    assert_can_enqueue(db, settings, "youtube_upload")
+    proj = db.get(Project, project_id)
+    title = (body.title or (proj.title if proj else None) or "Video")[:500]
+    desc = (body.description or "").strip()[:5000]
+    priv = (body.privacy_status or "unlisted").strip().lower()
+    if priv not in ("public", "unlisted", "private"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_PRIVACY", "message": "privacy_status must be public, unlisted, or private"},
+        )
+    job = Job(
+        id=uuid.uuid4(),
+        tenant_id=settings.default_tenant_id,
+        type="youtube_upload",
+        status="queued",
+        payload={
+            "timeline_version_id": str(body.timeline_version_id),
+            "project_id": str(project_id),
+            "tenant_id": settings.default_tenant_id,
+            "title": title,
+            "description": desc,
+            "privacy_status": priv,
         },
         project_id=project_id,
     )

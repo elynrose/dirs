@@ -38,8 +38,16 @@ def telegram_get_webhook_info(token: str) -> dict[str, Any]:
     return data.get("result") or {}
 
 
-def telegram_send_message(token: str, chat_id: str, text: str) -> None:
-    body = {"chat_id": chat_id, "text": (text or "")[:4096]}
+def telegram_send_message(
+    token: str,
+    chat_id: str,
+    text: str,
+    *,
+    reply_markup: dict[str, Any] | None = None,
+) -> None:
+    body: dict[str, Any] = {"chat_id": chat_id, "text": (text or "")[:4096]}
+    if reply_markup:
+        body["reply_markup"] = reply_markup
     r = httpx.post(f"{_base(token)}/sendMessage", json=body, timeout=_DEFAULT_TIMEOUT)
     if not r.is_success:
         log.warning("telegram_send_message_http", status=r.status_code, body=r.text[:500])
@@ -75,3 +83,24 @@ def telegram_send_document(
     out = r.json()
     if not out.get("ok"):
         raise RuntimeError(str(out.get("description") or "sendDocument failed"))
+
+
+def telegram_answer_callback_query(
+    token: str,
+    callback_query_id: str,
+    *,
+    text: str | None = None,
+    show_alert: bool = False,
+) -> None:
+    body: dict[str, Any] = {"callback_query_id": str(callback_query_id)}
+    if text:
+        body["text"] = str(text)[:200]
+    if show_alert:
+        body["show_alert"] = True
+    r = httpx.post(f"{_base(token)}/answerCallbackQuery", json=body, timeout=_DEFAULT_TIMEOUT)
+    if not r.is_success:
+        log.warning("telegram_answer_callback_http", status=r.status_code, body=r.text[:400])
+        return
+    data = r.json()
+    if not data.get("ok"):
+        log.warning("telegram_answer_callback_failed", description=str(data.get("description"))[:200])

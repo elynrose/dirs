@@ -683,7 +683,10 @@ const JOB_TYPE_MACRO_STEP_RULES = [
   { macro: "auto_videos", types: new Set(["scene_generate_video"]) },
   { macro: "auto_narration", types: new Set(["narration_generate", "narration_generate_scene"]) },
   { macro: "auto_rough_cut", types: new Set(["rough_cut"]) },
-  { macro: "auto_final_cut", types: new Set(["fine_cut", "final_cut", "export", "subtitles_generate"]) },
+  {
+    macro: "auto_final_cut",
+    types: new Set(["fine_cut", "final_cut", "export", "subtitles_generate", "youtube_upload"]),
+  },
   { macro: "story_research_review", types: new Set(["chapter_critique", "scene_critique", "scene_critic_revision"]) },
 ];
 
@@ -734,6 +737,7 @@ function studioJobKindHeadline(jobType) {
     fine_cut: "Fine cut",
     final_cut: "Final cut",
     export: "Export",
+    youtube_upload: "YouTube upload",
     research_run: "Research",
     script_outline: "Outline",
     script_chapters: "Chapter scripts",
@@ -974,6 +978,9 @@ export default function App() {
   const [musicBedPick, setMusicBedPick] = useState("");
   /** Rough-cut: dissolve between consecutive stills (timeline ``clip_crossfade_sec``). */
   const [clipCrossfadeSec, setClipCrossfadeSec] = useState(0);
+  /** Per-timeline override for burning ``subtitles.vtt`` into ``final_cut.mp4`` (default = workspace setting). */
+  const [burnSubtitlesMode, setBurnSubtitlesMode] = useState("default");
+  const [youtubePrivacyChoice, setYoutubePrivacyChoice] = useState("unlisted");
   const [musicUploadLicense, setMusicUploadLicense] = useState("");
   const musicFileInputRef = useRef(null);
   const sceneClipFileInputRef = useRef(null);
@@ -1902,6 +1909,11 @@ export default function App() {
           ? Math.max(0, Math.min(2, tj.clip_crossfade_sec))
           : 0,
       );
+      if (Object.prototype.hasOwnProperty.call(tj, "burn_subtitles_into_video")) {
+        setBurnSubtitlesMode(tj.burn_subtitles_into_video ? "yes" : "no");
+      } else {
+        setBurnSubtitlesMode("default");
+      }
     } catch {
       /* ignore */
     }
@@ -1934,6 +1946,11 @@ export default function App() {
           music_bed_id: bedId && String(bedId).trim() ? String(bedId).trim() : null,
           clip_crossfade_sec: Math.max(0, Math.min(2, Number(clipCrossfadeSec) || 0)),
         };
+        if (burnSubtitlesMode === "default") {
+          delete next.burn_subtitles_into_video;
+        } else {
+          next.burn_subtitles_into_video = burnSubtitlesMode === "yes";
+        }
         const pr = await api(`/v1/timeline-versions/${encodeURIComponent(tid)}`, {
           method: "PATCH",
           body: JSON.stringify({ timeline_json: next }),
@@ -1945,7 +1962,16 @@ export default function App() {
         return { ok: false, error: formatUserFacingError(e) };
       }
     },
-    [projectId, timelineVersionId, mixMusicVol, mixNarrVol, narrMixMode, musicBedPick, clipCrossfadeSec],
+    [
+      projectId,
+      timelineVersionId,
+      mixMusicVol,
+      mixNarrVol,
+      narrMixMode,
+      musicBedPick,
+      clipCrossfadeSec,
+      burnSubtitlesMode,
+    ],
   );
 
   /** Same sequence as ``scripts/run_rough_cut.py`` + ``run_final_cut.py``: rough-cut → wait → save mix → final-cut → wait. */
@@ -3387,7 +3413,9 @@ export default function App() {
                       ? "Final cut"
                       : mediaJob.type === "export"
                         ? "Export bundle"
-                        : "Job";
+                        : mediaJob.type === "youtube_upload"
+                          ? "YouTube upload"
+                          : "Job";
       const gatePayload =
         mediaJob.status === "failed" && mediaJob.error_message
           ? parsePhase5GateModalPayload(mediaJob.error_message)
@@ -3399,7 +3427,12 @@ export default function App() {
       if (showExportGateModal) {
         setMessage(`${jobLabel} was blocked by export checks — use the dialog below.`);
       } else {
-        setMessage(`${jobLabel} (${mediaJobId.slice(0, 8)}…) ${mediaJob.status}${detail}`);
+        let summary = `${jobLabel} (${mediaJobId.slice(0, 8)}…) ${mediaJob.status}${detail}`;
+        if (mediaJob.status === "succeeded" && mediaJob.type === "youtube_upload") {
+          const shr = mediaJob.result?.youtube_share_url || mediaJob.result?.youtube_watch_url;
+          if (shr) summary += ` — ${shr}`;
+        }
+        setMessage(summary);
       }
       if (mediaJob.status === "failed" && mediaJob.error_message) {
         if (showExportGateModal) {
@@ -3440,7 +3473,11 @@ export default function App() {
           const { ok, data } = await fetchProjectPhase5Readiness(api, projectId, phase5ReadinessFetchOpts);
           if (ok) setPhase5Ready(data);
         })();
-        if (["rough_cut", "fine_cut", "final_cut", "export", "subtitles_generate"].includes(mediaJob.type)) {
+        if (
+          ["rough_cut", "fine_cut", "final_cut", "export", "subtitles_generate", "youtube_upload"].includes(
+            mediaJob.type,
+          )
+        ) {
           loadPipelineStatus(projectId);
         }
         if (["script_outline", "script_chapters", "research_run", "script_chapter_regenerate"].includes(mediaJob.type)) {
@@ -3514,7 +3551,9 @@ export default function App() {
         const nsid = p.scene_id ?? pj.result?.scene_id;
         if (nsid) void loadSceneNarrationMeta(String(nsid));
       }
-      if (["rough_cut", "fine_cut", "final_cut", "export", "subtitles_generate"].includes(pj.type)) {
+      if (
+        ["rough_cut", "fine_cut", "final_cut", "export", "subtitles_generate", "youtube_upload"].includes(pj.type)
+      ) {
         loadPipelineStatus(projectId);
       }
       if (["script_outline", "script_chapters", "research_run", "script_chapter_regenerate"].includes(pj.type)) {
@@ -7170,6 +7209,73 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                 </details>
                 <details className="settings-section" defaultOpen>
                   <summary className="settings-section-summary">
+                    <span className="settings-section-heading">YouTube upload</span>
+                  </summary>
+                  <div className="settings-section-body">
+                    <p className="subtle">
+                      Create an OAuth client in Google Cloud Console (YouTube Data API v3 enabled), complete the consent flow to obtain a{" "}
+                      <strong>refresh token</strong>, then paste credentials below. Used for <strong>Upload to YouTube</strong> on the Timeline panel and
+                      optional auto-upload after a succeeded full pipeline.
+                    </p>
+                    <label htmlFor="cfg-youtube-client-id">OAuth client ID</label>
+                    <input
+                      id="cfg-youtube-client-id"
+                      autoComplete="off"
+                      value={appConfig.youtube_client_id || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, youtube_client_id: e.target.value }))}
+                    />
+                    <label htmlFor="cfg-youtube-client-secret" style={{ marginTop: 12 }}>
+                      OAuth client secret
+                    </label>
+                    <input
+                      id="cfg-youtube-client-secret"
+                      type="password"
+                      autoComplete="off"
+                      placeholder={appConfig.youtube_client_secret === "***" ? "unchanged (masked)" : ""}
+                      value={appConfig.youtube_client_secret === "***" ? "" : appConfig.youtube_client_secret || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, youtube_client_secret: e.target.value }))}
+                    />
+                    <label htmlFor="cfg-youtube-refresh" style={{ marginTop: 12 }}>
+                      OAuth refresh token
+                    </label>
+                    <input
+                      id="cfg-youtube-refresh"
+                      type="password"
+                      autoComplete="off"
+                      placeholder={appConfig.youtube_refresh_token === "***" ? "unchanged (masked)" : ""}
+                      value={appConfig.youtube_refresh_token === "***" ? "" : appConfig.youtube_refresh_token || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, youtube_refresh_token: e.target.value }))}
+                    />
+                    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", marginTop: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={!!appConfig.youtube_auto_upload_after_pipeline}
+                        onChange={(e) =>
+                          setAppConfig((p) => ({ ...p, youtube_auto_upload_after_pipeline: e.target.checked }))
+                        }
+                      />
+                      <span>
+                        <strong>Auto-upload</strong> to YouTube after a successful full agent run (when OAuth is complete
+                        and <code>final_cut.mp4</code> exists). Per-timeline opt-out: set <code>youtube_auto_upload: false</code> in timeline JSON.
+                      </span>
+                    </label>
+                    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", marginTop: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={!!appConfig.default_burn_subtitles_in_final_video}
+                        onChange={(e) =>
+                          setAppConfig((p) => ({ ...p, default_burn_subtitles_in_final_video: e.target.checked }))
+                        }
+                      />
+                      <span>
+                        <strong>Default: burn subtitles</strong> into <code>final_cut.mp4</code> when <code>subtitles.vtt</code> exists and the
+                        timeline does not set <code>burn_subtitles_into_video</code>.
+                      </span>
+                    </label>
+                  </div>
+                </details>
+                <details className="settings-section" defaultOpen>
+                  <summary className="settings-section-summary">
                     <span className="settings-section-heading">OpenAI SDK — text chat backend</span>
                   </summary>
                   <div className="settings-section-body">
@@ -9722,6 +9828,24 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         </span>
                       </label>
                     </div>
+                    <label htmlFor="burn-sub-mode" style={{ marginTop: 14 }}>
+                      Subtitles in final MP4 (WebVTT burn-in)
+                    </label>
+                    <p className="subtle" style={{ marginTop: -4 }}>
+                      Uses project <code>subtitles.vtt</code> after the mux. <strong>Workspace default</strong> is in Settings → Integrations; pick
+                      <em> Default</em> here to follow it. Persist with <strong>Save mix to timeline</strong> (Project → Background music) or it is
+                      saved automatically before Final cut / Export in this panel.
+                    </p>
+                    <select
+                      id="burn-sub-mode"
+                      value={burnSubtitlesMode}
+                      disabled={busy || !projectId}
+                      onChange={(e) => setBurnSubtitlesMode(e.target.value)}
+                    >
+                      <option value="default">Default (workspace setting)</option>
+                      <option value="yes">Burn subtitles into final video</option>
+                      <option value="no">Do not burn</option>
+                    </select>
                     <div className="action-row">
                       <button
                         type="button"
@@ -9813,6 +9937,50 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         }}
                       >
                         Export
+                      </button>
+                    </div>
+                    <div className="action-row" style={{ flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                      <label htmlFor="yt-privacy" className="subtle" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        YouTube privacy
+                        <select
+                          id="yt-privacy"
+                          value={youtubePrivacyChoice}
+                          disabled={busy || !projectId}
+                          onChange={(e) => setYoutubePrivacyChoice(e.target.value)}
+                        >
+                          <option value="unlisted">unlisted</option>
+                          <option value="private">private</option>
+                          <option value="public">public</option>
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy || !projectId || !timelineVersionId}
+                        title="Requires final_cut.mp4 on disk and YouTube OAuth in Settings → Integrations."
+                        onClick={async () => {
+                          if (!projectId || !timelineVersionId) return;
+                          const tv = sanitizeStudioUuid(timelineVersionId);
+                          if (!tv || !PHASE5_TIMELINE_UUID_RE.test(tv)) {
+                            setError("Enter a valid timeline version UUID for YouTube upload.");
+                            return;
+                          }
+                          const sync = await patchTimelineMixToServer();
+                          if (!sync.ok) {
+                            setError(sync.error ? humanizeErrorText(sync.error) : "Could not save timeline options");
+                            return;
+                          }
+                          await queueMediaJob(
+                            `/v1/projects/${projectId}/youtube-upload`,
+                            {
+                              timeline_version_id: tv,
+                              privacy_status: youtubePrivacyChoice,
+                            },
+                            "YouTube upload queued…",
+                          );
+                        }}
+                      >
+                        Upload to YouTube
                       </button>
                     </div>
                     <p className="subtle" style={{ marginTop: 12, marginBottom: 6 }}>
