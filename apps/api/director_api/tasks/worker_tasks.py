@@ -99,7 +99,6 @@ from director_api.services.job_worker_gate import acquire_job_for_work
 from director_api.services.llm_prompt_runtime import llm_prompt_map_scope
 from director_api.services.llm_prompt_service import build_resolved_prompt_map
 from director_api.services.webhook_delivery import notify_job_terminal
-from director_api.services.youtube_api import youtube_refresh_access_token, youtube_upload_mp4_resumable
 from director_api.services.narration_bracket_visual import (
     base_image_prompt_from_scene_fields,
     video_text_prompt_from_scene_fields,
@@ -129,7 +128,6 @@ from ffmpeg_pipelines.mixed_timeline import compile_mixed_visual_timeline
 from ffmpeg_pipelines.mux_master import mux_video_with_narration_and_music
 from ffmpeg_pipelines.silence_audio import write_silence_aac
 from ffmpeg_pipelines.overlay_video import burn_overlays_on_video
-from ffmpeg_pipelines.subtitle_burn import burn_webvtt_subtitles_into_mp4
 from ffmpeg_pipelines.paths import mkdir_parent, path_from_storage_url, path_is_readable_file, path_stat
 from ffmpeg_pipelines.slideshow import compile_image_slideshow
 from ffmpeg_pipelines.still_to_video import encode_image_to_mp4
@@ -5582,15 +5580,6 @@ def _subtitles_generate(db, job: Job, settings: Any) -> dict[str, Any]:
     return {"subtitle_url": f"file://{out.resolve()}", "bytes": path_stat(out).st_size, "total_sec": total_sec}
 
 
-def _should_burn_subtitles_into_final_video(tj: dict[str, Any] | None, settings: Any) -> bool:
-    """Per-timeline ``burn_subtitles_into_video`` overrides workspace ``default_burn_subtitles_in_final_video``."""
-    if not isinstance(tj, dict):
-        tj = {}
-    if "burn_subtitles_into_video" in tj:
-        return bool(tj.get("burn_subtitles_into_video"))
-    return bool(getattr(settings, "default_burn_subtitles_in_final_video", False))
-
-
 def _attach_latest_music_bed_if_missing(
     db: Any,
     tv: TimelineVersion,
@@ -5868,30 +5857,12 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
             except OSError:
                 pass
 
-    burn_meta: dict[str, Any] | None = None
-    vtt_p = storage_root / "exports" / str(project_id) / "subtitles.vtt"
-    if _should_burn_subtitles_into_final_video(tj, settings) and path_is_readable_file(vtt_p):
-        try:
-            burn_meta = burn_webvtt_subtitles_into_mp4(
-                out_final,
-                vtt_p,
-                out_final,
-                ffmpeg_bin=ffmpeg_bin,
-                timeout_sec=float(settings.ffmpeg_timeout_sec),
-            )
-        except Exception as e:  # noqa: BLE001
-            log.warning("final_cut_subtitle_burn_failed", error=str(e)[:500], timeline_version_id=str(tv_id))
-            burn_meta = {"error": str(e)[:400]}
-    elif _should_burn_subtitles_into_final_video(tj, settings):
-        log.info("final_cut_subtitle_burn_skipped_missing_vtt", timeline_version_id=str(tv_id))
-
     tv.render_status = "final_compiled"
     tv.output_url = f"file://{out_final.resolve()}"
     return {
         "timeline_version_id": str(tv.id),
         "output_url": tv.output_url,
         "mux": mux_meta,
-        "subtitle_burn": burn_meta,
     }
 
 
@@ -5968,54 +5939,6 @@ def _export_bundle(db, job: Job, settings: Any) -> dict[str, Any]:
     bundle["bundle_manifest_path"] = str(manifest_path.resolve())
     bundle["bundle_manifest_url"] = f"file://{manifest_path.resolve()}"
     return {"bundle": bundle}
-
-
-def _youtube_upload(db, job: Job, settings: Any) -> dict[str, Any]:
-    payload = job.payload or {}
-    tv_id = uuid.UUID(str(payload["timeline_version_id"]))
-    project_id = uuid.UUID(str(payload["project_id"]))
-    tenant = str(payload.get("tenant_id") or settings.default_tenant_id)
-    tv = db.get(TimelineVersion, tv_id)
-    if not tv or tv.tenant_id != tenant or tv.project_id != project_id:
-        raise ValueError("timeline version not found")
-    cid = (settings.youtube_client_id or "").strip()
-    sec = (settings.youtube_client_secret or "").strip()
-    rt = (settings.youtube_refresh_token or "").strip()
-    if not cid or not sec or not rt:
-        raise ValueError("YouTube OAuth not configured (set client id, secret, and refresh token)")
-    storage_root = Path(settings.local_storage_root).resolve()
-    video_p = storage_root / "exports" / str(project_id) / str(tv_id) / "final_cut.mp4"
-    if not path_is_readable_file(video_p):
-        raise ValueError("final_cut.mp4 missing; run final cut first")
-    access = youtube_refresh_access_token(client_id=cid, client_secret=sec, refresh_token=rt)
-    title = str(payload.get("title") or "Video")[:500]
-    desc = str(payload.get("description") or "")[:5000]
-    priv = str(payload.get("privacy_status") or "unlisted").strip().lower()
-    if priv not in ("public", "unlisted", "private"):
-        priv = "unlisted"
-    up = youtube_upload_mp4_resumable(
-        access_token=access,
-        video_path=video_p,
-        title=title,
-        description=desc,
-        privacy_status=priv,
-        timeout_sec=float(getattr(settings, "ffmpeg_timeout_sec", 7200) or 7200),
-    )
-    tj = dict(tv.timeline_json) if isinstance(tv.timeline_json, dict) else {}
-    tj["youtube_video_id"] = up["id"]
-    tj["youtube_watch_url"] = up["watch_url"]
-    tj["youtube_share_url"] = up["share_url"]
-    tj["youtube_privacy_status"] = priv
-    validate_timeline_document(tj)
-    tv.timeline_json = tj
-    flag_modified(tv, "timeline_json")
-    db.commit()
-    return {
-        "timeline_version_id": str(tv.id),
-        "youtube_video_id": up["id"],
-        "youtube_watch_url": up["watch_url"],
-        "youtube_share_url": up["share_url"],
-    }
 
 
 def _rough_cut(
@@ -6406,8 +6329,6 @@ def run_phase5_job(self, job_id: str) -> None:
                     extra = _final_cut(db, job, settings)
                 elif job.type == "export":
                     extra = _export_bundle(db, job, settings)
-                elif job.type == "youtube_upload":
-                    extra = _youtube_upload(db, job, settings)
                 else:
                     raise ValueError(f"unsupported phase5 job type: {job.type}")
                 job.status = "succeeded"

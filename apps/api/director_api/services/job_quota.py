@@ -22,7 +22,6 @@ COMPILE_TYPES = frozenset(
         "narration_generate",
         "narration_generate_scene",
         "subtitles_generate",
-        "youtube_upload",
     }
 )
 MEDIA_TYPES = frozenset({"scene_generate_image", "scene_generate_video", "scene_generate", "scene_extend"})

@@ -11,7 +11,6 @@ from ffmpeg_pipelines.paths import path_from_storage_url
 from ffmpeg_pipelines.probe import ffprobe_duration_seconds
 from ffmpeg_pipelines.slideshow import compile_image_slideshow
 from ffmpeg_pipelines.still_to_video import encode_image_to_mp4
-from ffmpeg_pipelines.subtitle_burn import burn_webvtt_subtitles_into_mp4
 from ffmpeg_pipelines.video_chain import compile_video_concat
 from ffmpeg_pipelines.version_probe import ffmpeg_version_line
 
@@ -20,7 +19,6 @@ __all__ = [
     "build_export_manifest",
     "build_overlay_filter_chain",
     "burn_overlays_on_video",
-    "burn_webvtt_subtitles_into_mp4",
     "compile_image_slideshow",
     "compile_mixed_visual_timeline",
     "compile_video_concat",

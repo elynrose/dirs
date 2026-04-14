@@ -49,34 +49,6 @@ log = structlog.get_logger(__name__)
 
 _CHATTERBOX_REF_MAX_BYTES = 25 * 1024 * 1024
 
-# Returned to Studio; values remain stored in DB — only the API response is redacted.
-_SETTINGS_MASK_KEYS = frozenset(
-    {
-        "openai_api_key",
-        "openrouter_api_key",
-        "xai_api_key",
-        "grok_api_key",
-        "tavily_api_key",
-        "gemini_api_key",
-        "elevenlabs_api_key",
-        "fal_key",
-        "webhook_signing_secret",
-        "telegram_bot_token",
-        "telegram_webhook_secret",
-        "youtube_client_secret",
-        "youtube_refresh_token",
-    }
-)
-
-
-def _mask_settings_config_for_api(cfg: dict[str, Any]) -> dict[str, Any]:
-    out = dict(cfg or {})
-    for k in _SETTINGS_MASK_KEYS:
-        v = out.get(k)
-        if isinstance(v, str) and v.strip():
-            out[k] = "***"
-    return out
-
 
 @router.get("")
 def get_settings_row(
@@ -91,7 +63,7 @@ def get_settings_row(
         "data": AppSettingsOut(
             id=row.id,
             tenant_id=row.tenant_id,
-            config=_mask_settings_config_for_api(sanitize_overrides(row.config_json)),
+            config=sanitize_overrides(row.config_json),
             created_at=row.created_at,
             updated_at=row.updated_at,
         ).model_dump(mode="json"),
@@ -117,7 +89,7 @@ def patch_settings_row(
         "data": AppSettingsOut(
             id=row.id,
             tenant_id=row.tenant_id,
-            config=_mask_settings_config_for_api(sanitize_overrides(row.config_json)),
+            config=sanitize_overrides(row.config_json),
             created_at=row.created_at,
             updated_at=row.updated_at,
         ).model_dump(mode="json"),

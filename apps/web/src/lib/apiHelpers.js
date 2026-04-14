@@ -3,23 +3,11 @@
  */
 
 export async function parseJson(response) {
-  const status = response.status;
   const t = await response.text();
   try {
-    const data = JSON.parse(t);
-    if (
-      !response.ok &&
-      data !== null &&
-      typeof data === "object" &&
-      !Array.isArray(data)
-    ) {
-      return { ...data, _httpStatus: status };
-    }
-    return data;
+    return JSON.parse(t);
   } catch {
-    const out = { raw: t };
-    if (!response.ok) out._httpStatus = status;
-    return out;
+    return { raw: t };
   }
 }
 
@@ -68,15 +56,6 @@ export function apiErrorMessage(body) {
   if (body == null) return "Request failed.";
   if (typeof body === "string") return humanizeErrorText(body);
   if (typeof body !== "object") return String(body);
-  const httpSt =
-    typeof body._httpStatus === "number" && Number.isFinite(body._httpStatus) ? body._httpStatus : null;
-  if (httpSt === 502 || httpSt === 503 || httpSt === 504) {
-    return (
-      `Cannot reach the Directely API (HTTP ${httpSt}). The Studio page loaded, but nginx has no working backend — ` +
-      `usually Uvicorn is not running on 127.0.0.1:8000. On the server run: curl -sS http://127.0.0.1:8000/v1/health ` +
-      `then start the API (see INSTALLATION.md).`
-    );
-  }
   const d = body.detail;
   const hint =
     d && typeof d === "object" && typeof d.hint === "string" && d.hint.trim()

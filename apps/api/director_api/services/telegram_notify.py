@@ -14,7 +14,6 @@ from director_api.db.models import AgentRun, Project, TimelineVersion
 from director_api.db.session import SessionLocal
 from director_api.services.runtime_settings import resolve_runtime_settings
 from director_api.services.telegram_client import telegram_send_document, telegram_send_message
-from director_api.services.youtube_api import maybe_enqueue_youtube_upload_after_agent_run
 from ffmpeg_pipelines.paths import path_is_readable_file
 
 log = structlog.get_logger(__name__)
@@ -90,10 +89,6 @@ def telegram_notify_after_agent_run(agent_run_id: str) -> None:
                 telegram_send_message(token, chat, msg)
             except Exception as exc:
                 log.warning("telegram_terminal_message_failed", agent_run_id=agent_run_id, error=str(exc))
-            try:
-                maybe_enqueue_youtube_upload_after_agent_run(agent_run_id)
-            except Exception as exc:
-                log.warning("youtube_auto_enqueue_after_notify_failed", agent_run_id=agent_run_id, error=str(exc))
             vid = _final_cut_path_for_project(
                 db,
                 storage_root=settings.local_storage_root,
@@ -125,12 +120,7 @@ def telegram_notify_after_agent_run(agent_run_id: str) -> None:
             body = f"Pipeline blocked or stopped.\nProject: {title}\nRun: {agent_run_id}\nStatus: {status}"
             if err:
                 body += f"\n{err[:3500]}"
-        retry_markup = {
-            "inline_keyboard": [
-                [{"text": "Retry pipeline", "callback_data": f"retry:{agent_run_id}"}],
-            ],
-        }
         try:
-            telegram_send_message(token, chat, body, reply_markup=retry_markup)
+            telegram_send_message(token, chat, body)
         except Exception as exc:
             log.warning("telegram_terminal_message_failed", agent_run_id=agent_run_id, error=str(exc))

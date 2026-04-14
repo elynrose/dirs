@@ -81,13 +81,3 @@ class FineCutBody(BaseModel):
 class ExportBundleBody(BaseModel):
     timeline_version_id: UUID
     include_subtitles: bool = True
-
-
-class YouTubeUploadBody(BaseModel):
-    timeline_version_id: UUID
-    title: str | None = Field(default=None, max_length=500)
-    description: str | None = Field(default=None, max_length=5000)
-    privacy_status: str = Field(
-        default="unlisted",
-        description="YouTube privacy: public | unlisted | private",
-    )
