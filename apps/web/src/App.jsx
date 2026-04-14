@@ -886,6 +886,23 @@ function initialBootFromDirectorSession() {
   };
 }
 
+/** Hash used so the address bar reflects “login page” without server SPA rewrites (session expiry, sign-out). */
+const STUDIO_LOGIN_HASH = "#/login";
+
+function replaceStudioUrlForSaaSAuth(needLogin) {
+  if (typeof window === "undefined") return;
+  const { pathname, search } = window.location;
+  const h = window.location.hash || "";
+  if (needLogin) {
+    if (h === STUDIO_LOGIN_HASH) return;
+    window.history.replaceState(null, "", `${pathname}${search}${STUDIO_LOGIN_HASH}`);
+    return;
+  }
+  if (h === STUDIO_LOGIN_HASH) {
+    window.history.replaceState(null, "", `${pathname}${search}`);
+  }
+}
+
 const UI_BOOT = initialBootFromDirectorSession();
 
 export default function App() {
@@ -1392,10 +1409,26 @@ export default function App() {
         needLogin: true,
       }));
       setEventAuthKey((k) => k + 1);
+      showToast("Your session expired. Please sign in again.", { type: "info", durationMs: 8000 });
     };
     window.addEventListener("director:session-expired", onSessionExpired);
     return () => window.removeEventListener("director:session-expired", onSessionExpired);
-  }, [resetWorkspaceForTenantBoundary]);
+  }, [resetWorkspaceForTenantBoundary, showToast]);
+
+  /** Keep URL in sync with SaaS login gate so refresh / share link reopen the login screen; strip hash in legacy mode. */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!authBootstrap.done) return;
+    if (authBootstrap.mode !== "saas") {
+      const h = window.location.hash || "";
+      if (h === STUDIO_LOGIN_HASH) {
+        const { pathname, search } = window.location;
+        window.history.replaceState(null, "", `${pathname}${search}`);
+      }
+      return;
+    }
+    replaceStudioUrlForSaaSAuth(authBootstrap.needLogin);
+  }, [authBootstrap.done, authBootstrap.mode, authBootstrap.needLogin]);
 
   /** Proactively rotate JWT before expiry when operators use a short ``director_jwt_expire_hours`` (long rough/final-cut runs). */
   const tryRefreshSaaSAccessToken = useCallback(async () => {
