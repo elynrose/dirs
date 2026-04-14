@@ -5,10 +5,11 @@ from typing import Any
 
 import structlog
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from director_api.config import Settings
-from director_api.db.models import AppSetting
+from director_api.db.models import AppSetting, TenantMembership, User
 from director_api.services.scene_timeline_duration import DEFAULT_SCENE_VO_TAIL_PADDING_SEC
 
 log = structlog.get_logger(__name__)
@@ -22,8 +23,18 @@ def invalidate_runtime_settings_cache(tenant_id: str | None = None) -> None:
         _RUNTIME_SETTINGS_CACHE.clear()
         return
     t = tenant_id.strip()
-    if t:
-        _RUNTIME_SETTINGS_CACHE.pop(t, None)
+    if not t:
+        return
+    for k in list(_RUNTIME_SETTINGS_CACHE.keys()):
+        if k == t or k.startswith(t + "\x1f"):
+            _RUNTIME_SETTINGS_CACHE.pop(k, None)
+
+
+def invalidate_runtime_settings_cache_for_user(db: Session, user_id: int) -> None:
+    """Drop cache rows for every workspace this user belongs to (membership or credential flag changes)."""
+    rows = db.scalars(select(TenantMembership.tenant_id).where(TenantMembership.user_id == user_id)).all()
+    for tid in {str(x) for x in rows if x}:
+        invalidate_runtime_settings_cache(tenant_id=tid)
 
 # DB/infra bootstrap values remain env-backed; runtime behavior can be overridden.
 # Job caps must not come from app_settings JSON: PATCH /v1/settings sends the whole client config dict;
@@ -269,7 +280,132 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
     return clean
 
 
-def resolve_runtime_settings(db: Session, base: Settings, tenant_id: str | None = None) -> Settings:
+# Keys that may be inherited from ``Settings.director_platform_credentials_source_tenant_id`` (same set as optional secrets in ``sanitize_overrides``).
+PLATFORM_CREDENTIAL_SETTING_KEYS = frozenset(
+    {
+        "fal_key",
+        "openai_api_key",
+        "lm_studio_api_key",
+        "openrouter_api_key",
+        "xai_api_key",
+        "grok_api_key",
+        "tavily_api_key",
+        "gemini_api_key",
+        "elevenlabs_api_key",
+        "webhook_signing_secret",
+        "telegram_bot_token",
+        "telegram_webhook_secret",
+        "youtube_client_secret",
+        "youtube_refresh_token",
+    }
+)
+
+
+def resolve_effective_user_id_for_platform_credentials(
+    db: Session, tenant_id: str, explicit_user_id: int | None
+) -> int | None:
+    """Returns a user id when platform API key inheritance applies for this workspace."""
+    if explicit_user_id is not None:
+        u = db.get(User, explicit_user_id)
+        if u and getattr(u, "use_platform_api_credentials", False):
+            return explicit_user_id
+        return None
+    rows = list(
+        db.scalars(
+            select(User.id)
+            .join(TenantMembership, TenantMembership.user_id == User.id)
+            .where(
+                TenantMembership.tenant_id == tenant_id,
+                User.use_platform_api_credentials.is_(True),
+            )
+        ).all()
+    )
+    if len(rows) == 1:
+        return int(rows[0])
+    return None
+
+
+def _merge_platform_credentials(
+    db: Session,
+    base: Settings,
+    merged: Settings,
+    tenant_id: str,
+    effective_user_id: int | None,
+) -> Settings:
+    if effective_user_id is None:
+        return merged
+    src_tid = (getattr(base, "director_platform_credentials_source_tenant_id", None) or "").strip()
+    if not src_tid or src_tid == tenant_id:
+        return merged
+    src_row = db.query(AppSetting).filter(AppSetting.tenant_id == src_tid).one_or_none()
+    src_ov = sanitize_overrides(src_row.config_json if src_row else {})
+    if not src_ov:
+        return merged
+    updates: dict[str, Any] = {}
+    for key in PLATFORM_CREDENTIAL_SETTING_KEYS:
+        cur = getattr(merged, key, None)
+        cur_s = str(cur).strip() if cur is not None else ""
+        if cur_s:
+            continue
+        if key not in src_ov:
+            continue
+        val = src_ov[key]
+        if val is None:
+            continue
+        if isinstance(val, str) and not val.strip():
+            continue
+        updates[key] = val
+    if not updates:
+        return merged
+    try:
+        return merged.model_copy(update=updates)
+    except (ValidationError, TypeError, ValueError) as e:
+        log.warning(
+            "platform_credentials_merge_failed",
+            tenant_id=tenant_id,
+            source_tenant_id=src_tid,
+            error=str(e),
+        )
+        return merged
+
+
+def platform_inherited_credential_keys_for_settings_response(
+    db: Session,
+    *,
+    tenant_id: str,
+    user_id: int | None,
+    saved_config: dict[str, Any],
+    base_settings: Settings,
+) -> list[str]:
+    """Secret keys supplied via platform tenant but not stored on this workspace (Studio hides inputs)."""
+    if user_id is None:
+        return []
+    u = db.get(User, user_id)
+    if not u or not getattr(u, "use_platform_api_credentials", False):
+        return []
+    src_tid = (getattr(base_settings, "director_platform_credentials_source_tenant_id", None) or "").strip()
+    if not src_tid or src_tid == tenant_id:
+        return []
+    src_row = db.query(AppSetting).filter(AppSetting.tenant_id == src_tid).one_or_none()
+    src_clean = sanitize_overrides(src_row.config_json if src_row else {})
+    out: list[str] = []
+    for key in PLATFORM_CREDENTIAL_SETTING_KEYS:
+        sav = saved_config.get(key)
+        sav_empty = sav is None or (isinstance(sav, str) and not str(sav).strip())
+        if not sav_empty:
+            continue
+        if key not in src_clean:
+            continue
+        v = src_clean[key]
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            continue
+        out.append(key)
+    return out
+
+
+def resolve_runtime_settings(
+    db: Session, base: Settings, tenant_id: str | None = None, user_id: int | None = None
+) -> Settings:
     """Merge per-tenant ``app_settings`` overrides into env-backed ``Settings``.
 
     ``tenant_id`` selects which ``AppSetting`` row to load. When omitted, uses
@@ -277,14 +413,20 @@ def resolve_runtime_settings(db: Session, base: Settings, tenant_id: str | None 
     has ``default_tenant_id`` set to the active tenant so existing code paths
     that filter on ``settings.default_tenant_id`` stay correct.
 
+    When ``user_id`` is set and the user has ``use_platform_api_credentials``, optional API keys
+    missing on this tenant are filled from ``director_platform_credentials_source_tenant_id`` (env).
+    Background workers with no user id use a single flagged member per workspace when unambiguous.
+
     Results are cached briefly (``runtime_settings_cache_ttl_sec`` on ``Settings``) to avoid
     repeated merges on hot paths; invalidate via ``invalidate_runtime_settings_cache``.
     """
     tid = (tenant_id or base.default_tenant_id or "").strip() or base.default_tenant_id
+    effective_uid = resolve_effective_user_id_for_platform_credentials(db, tid, user_id)
+    cache_key = f"{tid}\x1f{effective_uid if effective_uid is not None else '-'}"
     ttl = float(getattr(base, "runtime_settings_cache_ttl_sec", 15.0) or 0.0)
     now = time.monotonic()
     if ttl > 0.0:
-        hit = _RUNTIME_SETTINGS_CACHE.get(tid)
+        hit = _RUNTIME_SETTINGS_CACHE.get(cache_key)
         if hit is not None and (now - hit[0]) < ttl:
             return hit[1]
     row = db.query(AppSetting).filter(AppSetting.tenant_id == tid).one_or_none()
@@ -302,10 +444,11 @@ def resolve_runtime_settings(db: Session, base: Settings, tenant_id: str | None 
                 error=str(e),
             )
             merged = base
+    merged = _merge_platform_credentials(db, base, merged, tid, effective_uid)
     if merged.default_tenant_id != tid:
         merged = merged.model_copy(update={"default_tenant_id": tid})
     if ttl > 0.0:
-        _RUNTIME_SETTINGS_CACHE[tid] = (now, merged)
+        _RUNTIME_SETTINGS_CACHE[cache_key] = (now, merged)
     return merged
 
 

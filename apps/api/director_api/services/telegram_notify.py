@@ -90,7 +90,7 @@ def telegram_notify_after_agent_run(agent_run_id: str) -> None:
         if not run or run.status not in _TERMINAL:
             return
         base = get_settings()
-        settings = resolve_runtime_settings(db, base, run.tenant_id)
+        settings = resolve_runtime_settings(db, base, run.tenant_id, user_id=run.started_by_user_id)
         token = (settings.telegram_bot_token or "").strip()
         chat = (settings.telegram_chat_id or "").strip()
         if not token or not chat:

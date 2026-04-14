@@ -250,7 +250,7 @@ async def project_event_stream(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
 
     if not base.director_auth_enabled:
-        settings = resolve_runtime_settings(db, base, base.default_tenant_id)
+        settings = resolve_runtime_settings(db, base, base.default_tenant_id, user_id=None)
         if p.tenant_id != settings.default_tenant_id:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
     else:
@@ -288,7 +288,7 @@ async def project_event_stream(
                     "message": "not a member of this project's workspace",
                 },
             )
-        settings = resolve_runtime_settings(db, base, p.tenant_id)
+        settings = resolve_runtime_settings(db, base, p.tenant_id, user_id=user_id)
 
     return StreamingResponse(
         _event_stream(project_id, settings, db),

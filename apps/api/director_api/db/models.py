@@ -111,6 +111,9 @@ class User(Base):
     state: Mapped[str | None] = mapped_column(String(128), nullable=True)
     country: Mapped[str | None] = mapped_column(String(128), nullable=True)
     zip_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    use_platform_api_credentials: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
 
 
 class TenantMembership(Base):

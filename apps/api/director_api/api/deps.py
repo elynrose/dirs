@@ -9,11 +9,20 @@ from director_api.db.session import get_db
 from director_api.services.runtime_settings import resolve_runtime_settings
 
 
+def auth_user_id_int(auth: AuthContext) -> int | None:
+    if not auth.user_id:
+        return None
+    try:
+        return int(auth.user_id)
+    except ValueError:
+        return None
+
+
 def settings_dep(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(auth_context_dep),
 ) -> Settings:
-    return resolve_runtime_settings(db, get_settings(), auth.tenant_id)
+    return resolve_runtime_settings(db, get_settings(), auth.tenant_id, user_id=auth_user_id_int(auth))
 
 
 def meta_dep() -> dict[str, str]:

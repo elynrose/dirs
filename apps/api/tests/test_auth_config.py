@@ -38,12 +38,14 @@ def test_resolve_runtime_settings_tenant_override():
     from unittest.mock import MagicMock
 
     from director_api.config import Settings
-    from director_api.services.runtime_settings import resolve_runtime_settings
+    from director_api.services.runtime_settings import invalidate_runtime_settings_cache, resolve_runtime_settings
 
+    invalidate_runtime_settings_cache()
     base = Settings()
     db = MagicMock()
     row = SimpleNamespace(config_json={"openai_timeout_sec": 99.0})
     db.query.return_value.filter.return_value.one_or_none.return_value = row
+    db.scalars.return_value.all.return_value = []
 
     out = resolve_runtime_settings(db, base, tenant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
     assert out.default_tenant_id == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"

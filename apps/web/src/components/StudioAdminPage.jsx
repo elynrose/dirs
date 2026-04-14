@@ -1487,6 +1487,7 @@ function AdminUsersTable({ data, onRefresh, showToast }) {
   const [patchState, setPatchState] = useState("");
   const [patchCountry, setPatchCountry] = useState("");
   const [patchZip, setPatchZip] = useState("");
+  const [patchUsePlatformCreds, setPatchUsePlatformCreds] = useState(false);
   const [newPassword, setNewPassword] = useState("");
 
   const loadDetail = async (id) => {
@@ -1508,6 +1509,7 @@ function AdminUsersTable({ data, onRefresh, showToast }) {
       setPatchState(d.state || "");
       setPatchCountry(d.country || "");
       setPatchZip(d.zip_code || "");
+      setPatchUsePlatformCreds(Boolean(d.use_platform_api_credentials));
     } catch (e) {
       showToast?.(formatUserFacingError(e), { type: "error" });
     } finally {
@@ -1603,6 +1605,21 @@ function AdminUsersTable({ data, onRefresh, showToast }) {
     }
   };
 
+  const savePlatformCreds = async () => {
+    if (!detailId) return;
+    const r = await adminFetch(`/v1/admin/users/${detailId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ use_platform_api_credentials: patchUsePlatformCreds }),
+    });
+    const body = await parseJson(r);
+    if (!r.ok) showToast?.(apiErrorMessage(body) || "Failed", { type: "error" });
+    else {
+      showToast?.("Platform credentials preference saved", { type: "success" });
+      await loadDetail(detailId);
+      await onRefresh();
+    }
+  };
+
   const savePassword = async () => {
     if (!detailId || newPassword.length < 8) {
       showToast?.("Password must be at least 8 characters", { type: "error" });
@@ -1649,6 +1666,7 @@ function AdminUsersTable({ data, onRefresh, showToast }) {
             <tr>
               <th>Name</th>
               <th>Email</th>
+              <th>Platform keys</th>
               <th>id</th>
               <th>created</th>
               <th />
@@ -1659,6 +1677,7 @@ function AdminUsersTable({ data, onRefresh, showToast }) {
               <tr key={u.id}>
                 <td>{u.full_name?.trim() ? u.full_name : "—"}</td>
                 <td>{u.email}</td>
+                <td className="mono">{u.use_platform_api_credentials ? "yes" : "—"}</td>
                 <td>
                   <TruncId id={u.id} />
                 </td>
@@ -1754,6 +1773,21 @@ function AdminUsersTable({ data, onRefresh, showToast }) {
               </div>
               <button type="button" className="secondary" onClick={() => void saveProfile()}>
                 Save profile
+              </button>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 4 }}>
+                <input
+                  type="checkbox"
+                  checked={patchUsePlatformCreds}
+                  onChange={(e) => setPatchUsePlatformCreds(e.target.checked)}
+                />
+                <span className="subtle" style={{ lineHeight: 1.45 }}>
+                  Use platform API credentials — when enabled, optional API keys from the deployment&apos;s source
+                  workspace (<code className="mono">DIRECTOR_PLATFORM_CREDENTIALS_SOURCE_TENANT_ID</code>) apply for
+                  this user if their workspace has not saved its own value. Users do not see those keys in Settings.
+                </span>
+              </label>
+              <button type="button" className="secondary" onClick={() => void savePlatformCreds()}>
+                Save platform-keys option
               </button>
               <label className="subtle">
                 New password (min 8){" "}

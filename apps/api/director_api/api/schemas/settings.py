@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AppSettingsPatch(BaseModel):
@@ -15,3 +15,4 @@ class AppSettingsOut(BaseModel):
     config: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+    platform_credential_keys_inherited: list[str] = Field(default_factory=list)

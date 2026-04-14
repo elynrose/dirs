@@ -156,11 +156,13 @@ _CELERY_AGENT_RUN_HARD_SEC = 15_300
 
 
 def _worker_runtime_for_job(db, job: Job) -> Settings:
-    return resolve_runtime_settings(db, get_settings(), job.tenant_id)
+    return resolve_runtime_settings(db, get_settings(), job.tenant_id, user_id=None)
 
 
 def _worker_runtime_for_agent_run(db, run: AgentRun) -> Settings:
-    return resolve_runtime_settings(db, get_settings(), run.tenant_id)
+    return resolve_runtime_settings(
+        db, get_settings(), run.tenant_id, user_id=run.started_by_user_id
+    )
 
 
 configure_logging()

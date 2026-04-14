@@ -20,7 +20,7 @@ from typing import Any, Literal
 import httpx
 import structlog
 
-from director_api.config import Settings
+from director_api.config import Settings, get_settings
 from director_api.services.runtime_settings import resolve_runtime_settings
 
 log = structlog.get_logger(__name__)
@@ -179,9 +179,10 @@ def _fetch_categories_merged(
     return merged, categories
 
 
-def sync_fal_catalog_from_api(db: Any, settings: Settings) -> dict[str, Any]:
+def sync_fal_catalog_from_api(db: Any, settings: Settings, user_id: int | None = None) -> dict[str, Any]:
     """Fetch fal image + video catalogs and persist to JSON. Returns summary."""
-    eff = resolve_runtime_settings(db, settings)
+    tid = (getattr(settings, "default_tenant_id", None) or "").strip()
+    eff = resolve_runtime_settings(db, get_settings(), tid or None, user_id=user_id)
     headers: dict[str, str] = {}
     key = (eff.fal_key or "").strip()
     if key:

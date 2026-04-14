@@ -135,6 +135,16 @@ class Settings(BaseSettings):
     local_storage_root: str = ""
     default_tenant_id: str = "00000000-0000-0000-0000-000000000001"
 
+    # Workspace whose app_settings JSON supplies optional API keys for users with
+    # ``User.use_platform_api_credentials`` (set in admin). Empty = feature disabled.
+    director_platform_credentials_source_tenant_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "director_platform_credentials_source_tenant_id",
+            "DIRECTOR_PLATFORM_CREDENTIALS_SOURCE_TENANT_ID",
+        ),
+    )
+
     # ------------------------------------------------------------------
     # LLM providers
     # ------------------------------------------------------------------

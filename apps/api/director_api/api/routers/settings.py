@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 
-from director_api.api.deps import meta_dep, settings_dep
+from director_api.api.deps import auth_user_id_int, meta_dep, settings_dep
 from director_api.api.routers.fal_catalog import load_fal_models_data
 from director_api.api.schemas.prompts import LlmPromptItemOut, LlmPromptPatchBody
 from director_api.api.schemas.settings import AppSettingsPatch, AppSettingsOut
@@ -29,6 +29,7 @@ from director_api.services.chatterbox_voice_ref import (
 from director_api.services.runtime_settings import (
     get_or_create_app_settings,
     invalidate_runtime_settings_cache,
+    platform_inherited_credential_keys_for_settings_response,
     resolve_runtime_settings,
     sanitize_overrides,
 )
@@ -54,18 +55,29 @@ _CHATTERBOX_REF_MAX_BYTES = 25 * 1024 * 1024
 def get_settings_row(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     row = get_or_create_app_settings(db, settings.default_tenant_id)
     db.commit()
     db.refresh(row)
+    base_env = get_settings()
+    saved = sanitize_overrides(row.config_json)
+    inherited = platform_inherited_credential_keys_for_settings_response(
+        db,
+        tenant_id=row.tenant_id,
+        user_id=auth_user_id_int(auth),
+        saved_config=saved,
+        base_settings=base_env,
+    )
     return {
         "data": AppSettingsOut(
             id=row.id,
             tenant_id=row.tenant_id,
-            config=sanitize_overrides(row.config_json),
+            config=saved,
             created_at=row.created_at,
             updated_at=row.updated_at,
+            platform_credential_keys_inherited=inherited,
         ).model_dump(mode="json"),
         "meta": meta,
     }
@@ -76,6 +88,7 @@ def patch_settings_row(
     body: AppSettingsPatch,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     row = get_or_create_app_settings(db, settings.default_tenant_id)
@@ -85,13 +98,23 @@ def patch_settings_row(
     db.commit()
     db.refresh(row)
     invalidate_runtime_settings_cache(settings.default_tenant_id)
+    base_env = get_settings()
+    saved = sanitize_overrides(row.config_json)
+    inherited = platform_inherited_credential_keys_for_settings_response(
+        db,
+        tenant_id=row.tenant_id,
+        user_id=auth_user_id_int(auth),
+        saved_config=saved,
+        base_settings=base_env,
+    )
     return {
         "data": AppSettingsOut(
             id=row.id,
             tenant_id=row.tenant_id,
-            config=sanitize_overrides(row.config_json),
+            config=saved,
             created_at=row.created_at,
             updated_at=row.updated_at,
+            platform_credential_keys_inherited=inherited,
         ).model_dump(mode="json"),
         "meta": meta,
     }
@@ -113,10 +136,13 @@ def get_gemini_tts_voices(meta: dict = Depends(meta_dep)) -> dict:
 def get_elevenlabs_voices(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Voices available to the workspace ElevenLabs account (requires saved API key)."""
-    rt = resolve_runtime_settings(db, settings)
+    rt = resolve_runtime_settings(
+        db, get_settings(), settings.default_tenant_id, user_id=auth_user_id_int(auth)
+    )
     key = (getattr(rt, "elevenlabs_api_key", None) or "").strip()
     if not key:
         return {
@@ -197,11 +223,14 @@ def list_fal_models_via_settings(
 def get_chatterbox_voice_ref_info(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Whether a workspace Chatterbox reference clip exists and which storage key is configured."""
     row = get_or_create_app_settings(db, settings.default_tenant_id)
-    rt = resolve_runtime_settings(db, settings)
+    rt = resolve_runtime_settings(
+        db, get_settings(), settings.default_tenant_id, user_id=auth_user_id_int(auth)
+    )
     key = (getattr(rt, "chatterbox_voice_ref_path", None) or "").strip()
     root = Path(settings.local_storage_root).resolve()
     has_reference = False
@@ -225,9 +254,12 @@ def get_chatterbox_voice_ref_info(
 def get_chatterbox_voice_ref_content(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> FileResponse:
     """Binary WAV for the saved Chatterbox reference (for Studio preview)."""
-    rt = resolve_runtime_settings(db, settings)
+    rt = resolve_runtime_settings(
+        db, get_settings(), settings.default_tenant_id, user_id=auth_user_id_int(auth)
+    )
     key = (getattr(rt, "chatterbox_voice_ref_path", None) or "").strip()
     if not key:
         raise HTTPException(

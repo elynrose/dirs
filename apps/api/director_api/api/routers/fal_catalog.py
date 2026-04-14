@@ -12,7 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from director_api.api.deps import meta_dep, settings_dep
+from director_api.api.deps import auth_user_id_int, meta_dep, settings_dep
+from director_api.auth.context import AuthContext
+from director_api.auth.deps import auth_context_dep
 from director_api.config import Settings
 from director_api.db.session import get_db
 from director_api.services.media_models_catalog import (
@@ -66,11 +68,12 @@ def list_fal_models(
 def sync_fal_models(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Refresh ``data/media_models_catalog.json`` from the fal Platform API (image + video sections)."""
     try:
-        summary = sync_fal_catalog_from_api(db, settings)
+        summary = sync_fal_catalog_from_api(db, settings, user_id=auth_user_id_int(auth))
     except RuntimeError as e:
         raise HTTPException(
             status_code=502,

@@ -35,7 +35,11 @@ from director_api.db.models import (
 )
 from director_api.config import get_settings
 from director_api.db.session import get_db
-from director_api.services.runtime_settings import invalidate_runtime_settings_cache, resolve_runtime_settings
+from director_api.services.runtime_settings import (
+    invalidate_runtime_settings_cache,
+    invalidate_runtime_settings_cache_for_user,
+    resolve_runtime_settings,
+)
 from director_api.storage.project_storage_cleanup import remove_generated_project_files
 from director_api.services.billing_plans_seed import ensure_default_subscription_plans
 from director_api.services.platform_stripe_settings import get_or_create_platform_stripe, resolve_effective_stripe_settings
@@ -221,6 +225,7 @@ def _user_out(u: User) -> dict[str, Any]:
         "state": (u.state or "").strip() or None,
         "country": (u.country or "").strip() or None,
         "zip_code": (u.zip_code or "").strip() or None,
+        "use_platform_api_credentials": bool(getattr(u, "use_platform_api_credentials", False)),
         "created_at": u.created_at.isoformat() if u.created_at else None,
     }
 
@@ -242,6 +247,7 @@ class UserPatchBody(BaseModel):
     state: str | None = Field(None, max_length=128)
     country: str | None = Field(None, max_length=128)
     zip_code: str | None = Field(None, max_length=32)
+    use_platform_api_credentials: bool | None = None
 
 
 class UserPasswordBody(BaseModel):
@@ -334,8 +340,11 @@ def admin_patch_user(
         u.country = body.country.strip() or None
     if body.zip_code is not None:
         u.zip_code = body.zip_code.strip() or None
+    if body.use_platform_api_credentials is not None:
+        u.use_platform_api_credentials = bool(body.use_platform_api_credentials)
     db.commit()
     db.refresh(u)
+    invalidate_runtime_settings_cache_for_user(db, user_id)
     return {"data": _user_out(u), "meta": {}}
 
 
