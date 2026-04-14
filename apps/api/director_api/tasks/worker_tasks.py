@@ -169,8 +169,6 @@ from ffmpeg_pipelines.video_chain import compile_video_concat
 
 configure_logging()
 log = get_logger(__name__)
-_TARGET_W_16_9 = 1280
-_TARGET_H_16_9 = 720
 
 _ACTIVE_TEXT_PROVIDER_ALLOWED = frozenset(
     ("", "openai", "default", "auto", "openrouter", "xai", "grok", "gemini", "google", "lm_studio")
@@ -764,10 +762,21 @@ def _image_bytes_magic_ok(data: bytes) -> bool:
     return False
 
 
-def _normalize_image_bytes_16x9(
-    settings: Any, data: bytes, content_type: str | None
+def _project_export_dimensions(project: Project) -> tuple[int, int]:
+    """Width × height for normalize, local still→video, and rough/final timeline compiles."""
+    from director_api.services.project_frame import coerce_frame_aspect_ratio, frame_pixel_size
+
+    return frame_pixel_size(coerce_frame_aspect_ratio(getattr(project, "frame_aspect_ratio", None)))
+
+
+def _normalize_image_bytes_to_dims(
+    settings: Any,
+    data: bytes,
+    content_type: str | None,
+    target_w: int,
+    target_h: int,
 ) -> tuple[bytes, str, bool]:
-    """Crop/scale to 16:9 via ffmpeg. Returns (bytes, content_type, ffmpeg_output_trusted).
+    """Crop/scale to target_w×target_h via ffmpeg. Returns (bytes, content_type, ffmpeg_output_trusted).
 
     If ffmpeg runs and writes a non-trivial output file, we trust it (explicit mjpeg) even if magic
     checks would fail on exotic inputs. If ffmpeg fails or writes empty output, we fall back to raw
@@ -796,7 +805,7 @@ def _normalize_image_bytes_16x9(
             "-i",
             str(in_path),
             "-vf",
-            f"scale={_TARGET_W_16_9}:{_TARGET_H_16_9}:force_original_aspect_ratio=increase,crop={_TARGET_W_16_9}:{_TARGET_H_16_9}",
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}",
             "-frames:v",
             "1",
             "-c:v",
