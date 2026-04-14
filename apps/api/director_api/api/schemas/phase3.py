@@ -79,6 +79,28 @@ class PromptEnhanceVoBody(BaseModel):
     )
 
 
+class PromptExpandVoBody(BaseModel):
+    """Expand scene VO into a longer script (~N sentences) with optional user hints."""
+
+    current_script: str = Field(..., min_length=1, max_length=12000)
+    target_sentence_count: int = Field(
+        default=6,
+        ge=1,
+        le=40,
+        description="Approximate number of complete sentences in the expanded narration.",
+    )
+    expansion_context: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Optional notes: what to add, emphasize, or avoid while expanding.",
+    )
+    narration_style_prompt: str | None = Field(
+        default=None,
+        max_length=4000,
+        description="Optional full style instructions; when omitted, server resolves from project + workspace.",
+    )
+
+
 class SceneVideoGenBody(BaseModel):
     generation_tier: Literal["preview", "production"] = "preview"
     notes: str | None = Field(default=None, max_length=2000)

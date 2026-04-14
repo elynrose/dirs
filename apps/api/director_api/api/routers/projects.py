@@ -55,6 +55,7 @@ _BRIEF_FIELDS = (
     "preferred_image_provider",
     "preferred_video_provider",
     "preferred_speech_provider",
+    "frame_aspect_ratio",
 )
 
 
@@ -105,6 +106,7 @@ def create_project(
         preferred_image_provider=body.preferred_image_provider,
         preferred_video_provider=body.preferred_video_provider,
         preferred_speech_provider=body.preferred_speech_provider,
+        frame_aspect_ratio=(body.frame_aspect_ratio or "16:9"),
     )
     db.add(p)
     db.commit()

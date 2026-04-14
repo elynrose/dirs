@@ -243,3 +243,64 @@ def enhance_scene_vo_script(
         f"CURRENT SCRIPT:\n{current_script.strip()[:12000]}"
     )
     return _chat_json_text_field(settings, system=system, user=user, field="text", max_out_tokens=8192)
+
+
+def expand_scene_vo_script(
+    db: Session,
+    settings: Settings,
+    *,
+    scene_id: uuid.UUID,
+    current_script: str,
+    target_sentence_count: int,
+    expansion_context: str | None = None,
+    narration_style_prompt_override: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Lengthen scene VO to ~N sentences; optional user context for what to add or stress."""
+    sc = db.get(Scene, scene_id)
+    if not sc:
+        return None, "scene not found"
+    ch = db.get(Chapter, sc.chapter_id)
+    if not ch:
+        return None, "chapter not found"
+    proj = db.get(Project, ch.project_id)
+    if not proj or proj.tenant_id != settings.default_tenant_id:
+        return None, "project not found"
+
+    n = max(1, min(40, int(target_sentence_count)))
+
+    style_raw = (narration_style_prompt_override or "").strip()
+    if not style_raw:
+        style_raw = effective_narration_style(
+            proj.narration_style,
+            settings,
+            db=db,
+            tenant_id=proj.tenant_id,
+        ).strip()
+    if not style_raw:
+        style_raw = (
+            "Spoken documentary voice-over: clear, natural read-aloud; third person unless the topic calls for direct address."
+        )
+
+    ctx = (expansion_context or "").strip()
+    ctx_block = f"USER EXPANSION NOTES (follow if compatible with facts):\n{ctx[:2000]}\n\n" if ctx else ""
+
+    system = (
+        "You expand spoken documentary voice-over narration. "
+        f"The expanded script should contain approximately {n} complete sentences "
+        "(real sentence boundaries—avoid one endless comma chain). "
+        "Preserve the facts and core meaning of the CURRENT SCRIPT; you may add detail, examples, transitions, "
+        "or clarification that fits the topic—do not invent new factual claims or names not implied by the script or notes. "
+        "Apply NARRATION STYLE for tone and pacing. "
+        "If USER EXPANSION NOTES are present, weave them in where they fit; if they conflict with facts, prefer the script. "
+        'Respond with JSON only: {"text": "<expanded narration>"}.'
+    )
+    user = (
+        f"Project title: {proj.title}\n"
+        f"Project topic: {str(proj.topic or '')[:1500]}\n"
+        f"Chapter title: {str(ch.title or '')[:500]}\n\n"
+        f"Scene purpose: {str(sc.purpose or '')[:1200]}\n\n"
+        f"NARRATION STYLE:\n{style_raw[:3500]}\n\n"
+        f"{ctx_block}"
+        f"CURRENT SCRIPT:\n{current_script.strip()[:12000]}"
+    )
+    return _chat_json_text_field(settings, system=system, user=user, field="text", max_out_tokens=8192)

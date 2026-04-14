@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+FrameAspectRatio = Literal["16:9", "9:16"]
+
 
 class ProjectCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=500)
@@ -21,6 +23,10 @@ class ProjectCreate(BaseModel):
     preferred_video_provider: str | None = None
     preferred_speech_provider: str | None = None
     research_min_sources: int | None = Field(default=None, ge=1, le=100)
+    frame_aspect_ratio: FrameAspectRatio | None = Field(
+        default="16:9",
+        description='Delivery frame: "16:9" landscape or "9:16" portrait (shorts).',
+    )
 
     def brief_dict(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)
@@ -45,6 +51,7 @@ class ProjectPatch(BaseModel):
     research_min_sources: int | None = Field(default=None, ge=1, le=100)
     critic_policy_json: dict[str, Any] | None = None
     use_all_approved_scene_media: bool | None = None
+    frame_aspect_ratio: FrameAspectRatio | None = None
 
 
 class ProjectOut(BaseModel):
@@ -72,6 +79,7 @@ class ProjectOut(BaseModel):
     director_output_json: dict[str, Any] | None
     critic_policy_json: dict[str, Any] | None = None
     use_all_approved_scene_media: bool = False
+    frame_aspect_ratio: str = "16:9"
     created_at: datetime
     updated_at: datetime
 
@@ -80,6 +88,13 @@ class ProjectOut(BaseModel):
     def research_min_default(cls, v: Any) -> Any:
         if v is None:
             return 3
+        return v
+
+    @field_validator("frame_aspect_ratio", mode="before")
+    @classmethod
+    def frame_aspect_default(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return "16:9"
         return v
 
     @field_validator("director_output_json", "critic_policy_json", mode="before")

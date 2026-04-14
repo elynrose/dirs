@@ -31,6 +31,7 @@ from director_api.api.schemas.phase3 import (
     AssetRejectBody,
     PromptEnhanceImageBody,
     PromptEnhanceVoBody,
+    PromptExpandVoBody,
     SceneAssetSequenceBody,
     SceneImageGenBody,
     SceneOut,
@@ -42,7 +43,11 @@ from director_api.config import Settings
 from director_api.db.models import Asset, Chapter, Job, Project, Scene
 from director_api.db.session import get_db
 from director_api.services import phase3 as phase3_svc
-from director_api.services.prompt_enhance import enhance_image_retry_prompt, enhance_scene_vo_script
+from director_api.services.prompt_enhance import (
+    enhance_image_retry_prompt,
+    enhance_scene_vo_script,
+    expand_scene_vo_script,
+)
 from director_api.services.scene_clip_upload import (
     AMBIGUOUS_EXTS,
     MAX_UPLOAD_BYTES,
@@ -567,6 +572,40 @@ def scene_prompt_enhance_vo(
         raise HTTPException(
             status_code=502,
             detail={"code": "PROMPT_ENHANCE_FAILED", "message": err or "empty result"},
+        )
+    return {"data": {"text": text}, "meta": meta}
+
+
+@router.post("/scenes/{scene_id}/prompt-expand-vo")
+def scene_prompt_expand_vo(
+    scene_id: UUID,
+    body: PromptExpandVoBody,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Expand scene narration to roughly ``target_sentence_count`` sentences with optional user context."""
+    _scene_or_404(db, settings, scene_id)
+    text, err = expand_scene_vo_script(
+        db,
+        settings,
+        scene_id=scene_id,
+        current_script=body.current_script,
+        target_sentence_count=body.target_sentence_count,
+        expansion_context=body.expansion_context,
+        narration_style_prompt_override=body.narration_style_prompt,
+    )
+    if err == "scene not found" or err == "chapter not found" or err == "project not found":
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": err})
+    if err and "not configured" in err.lower():
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "TEXT_GEN_UNAVAILABLE", "message": err},
+        )
+    if not text:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "PROMPT_EXPAND_FAILED", "message": err or "empty result"},
         )
     return {"data": {"text": text}, "meta": meta}
 

@@ -131,6 +131,7 @@ def _project_from_brief(
         preferred_image_provider=b.preferred_image_provider,
         preferred_video_provider=b.preferred_video_provider,
         preferred_speech_provider=b.preferred_speech_provider,
+        frame_aspect_ratio=(b.frame_aspect_ratio or "16:9"),
     )
     db.add(p)
     db.flush()

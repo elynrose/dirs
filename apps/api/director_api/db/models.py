@@ -28,6 +28,9 @@ class Project(Base):
     budget_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
     music_preference: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Picture geometry for all generated stills, scene clips, and exports: "16:9" (default) or "9:16".
+    frame_aspect_ratio: Mapped[str] = mapped_column(String(16), default="16:9", server_default="16:9")
+
     preferred_text_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preferred_image_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preferred_video_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)

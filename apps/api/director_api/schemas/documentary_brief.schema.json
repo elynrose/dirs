@@ -23,6 +23,7 @@
     "preferred_video_provider": { "type": "string" },
     "preferred_speech_provider": { "type": "string" },
     "research_min_sources": { "type": "integer", "minimum": 1, "maximum": 100 },
-    "budget_limit": { "type": "number" }
+    "budget_limit": { "type": "number" },
+    "frame_aspect_ratio": { "type": "string", "enum": ["16:9", "9:16"] }
   }
 }

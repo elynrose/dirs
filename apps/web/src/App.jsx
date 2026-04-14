@@ -943,6 +943,10 @@ export default function App() {
   const [sceneNarrationSaving, setSceneNarrationSaving] = useState(false);
   const [promptEnhanceImageBusy, setPromptEnhanceImageBusy] = useState(false);
   const [promptEnhanceVoBusy, setPromptEnhanceVoBusy] = useState(false);
+  const [promptExpandVoBusy, setPromptExpandVoBusy] = useState(false);
+  /** Scene script expand: approximate sentence count + optional user hints for the LLM. */
+  const [sceneVoExpandSentenceTarget, setSceneVoExpandSentenceTarget] = useState(6);
+  const [sceneVoExpandContext, setSceneVoExpandContext] = useState("");
   const [mediaJobId, setMediaJobId] = useState(() => UI_BOOT.mediaJobId);
   const [mediaPoll, setMediaPoll] = useState(() => UI_BOOT.mediaPoll);
   const [lastHandledMediaJobId, setLastHandledMediaJobId] = useState("");
@@ -4776,6 +4780,42 @@ export default function App() {
     }
   }, [selectedSceneId, sceneNarrationDraft]);
 
+  const expandSceneVoScript = useCallback(async () => {
+    const sid = String(selectedSceneId || "").trim();
+    if (!sid) return;
+    const current = String(sceneNarrationDraft || "").trim();
+    if (!current.length) {
+      setError("Add narration text first, then use Expand script.");
+      return;
+    }
+    const n = Math.min(40, Math.max(1, Number(sceneVoExpandSentenceTarget) || 6));
+    setPromptExpandVoBusy(true);
+    setError("");
+    try {
+      const payload = {
+        current_script: current,
+        target_sentence_count: n,
+      };
+      const ctx = String(sceneVoExpandContext || "").trim();
+      if (ctx) payload.expansion_context = ctx;
+      const r = await api(`/v1/scenes/${encodeURIComponent(sid)}/prompt-expand-vo`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const b = await parseJson(r);
+      if (!r.ok) throw new Error(apiErrorMessage(b));
+      const text = b.data?.text;
+      if (typeof text !== "string" || !String(text).trim()) throw new Error("No expanded text returned.");
+      setSceneNarrationDraft(String(text).trim());
+      setSceneNarrationDirty(true);
+      setMessage("Narration expanded. Review and save if it reads well.");
+    } catch (e) {
+      setError(formatUserFacingError(e));
+    } finally {
+      setPromptExpandVoBusy(false);
+    }
+  }, [selectedSceneId, sceneNarrationDraft, sceneVoExpandSentenceTarget, sceneVoExpandContext]);
+
   const selectedSceneAssetRows = selectedSceneId ? sceneAssets[selectedSceneId] || [] : [];
   const gallerySceneAssets = useMemo(() => {
     const rows = (selectedSceneAssetRows || []).filter((a) => a.status !== "rejected");
@@ -4843,6 +4883,10 @@ export default function App() {
 
   // Reset bulk selection when scene changes
   useEffect(() => { setSelectedAssetIds(new Set()); }, [selectedSceneId]);
+
+  useEffect(() => {
+    setSceneVoExpandContext("");
+  }, [selectedSceneId]);
 
   const timelineTotalSec = scenes.reduce((acc, s) => acc + Number(s.planned_duration_sec || 0), 0);
   const sceneClipSec = Number(appConfig.scene_clip_duration_sec) === 5 ? 5 : 10;
@@ -9114,6 +9158,76 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           );
                         })()}
                       </div>
+                      <div
+                        className="panel"
+                        style={{
+                          marginTop: 10,
+                          padding: 10,
+                          background: "var(--panel-elevated, rgba(0,0,0,0.04))",
+                        }}
+                      >
+                        <p className="subtle" style={{ margin: "0 0 8px", fontSize: "0.85rem" }}>
+                          <strong>Expand script</strong> — lengthen the current text with the model. Set a rough sentence target
+                          and optional notes (facts to add, tone, pacing).
+                        </p>
+                        <div
+                          className="action-row"
+                          style={{ flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}
+                        >
+                          <label className="subtle" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
+                            Sentences (approx.)
+                            <input
+                              type="number"
+                              min={1}
+                              max={40}
+                              value={sceneVoExpandSentenceTarget}
+                              onChange={(e) => {
+                                const v = parseInt(e.target.value, 10);
+                                setSceneVoExpandSentenceTarget(Number.isFinite(v) ? Math.min(40, Math.max(1, v)) : 6);
+                              }}
+                              style={{ width: 80 }}
+                              aria-label="Target sentence count for expansion"
+                            />
+                          </label>
+                          <label
+                            className="subtle"
+                            style={{
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 4,
+                              flex: 1,
+                              minWidth: 160,
+                              fontSize: "0.85rem",
+                            }}
+                          >
+                            Expansion context (optional)
+                            <textarea
+                              rows={2}
+                              maxLength={2000}
+                              placeholder="e.g. Mention the year, add one human detail, keep sentences short…"
+                              value={sceneVoExpandContext}
+                              onChange={(e) => setSceneVoExpandContext(e.target.value)}
+                              style={{ width: "100%", minHeight: 44, resize: "vertical", fontSize: "0.85rem" }}
+                              aria-label="Optional context for script expansion"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={
+                              busy ||
+                              promptEnhanceVoBusy ||
+                              promptExpandVoBusy ||
+                              sceneNarrationSaving ||
+                              !String(sceneNarrationDraft || "").trim()
+                            }
+                            onClick={() => void expandSceneVoScript()}
+                            title="Call the text model to expand this scene’s narration"
+                          >
+                            {promptExpandVoBusy ? "Expanding…" : "Expand script"}
+                          </button>
+                        </div>
+                      </div>
                       <div className="action-row" style={{ marginTop: 10, flexWrap: "wrap", gap: 8 }}>
                         <button
                           type="button"
@@ -9121,6 +9235,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           disabled={
                             busy ||
                             promptEnhanceVoBusy ||
+                            promptExpandVoBusy ||
                             sceneNarrationSaving ||
                             !String(sceneNarrationDraft || "").trim()
                           }
