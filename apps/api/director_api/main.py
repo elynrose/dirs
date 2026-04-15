@@ -101,22 +101,18 @@ async def lifespan(_app: FastAPI):
     configure_logging()
     _check_ffmpeg_binaries()
     s = get_settings()
-    if s.director_auth_enabled and not (s.director_jwt_secret or "").strip():
-        log.error(
-            "director_auth_enabled_but_missing_jwt_secret",
-            hint="Set DIRECTOR_JWT_SECRET in the environment",
-        )
-    elif s.director_auth_enabled and (s.director_jwt_secret or "").strip():
+    secret = (s.director_jwt_secret or "").strip()
+    if secret:
         from director_api.auth.jwtutil import jwt_secret_is_weak
 
         if jwt_secret_is_weak(s.director_jwt_secret):
             log.warning(
                 "director_jwt_secret_weak",
-                hint="Use a long random secret (32+ bytes). Production should set DIRECTOR_JWT_REJECT_WEAK_SECRET=1.",
+                hint="DIRECTOR_JWT_SECRET is used for OAuth state signing (e.g. YouTube). Use a long random value (32+ bytes). Production should set DIRECTOR_JWT_REJECT_WEAK_SECRET=1.",
             )
             if s.director_jwt_reject_weak_secret:
                 raise RuntimeError(
-                    "DIRECTOR_JWT_SECRET is missing or too weak while DIRECTOR_JWT_REJECT_WEAK_SECRET is enabled"
+                    "DIRECTOR_JWT_SECRET is too weak while DIRECTOR_JWT_REJECT_WEAK_SECRET is enabled"
                 )
     yield
 

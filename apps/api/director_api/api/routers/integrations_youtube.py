@@ -109,7 +109,10 @@ def youtube_auth_url(
     if not secret:
         raise HTTPException(
             status_code=503,
-            detail={"code": "MISSING_JWT_SECRET", "message": "DIRECTOR_JWT_SECRET is required to sign OAuth state"},
+            detail={
+                "code": "MISSING_SIGNING_SECRET",
+                "message": "DIRECTOR_JWT_SECRET is required to sign YouTube OAuth state (symmetric HMAC, not user JWTs)",
+            },
         )
     cid = (settings.youtube_client_id or "").strip()
     csec = (settings.youtube_client_secret or "").strip()
@@ -143,7 +146,7 @@ def youtube_oauth_callback(
         raise HTTPException(status_code=400, detail="missing code or state")
     if not secret:
         return HTMLResponse(
-            "<html><body>Server missing DIRECTOR_JWT_SECRET. Close this tab and fix API config.</body></html>",
+            "<html><body>Server missing DIRECTOR_JWT_SECRET (OAuth state signing). Close this tab and fix API config.</body></html>",
             status_code=503,
         )
     tenant_id = verify_youtube_oauth_state(state, secret)

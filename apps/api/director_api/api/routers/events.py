@@ -41,7 +41,6 @@ import time
 from typing import AsyncGenerator
 from uuid import UUID
 
-import jwt
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -50,7 +49,7 @@ from sqlalchemy.orm import Session
 
 from director_api.api.schemas.project import JobOut
 from director_api.auth.deps import extract_token
-from director_api.auth.jwtutil import decode_access_token
+from director_api.auth.sessions import get_server_session, looks_like_jwt
 from director_api.config import Settings, get_settings
 from director_api.services.celery_liveness import celery_ping_workers, tenant_has_running_async_work
 from director_api.db.models import AgentRun, Asset, Job, Project, TenantMembership
@@ -241,8 +240,9 @@ async def project_event_stream(
     The rate limiter skips ``/v1/events`` to avoid counting the long-lived connection
     as many separate requests.
 
-    Authorization uses the project row's ``tenant_id`` plus JWT membership, so a stale
-    ``tenant_id`` query parameter (common after workspace switches) does not cause 404.
+    Authorization uses the project row's ``tenant_id`` plus the caller's opaque
+    ``director_session`` HttpOnly cookie and workspace membership, so a stale
+    ``tenant_id`` query parameter does not cause 404.
     """
     base = get_settings()
     p = db.get(Project, project_id)
@@ -260,19 +260,23 @@ async def project_event_stream(
                 status_code=401,
                 detail={"code": "UNAUTHORIZED", "message": "missing credentials"},
             )
-        try:
-            claims = decode_access_token(base, token)
-        except jwt.PyJWTError:
+        if looks_like_jwt(token):
             raise HTTPException(
                 status_code=401,
-                detail={"code": "UNAUTHORIZED", "message": "invalid or expired token"},
-            ) from None
+                detail={"code": "UNAUTHORIZED", "message": "JWT-style credentials are not supported for SSE"},
+            )
+        sess = get_server_session(token)
+        if not sess:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "UNAUTHORIZED", "message": "invalid or expired session"},
+            )
         try:
-            user_id = int(str(claims["sub"]).strip())
+            user_id = int(sess["user_id"])
         except (KeyError, ValueError, TypeError):
             raise HTTPException(
                 status_code=401,
-                detail={"code": "UNAUTHORIZED", "message": "invalid token subject"},
+                detail={"code": "UNAUTHORIZED", "message": "invalid session subject"},
             )
         row = db.scalar(
             select(TenantMembership).where(

@@ -51,12 +51,12 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
         return false;
       }
       const d = raw.data;
-      if (!d?.access_token || !d?.tenant_id) {
+      if (!d?.tenant_id) {
         setErr("Unexpected response from server.");
         return false;
       }
       setDirectorSaaSClientActive(true);
-      setDirectorAuthSession({ accessToken: d.access_token, tenantId: d.tenant_id });
+      setDirectorAuthSession({ tenantId: d.tenant_id });
       onLoggedIn?.(d);
       return true;
     },
@@ -111,12 +111,12 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
         return;
       }
       const d = raw.data;
-      if (!d?.access_token || !d?.tenant_id) {
+      if (!d?.tenant_id) {
         setErr("Unexpected response from server.");
         return;
       }
       setDirectorSaaSClientActive(true);
-      setDirectorAuthSession({ accessToken: d.access_token, tenantId: d.tenant_id });
+      setDirectorAuthSession({ tenantId: d.tenant_id });
       onLoggedIn?.(d);
     } catch (x) {
       setErr(String(x?.message || x));

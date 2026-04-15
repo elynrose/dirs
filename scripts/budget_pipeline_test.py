@@ -30,13 +30,9 @@ Music
   - Adjust with --music-path. Use a path to any supported audio file you have.
 
 Auth (when DIRECTOR_AUTH_ENABLED=true)
-  - Preferred: log in from the script (uses default workspace as X-Tenant-Id):
+  - Log in from the script (session cookie, same as Studio — no JWT, no localStorage):
       python scripts/budget_pipeline_test.py --login-email you@example.com --login-password '…'
     Password can come from env instead: DIRECTOR_TEST_PASSWORD
-  - Or set tokens yourself:
-      export DIRECTOR_API_BEARER='<jwt>'
-      export DIRECTOR_API_TENANT_ID='<uuid>'
-  - CLI overrides env: --bearer … --tenant-id …
 
 Examples
   python scripts/budget_pipeline_test.py --mode hands-off
@@ -72,27 +68,8 @@ def _default_music_path() -> Path:
     return home / "Downloads" / "Desert Covenant.mp3"
 
 
-def _headers_from_env_and_args(args: argparse.Namespace) -> dict[str, str]:
-    h: dict[str, str] = {}
-    token = (
-        (getattr(args, "bearer", None) or "").strip()
-        or os.environ.get("DIRECTOR_API_BEARER", "")
-        or os.environ.get("DIRECTOR_TEST_BEARER", "")
-    ).strip()
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    tid = (
-        (getattr(args, "tenant_id", None) or "").strip()
-        or os.environ.get("DIRECTOR_API_TENANT_ID", "")
-        or os.environ.get("DIRECTOR_TEST_TENANT_ID", "")
-    ).strip()
-    if tid:
-        h["X-Tenant-Id"] = tid
-    return h
-
-
 def _ensure_api_auth(client: httpx.Client, base: str, args: argparse.Namespace) -> dict[str, str]:
-    """Return headers with Bearer + X-Tenant-Id when SaaS auth is on; else {}."""
+    """POST /v1/auth/login when needed; session cookie is stored on ``client`` (no Bearer headers)."""
     cr = client.get(f"{base}/v1/auth/config", timeout=30.0)
     if cr.status_code >= 400:
         print(f"GET /v1/auth/config failed: {cr.status_code} {cr.text[:500]}", file=sys.stderr)
@@ -100,19 +77,6 @@ def _ensure_api_auth(client: httpx.Client, base: str, args: argparse.Namespace) 
     auth_on = bool((cr.json().get("data") or {}).get("auth_enabled"))
     if not auth_on:
         return {}
-
-    h = _headers_from_env_and_args(args)
-    has_authz = bool(h.get("Authorization"))
-    has_tenant = bool(h.get("X-Tenant-Id"))
-    if has_authz ^ has_tenant:
-        print(
-            "When auth is enabled, provide both a Bearer token and X-Tenant-Id "
-            "(e.g. DIRECTOR_API_BEARER + DIRECTOR_API_TENANT_ID, or --bearer + --tenant-id).",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    if h.get("Authorization") and h.get("X-Tenant-Id"):
-        return h
 
     email = (args.login_email or os.environ.get("DIRECTOR_TEST_EMAIL", "")).strip()
     pw = ((args.login_password or "") or os.environ.get("DIRECTOR_TEST_PASSWORD", "") or "").strip()
@@ -126,23 +90,18 @@ def _ensure_api_auth(client: httpx.Client, base: str, args: argparse.Namespace) 
             print(f"POST /v1/auth/login failed: {lr.status_code} {lr.text[:1500]}", file=sys.stderr)
             raise SystemExit(1)
         d = (lr.json().get("data") or {}) if lr.content else {}
-        tok = (d.get("access_token") or "").strip()
         tid = (d.get("tenant_id") or "").strip()
-        if not tok or not tid:
-            print("Login response missing access_token or tenant_id.", file=sys.stderr)
+        if not tid:
+            print("Login response missing tenant_id.", file=sys.stderr)
             raise SystemExit(1)
-        print(f"Logged in as {d.get('email', email)} (workspace {tid[:8]}…).")
-        return {"Authorization": f"Bearer {tok}", "X-Tenant-Id": tid}
+        print(f"Logged in as {d.get('email', email)} (workspace {tid[:8]}…); using session cookie.")
+        return {}
 
     print(
         "API has DIRECTOR_AUTH_ENABLED=true but no credentials were provided.\n\n"
-        "  Option A — log in from the script:\n"
+        "  Log in from the script (session cookie, same as Studio):\n"
         "    python scripts/budget_pipeline_test.py --login-email YOU@MAIL --login-password '…'\n"
-        "    (or set DIRECTOR_TEST_EMAIL and DIRECTOR_TEST_PASSWORD)\n\n"
-        "  Option B — use an existing session token:\n"
-        "    set DIRECTOR_API_BEARER=<jwt>\n"
-        "    set DIRECTOR_API_TENANT_ID=<workspace-uuid>\n"
-        "    (Studio: same values the web app uses; or --bearer / --tenant-id)\n",
+        "    (or set DIRECTOR_TEST_EMAIL and DIRECTOR_TEST_PASSWORD)\n",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -195,8 +154,6 @@ def main() -> int:
         action="store_true",
         help="Do not upload a music bed (final mux may omit music).",
     )
-    ap.add_argument("--bearer", default=None, help="JWT (overrides DIRECTOR_API_BEARER). Requires --tenant-id.")
-    ap.add_argument("--tenant-id", default=None, dest="tenant_id", help="Workspace id (overrides DIRECTOR_API_TENANT_ID).")
     ap.add_argument(
         "--login-email",
         default=None,

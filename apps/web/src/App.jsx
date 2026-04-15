@@ -72,7 +72,6 @@ import { StudioAdminPage } from "./components/StudioAdminPage.jsx";
 import { StudioLegalPage } from "./components/StudioLegalPage.jsx";
 import {
   clearDirectorAuthSession,
-  getDirectorAuthToken,
   getDirectorTenantId,
   normalizeDirectorAuthStorage,
   setDirectorAuthSession,
@@ -1183,12 +1182,12 @@ export default function App() {
     return s || null;
   }, [accountProfile?.billing]);
 
-  /** Admin → Tools budget pipeline: target workspace matches the Studio session (auth/me + X-Tenant-Id). */
+  /** Admin → Tools budget pipeline: target workspace matches the Studio session cookie. */
   const adminToolsWorkspaceTenantId = useMemo(() => {
     const fromProfile = (accountProfile?.active_tenant_id || accountProfile?.tenant_id || "").trim();
     if (fromProfile) return fromProfile;
     return getDirectorTenantId().trim();
-  }, [accountProfile?.active_tenant_id, accountProfile?.tenant_id]);
+  }, [accountProfile?.active_tenant_id, accountProfile?.tenant_id, eventAuthKey]);
 
   const refreshAccountProfile = useCallback(async () => {
     try {
@@ -1216,19 +1215,15 @@ export default function App() {
         syncDirectorTenantFromMePayload(me.data);
         setDirectorSaaSClientActive(true);
         setAccountProfile(me.data);
-        if (String(import.meta.env.VITE_API_BASE_URL || "").trim()) {
-          try {
-            const rr = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
-            const bb = await parseJson(rr);
-            if (rr.ok && bb?.data?.access_token) {
-              setDirectorAuthSession({
-                mediaAccessToken: bb.data.access_token,
-                tenantId: String(bb.data.tenant_id || "").trim() || getDirectorTenantId(),
-              });
-            }
-          } catch {
-            /* ignore */
+        try {
+          const rr = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
+          const bb = await parseJson(rr);
+          if (rr.ok) {
+            const tid = String(bb?.data?.tenant_id || "").trim() || getDirectorTenantId();
+            if (tid) setDirectorAuthSession({ tenantId: tid });
           }
+        } catch {
+          /* ignore */
         }
       } else {
         setAccountProfile(null);
@@ -1309,22 +1304,18 @@ export default function App() {
             needLogin: false,
             allowRegistration,
           });
-          if (String(import.meta.env.VITE_API_BASE_URL || "").trim()) {
-            void (async () => {
-              try {
-                const rr = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
-                const bb = await parseJson(rr);
-                if (rr.ok && bb?.data?.access_token) {
-                  setDirectorAuthSession({
-                    mediaAccessToken: bb.data.access_token,
-                    tenantId: String(bb.data.tenant_id || "").trim() || getDirectorTenantId(),
-                  });
-                }
-              } catch {
-                /* ignore */
+          void (async () => {
+            try {
+              const rr = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
+              const bb = await parseJson(rr);
+              if (rr.ok) {
+                const tid = String(bb?.data?.tenant_id || "").trim() || getDirectorTenantId();
+                if (tid) setDirectorAuthSession({ tenantId: tid });
               }
-            })();
-          }
+            } catch {
+              /* ignore */
+            }
+          })();
           return;
         }
         if (r2.status === 401) {
@@ -1388,6 +1379,19 @@ export default function App() {
     if (!authBootstrap.done || authBootstrap.needLogin) return;
     void refreshAccountProfile();
   }, [authBootstrap.done, authBootstrap.needLogin, eventAuthKey, refreshAccountProfile]);
+
+  /** Keep in-memory tenant mirror aligned with server (auth/me) for hooks and cross-origin media hints. */
+  useEffect(() => {
+    if (authBootstrap.mode !== "saas" || authBootstrap.needLogin || !authBootstrap.done) return;
+    const tid = String(accountProfile?.active_tenant_id || accountProfile?.tenant_id || "").trim();
+    if (tid) setDirectorAuthSession({ tenantId: tid });
+  }, [
+    authBootstrap.done,
+    authBootstrap.needLogin,
+    authBootstrap.mode,
+    accountProfile?.active_tenant_id,
+    accountProfile?.tenant_id,
+  ]);
 
   useEffect(() => {
     try {
@@ -1481,10 +1485,7 @@ export default function App() {
     (payload) => {
       resetWorkspaceForTenantBoundary();
       setDirectorSaaSClientActive(true);
-      setDirectorAuthSession({
-        mediaAccessToken: payload.access_token,
-        tenantId: payload.tenant_id,
-      });
+      setDirectorAuthSession({ tenantId: payload.tenant_id });
       setSaasTenants(Array.isArray(payload.tenants) ? payload.tenants : []);
       setAuthBootstrap((s) => ({ ...s, needLogin: false }));
       setEventAuthKey((k) => k + 1);
@@ -1530,35 +1531,18 @@ export default function App() {
     return () => window.removeEventListener("director:session-expired", onSessionExpired);
   }, [resetWorkspaceForTenantBoundary]);
 
-  /** Proactively rotate JWT before expiry when operators use a short ``director_jwt_expire_hours`` (long rough/final-cut runs). */
+  /** Touch server session (sliding TTL) and mirror workspace id from refresh response. */
   const tryRefreshSaaSAccessToken = useCallback(async () => {
     if (authBootstrap.mode !== "saas" || authBootstrap.needLogin) return;
     const tenant = getDirectorTenantId().trim();
     if (!tenant) return;
-    const token = getDirectorAuthToken().trim();
-    if (token) {
-      let expMs = null;
-      try {
-        const part = token.split(".")[1];
-        if (part) {
-          const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
-          const payload = JSON.parse(atob(b64));
-          if (typeof payload.exp === "number") expMs = payload.exp * 1000;
-        }
-      } catch {
-        /* fall through to refresh */
-      }
-      if (expMs != null && expMs - Date.now() > 120 * 60 * 1000) return;
-    }
     try {
       const r = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
       const b = await parseJson(r);
-      if (r.ok && b?.data?.access_token) {
+      if (r.ok) {
         setDirectorSaaSClientActive(true);
-        setDirectorAuthSession({
-          mediaAccessToken: b.data.access_token,
-          tenantId: String(b.data.tenant_id || tenant).trim(),
-        });
+        const tid = String(b?.data?.tenant_id || tenant).trim();
+        if (tid) setDirectorAuthSession({ tenantId: tid });
         setEventAuthKey((k) => k + 1);
       }
     } catch {
@@ -1573,7 +1557,7 @@ export default function App() {
     return () => clearInterval(id);
   }, [authBootstrap.done, authBootstrap.needLogin, authBootstrap.mode, tryRefreshSaaSAccessToken]);
 
-  /** Long runs often background the tab; timers are throttled so JWT can expire before the next refresh tick. */
+  /** Long runs often background the tab; timers are throttled so session refresh may be delayed. */
   useEffect(() => {
     if (!authBootstrap.done || authBootstrap.needLogin || authBootstrap.mode !== "saas") return;
     const onVisible = () => {
@@ -3323,7 +3307,7 @@ export default function App() {
         }
       }
     };
-    // One check after auth bootstrap (same as loadProjects) — avoids 401 before Bearer + tenant.
+    // One check after auth bootstrap (same as loadProjects) — avoids 401 before session + mirrored tenant.
     check();
     // While SSE is live it sends celery_status events every 30 s — fall back
     // to a 60 s HTTP poll as a safety net only (e.g. SSE blocked by a proxy).
@@ -5616,14 +5600,7 @@ export default function App() {
                         body: JSON.stringify({ tenant_id: v }),
                       });
                       const b = await parseJson(r);
-                      if (r.ok && b?.data?.access_token) {
-                        setDirectorAuthSession({
-                          mediaAccessToken: b.data.access_token,
-                          tenantId: v,
-                        });
-                      } else {
-                        setDirectorAuthSession({ tenantId: v });
-                      }
+                      setDirectorAuthSession({ tenantId: v });
                     } catch {
                       setDirectorAuthSession({ tenantId: v });
                     }

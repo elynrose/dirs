@@ -58,7 +58,13 @@ function persistLastRanBudgetProjectId(projectId) {
   }
 }
 
-const BUDGET_AGENT_RUN_TERMINAL = new Set(["succeeded", "failed", "cancelled", "blocked"]);
+const BUDGET_AGENT_RUN_TERMINAL = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "blocked",
+  "not_found",
+]);
 
 function budgetAgentRunIsTerminal(st) {
   return BUDGET_AGENT_RUN_TERMINAL.has(String(st || "").trim());
@@ -461,10 +467,16 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     let cancelled = false;
     const poll = async () => {
       const updates = {};
+      const missingIds = [];
       await Promise.all(
         [...ids].map(async (rawId) => {
           try {
             const r = await adminFetch(`/v1/admin/agent-runs/${encodeURIComponent(rawId)}`);
+            if (r.status === 404) {
+              missingIds.push(rawId);
+              updates[rawId] = "not_found";
+              return;
+            }
             const b = await parseJson(r);
             if (r.ok && b?.data?.status != null) updates[rawId] = String(b.data.status);
           } catch {
@@ -473,6 +485,17 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
         }),
       );
       if (!cancelled) {
+        if (missingIds.length) {
+          setBudgetRunHistory((h) =>
+            Array.isArray(h) ? h.filter((row) => !missingIds.includes(String(row.agent_run_id || "").trim())) : h,
+          );
+          setBudgetLast((bl) => {
+            if (!bl?.agent_run?.id) return bl;
+            const cur = String(bl.agent_run.id).trim();
+            if (!missingIds.includes(cur)) return bl;
+            return { ...bl, agent_run: null, poll_url: null, hint: bl?.hint };
+          });
+        }
         setBudgetRunStatuses((prev) => {
           const next = { ...prev };
           for (const [k, v] of Object.entries(updates)) next[k] = v;
@@ -796,12 +819,28 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
           body: JSON.stringify({ action: "stop" }),
         });
         const b = await parseJson(r);
+        if (r.status === 404) {
+          setBudgetRunStatuses((s) => ({ ...s, [id]: "not_found" }));
+          setBudgetRunHistory((h) =>
+            Array.isArray(h) ? h.filter((row) => String(row.agent_run_id || "").trim() !== id) : h,
+          );
+          setBudgetLast((bl) => {
+            if (!bl?.agent_run?.id || String(bl.agent_run.id).trim() !== id) return bl;
+            return { ...bl, agent_run: null, poll_url: null, hint: bl?.hint };
+          });
+          showToast?.("That run is no longer on the server — removed from this list.", { type: "success" });
+          return;
+        }
         if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
         showToast?.("Stop requested for that run", { type: "success" });
         const r2 = await adminFetch(`/v1/admin/agent-runs/${encodeURIComponent(id)}`);
-        const b2 = await parseJson(r2);
-        if (r2.ok && b2?.data?.status != null) {
-          setBudgetRunStatuses((s) => ({ ...s, [id]: String(b2.data.status) }));
+        if (r2.status === 404) {
+          setBudgetRunStatuses((s) => ({ ...s, [id]: "not_found" }));
+        } else {
+          const b2 = await parseJson(r2);
+          if (r2.ok && b2?.data?.status != null) {
+            setBudgetRunStatuses((s) => ({ ...s, [id]: String(b2.data.status) }));
+          }
         }
       } catch (e) {
         const msg = formatUserFacingError(e);
@@ -822,11 +861,13 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
       setBudgetErr("");
       try {
         const r = await adminFetch(`/v1/admin/agent-runs/${encodeURIComponent(id)}`, { method: "DELETE" });
-        if (!r.ok) {
+        if (!r.ok && r.status !== 404) {
           const b = await parseJson(r);
           throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
         }
-        showToast?.("Run deleted", { type: "success" });
+        showToast?.(r.status === 404 ? "Run was already removed" : "Run deleted", {
+          type: "success",
+        });
         setBudgetRunHistory((h) => (Array.isArray(h) ? h.filter((row) => String(row.agent_run_id) !== id) : h));
         setBudgetRunStatuses((s) => {
           const n = { ...s };

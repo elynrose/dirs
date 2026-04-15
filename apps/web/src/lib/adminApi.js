@@ -20,7 +20,7 @@ export function setAdminKey(key) {
   }
 }
 
-/** Admin API: optional ``X-Director-Admin-Key`` plus SaaS ``Authorization`` + ``X-Tenant-Id`` for workspace admins. */
+/** Admin API: optional ``X-Director-Admin-Key``; SaaS uses session cookie + ``credentials: "include"``. */
 export function adminFetch(path, opts = {}) {
   const k = getAdminKey().trim();
   const method = String(opts.method || "GET").toUpperCase();
@@ -29,6 +29,7 @@ export function adminFetch(path, opts = {}) {
   const auth = directorAuthHeaders();
   return fetch(apiPath(path), {
     ...opts,
+    credentials: opts.credentials ?? "include",
     headers: {
       ...baseHeaders,
       ...(k ? { "X-Director-Admin-Key": k } : {}),

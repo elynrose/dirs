@@ -4,20 +4,10 @@
  * - Production build: empty apiBase → same-origin `/v1` requests (put nginx in front, or set
  *   VITE_API_BASE_URL at build time).
  * - `npm run dev`: same-origin `/v1` (Vite proxy → FastAPI) when VITE_API_BASE_URL is unset.
- *   Set VITE_API_BASE_URL only if the UI must call the API on another origin.
- *
- * Media tags (<img>/<video>/<audio>) must use apiPath() too because they bypass the Vite
- * proxy in some configurations. Same-origin builds send the HttpOnly session cookie on these
- * URLs; if ``VITE_API_BASE_URL`` points at another origin, in-memory media JWT query params
- * are added (see directorAuthSession.js).
+ * - SaaS auth: HttpOnly session cookie with ``credentials: "include"`` — no JWT in headers or media URLs.
  */
 
-import {
-  directorAuthHeaders,
-  getDirectorAuthToken,
-  getDirectorTenantId,
-  hasSaasPersistedClientState,
-} from "./directorAuthSession.js";
+import { directorAuthHeaders, hasSaasPersistedClientState } from "./directorAuthSession.js";
 
 const _rawBase = String(import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/$/, "");
 /** Raw `VITE_API_BASE_URL` (empty string if unset) — for UI hints vs resolved `apiBase`. */
@@ -38,14 +28,9 @@ export function sanitizeStudioUuid(raw) {
     .trim();
 }
 
-/** For media elements: same-origin uses session cookie only; cross-origin may need JWT query params. */
-function appendMediaAuthQueryParams(params) {
-  if (!apiBase) return;
-  const token = getDirectorAuthToken().trim();
-  if (!token) return;
-  params.set("access_token", token);
-  const tenant = getDirectorTenantId().trim();
-  if (tenant) params.set("tenant_id", tenant);
+/** Media URLs rely on same-origin session cookies (no query-token JWTs). */
+function appendMediaAuthQueryParams(_params) {
+  void _params;
 }
 
 /** Binary content URL for an asset (image or video). Cache-busted by `cacheBust`. */
@@ -58,7 +43,7 @@ export function apiAssetContentUrl(assetId, cacheBust) {
 }
 
 /**
- * Timeline export MP4 (final_cut → fine_cut → rough_cut on disk). Query params carry SaaS auth for `<video>` / `<a download>`.
+ * Timeline export MP4 (final_cut → fine_cut → rough_cut on disk). Same-origin session cookie for `<video>` / `<a download>`.
  */
 export function apiCompiledVideoUrl(projectId, timelineVersionId, { download = false, cacheBust } = {}) {
   const pid = encodeURIComponent(String(projectId));
@@ -126,7 +111,7 @@ export function apiChatterboxVoiceRefContentUrl(cacheBust) {
  * Thin fetch wrapper that:
  * - Defaults GET/HEAD to no Content-Type header.
  * - Passes through any extra options (method, headers, body, signal, …).
- * - Adds Bearer and X-Tenant-Id when both are stored (see directorAuthSession.js); most API routes require both.
+ * - Sends cookies on same-origin (session auth); optional ``Authorization`` only if callers add it in ``opts.headers``.
  */
 function shouldIgnoreUnauthorizedForPath(path) {
   const p = String(path || "");
@@ -157,7 +142,7 @@ async function _detailCodeFrom401Response(response) {
 }
 
 /**
- * Same 401 → session-expired policy as `api()` (Bearer sent, not AUTH_REQUIRED, etc.).
+ * Same 401 → session-expired policy as `api()`.
  * @param {string} path — same as `api()` (e.g. `/v1/...`)
  * @param {Record<string, string>} mergedHeaders — headers actually sent on the request
  */
@@ -177,7 +162,7 @@ async function _applySessionPolicyOn401(path, mergedHeaders, response) {
   if (code === "AUTH_REQUIRED") {
     return response;
   }
-  // Only treat explicit JWT/session failures as "logged out". Proxies and edge cases
+  // Only treat explicit session failures as "logged out". Proxies and edge cases
   // sometimes return 401 without our JSON shape; those must not clear SaaS session.
   if (code !== "UNAUTHORIZED") {
     return response;
@@ -204,8 +189,8 @@ export const api = (path, opts = {}) => {
 };
 
 /**
- * Fetch with Bearer + X-Tenant-Id but **without** forcing `Content-Type: application/json`
- * (use for `FormData` uploads and other non-JSON bodies). Same 401 session policy as `api()`.
+ * Fetch without forcing `Content-Type: application/json` (e.g. `FormData` uploads).
+ * Same 401 session policy as `api()`.
  */
 export function apiForm(path, opts = {}) {
   const auth = directorAuthHeaders();

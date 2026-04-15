@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from typing import Any
-import jwt
-
-from director_api.config import Settings
-
-_WEAK_JWT_SECRETS = frozenset(
+_WEAK_SECRETS = frozenset(
     {
         "change-me",
         "changeme",
@@ -21,42 +15,13 @@ _WEAK_JWT_SECRETS = frozenset(
 
 
 def jwt_secret_is_weak(secret: str | None) -> bool:
-    """True if the secret is missing, too short, or a common placeholder."""
+    """True if the symmetric signing secret is missing, too short, or a common placeholder.
+
+    Used for ``DIRECTOR_JWT_SECRET`` (YouTube OAuth state HMAC and similar), not user access tokens.
+    """
     s = (secret or "").strip()
     if len(s) < 16:
         return True
-    if s.lower() in _WEAK_JWT_SECRETS:
+    if s.lower() in _WEAK_SECRETS:
         return True
     return False
-
-
-def issue_access_token(
-    *,
-    settings: Settings,
-    user_id: int,
-    tenant_id: str | None = None,
-    ttl_hours: float | None = None,
-) -> str:
-    if not (settings.director_jwt_secret or "").strip():
-        raise RuntimeError("DIRECTOR_JWT_SECRET is required when auth is enabled")
-    now = datetime.now(tz=UTC)
-    if ttl_hours is not None:
-        delta_h = max(1 / 60.0, float(ttl_hours))  # at least one minute
-    else:
-        delta_h = float(max(1, int(settings.director_jwt_expire_hours)))
-    exp = now + timedelta(hours=delta_h)
-    payload: dict[str, Any] = {
-        "sub": str(user_id),
-        "iat": int(now.timestamp()),
-        "exp": exp,
-    }
-    tid = (tenant_id or "").strip()
-    if tid:
-        payload["tid"] = tid
-    return jwt.encode(payload, settings.director_jwt_secret, algorithm="HS256")
-
-
-def decode_access_token(settings: Settings, token: str) -> dict[str, Any]:
-    if not (settings.director_jwt_secret or "").strip():
-        raise RuntimeError("DIRECTOR_JWT_SECRET is required when auth is enabled")
-    return jwt.decode(token, settings.director_jwt_secret, algorithms=["HS256"])

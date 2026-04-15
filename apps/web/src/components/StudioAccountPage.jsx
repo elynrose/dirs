@@ -447,9 +447,7 @@ export function StudioAccountPage({
       <section style={sectionStyle} className="account-section">
         <h3 style={h3Style}>Workspaces</h3>
         <p className="subtle" style={subStyle}>
-          Tenants you belong to. The active workspace for API calls is set from the header selector (
-          <code>X-Tenant-Id</code>
-          ).
+          Tenants you belong to. The active workspace for API calls follows your session (header selector in Studio).
         </p>
         {tenants.length === 0 ? (
           <p className="subtle">No workspaces on this account.</p>

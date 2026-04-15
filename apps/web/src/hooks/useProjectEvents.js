@@ -12,7 +12,7 @@
  * @param {Function}    [handlers.onAgentRunUpdate]  (run: object|null) => void
  * @param {Function}    [handlers.onAssetReady]      (asset: object) => void
  * @param {Function}    [handlers.onCeleryStatus]    (online: boolean) => void
- * @param {number} [reloadKey]  Bump after login / tenant change so SSE URL picks up new `access_token` query.
+ * @param {number} [reloadKey]  Bump after login / tenant change so the EventSource reconnects with fresh cookies.
  * @returns {{ sseConnected: boolean }}
  */
 

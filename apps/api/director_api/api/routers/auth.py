@@ -5,14 +5,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from director_api.auth.deps import extract_token
-from director_api.auth.jwtutil import decode_access_token, issue_access_token
 from director_api.auth.sessions import (
     attach_session_cookie,
     clear_session_cookie,
@@ -38,7 +36,7 @@ router = APIRouter(tags=["auth"])
 
 @router.get("/auth/config")
 def auth_config() -> dict[str, Any]:
-    """Public: whether the API expects JWT + X-Tenant-Id (Studio bootstraps from this)."""
+    """Public: whether the API uses SaaS auth (HttpOnly session cookie; Studio bootstraps from this)."""
     s = get_settings()
     data: dict[str, Any] = {
         "auth_enabled": bool(s.director_auth_enabled),
@@ -68,7 +66,7 @@ class SessionTenantIn(BaseModel):
 
 
 class FirebaseSignInIn(BaseModel):
-    """Exchange a Firebase Auth ID token (Google, etc.) for a Directely JWT."""
+    """Exchange a Firebase Auth ID token (Google, etc.) for a browser session (HttpOnly cookie)."""
 
     id_token: str = Field(min_length=20, max_length=16_384)
     tenant_name: str = Field(default="My workspace", min_length=1, max_length=256)
@@ -81,8 +79,6 @@ class TenantOut(BaseModel):
 
 
 class AuthOkOut(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
     tenant_id: str
     tenants: list[TenantOut]
     email: str
@@ -109,7 +105,7 @@ def _user_profile_public(u: User) -> dict[str, Any]:
 
 
 def authenticate_user_from_request(request: Request, db: Session) -> User:
-    """Resolve the signed-in user from Bearer JWT or opaque ``director_session`` cookie."""
+    """Resolve the signed-in user from the opaque ``director_session`` HttpOnly cookie."""
     settings = get_settings()
     if not settings.director_auth_enabled:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "not found"})
@@ -117,22 +113,17 @@ def authenticate_user_from_request(request: Request, db: Session) -> User:
     if not token:
         raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "missing credentials"})
     if looks_like_jwt(token):
-        try:
-            claims = decode_access_token(settings, token)
-        except jwt.PyJWTError:
-            raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "invalid or expired token"})
-        try:
-            user_id = int(str(claims["sub"]).strip())
-        except (KeyError, ValueError, TypeError):
-            raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "invalid token subject"})
-    else:
-        sess = get_server_session(token)
-        if not sess:
-            raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "invalid or expired session"})
-        try:
-            user_id = int(sess["user_id"])
-        except (KeyError, ValueError, TypeError):
-            raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "invalid session subject"})
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "UNAUTHORIZED", "message": "JWT-style credentials are not supported; use POST /v1/auth/login"},
+        )
+    sess = get_server_session(token)
+    if not sess:
+        raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "invalid or expired session"})
+    try:
+        user_id = int(sess["user_id"])
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "invalid session subject"})
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "user not found"})
@@ -140,7 +131,7 @@ def authenticate_user_from_request(request: Request, db: Session) -> User:
 
 
 def _require_user(request: Request, db: Session) -> User:
-    """Bearer or session cookie; same rules as GET /auth/me."""
+    """Session cookie; same rules as GET /auth/me."""
     return authenticate_user_from_request(request, db)
 
 
@@ -153,7 +144,7 @@ def _serialize_tenants(db: Session, memberships: list[TenantMembership]) -> list
     return out
 
 
-def _create_web_session_and_token(
+def _create_web_session(
     *,
     response: Response,
     settings: Settings,
@@ -162,7 +153,7 @@ def _create_web_session_and_token(
     default_tid: str,
     memberships: list[TenantMembership],
 ) -> AuthOkOut:
-    """HttpOnly opaque session (Redis) plus a signed JWT for media query strings and CLI clients."""
+    """HttpOnly opaque session (Redis). No access JWT is issued."""
     sid = create_server_session(user_id=user.id, tenant_id=default_tid)
     if not sid:
         raise HTTPException(
@@ -173,10 +164,8 @@ def _create_web_session_and_token(
             },
         )
     attach_session_cookie(response, sid, settings=settings)
-    token = issue_access_token(settings=settings, user_id=user.id, tenant_id=default_tid)
     tenants = _serialize_tenants(db, memberships)
     return AuthOkOut(
-        access_token=token,
         tenant_id=default_tid,
         tenants=tenants,
         email=user.email,
@@ -249,7 +238,7 @@ def register(body: RegisterIn, response: Response, db: Session = Depends(get_db)
     db.commit()
 
     tenants = _serialize_tenants(db, [mem])
-    ok = _create_web_session_and_token(
+    ok = _create_web_session(
         response=response,
         settings=settings,
         db=db,
@@ -354,7 +343,7 @@ def auth_firebase(body: FirebaseSignInIn, response: Response, db: Session = Depe
             },
         )
     default_tid = memberships[0].tenant_id
-    ok = _create_web_session_and_token(
+    ok = _create_web_session(
         response=response,
         settings=settings,
         db=db,
@@ -389,7 +378,7 @@ def login(body: LoginIn, response: Response, db: Session = Depends(get_db)) -> d
             },
         )
     default_tid = memberships[0].tenant_id
-    ok = _create_web_session_and_token(
+    ok = _create_web_session(
         response=response,
         settings=settings,
         db=db,
@@ -405,7 +394,7 @@ def logout(request: Request, response: Response) -> dict[str, Any]:
     settings = get_settings()
     if settings.director_auth_enabled:
         tok = extract_token(request, settings)
-        if tok and not looks_like_jwt(tok):
+        if tok:
             delete_server_session(tok)
         clear_session_cookie(response, settings=settings)
     return {"data": {"ok": True}, "meta": {}}
@@ -424,7 +413,7 @@ def auth_session_tenant(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "not found"})
     user = authenticate_user_from_request(request, db)
     tok = extract_token(request, settings)
-    if not tok or looks_like_jwt(tok):
+    if not tok:
         raise HTTPException(
             status_code=400,
             detail={"code": "SESSION_COOKIE_REQUIRED", "message": "workspace switch requires a browser session cookie"},
@@ -447,11 +436,9 @@ def auth_session_tenant(
             detail={"code": "UNAUTHORIZED", "message": "invalid or expired session"},
         )
     attach_session_cookie(response, tok, settings=settings)
-    access = issue_access_token(settings=settings, user_id=user.id, tenant_id=tid)
     tenants = _serialize_tenants(db, _tenant_rows_for_user(db, user.id))
     return {
         "data": {
-            "access_token": access,
             "tenant_id": tid,
             "tenants": [t.model_dump(mode="json") for t in tenants],
             "email": user.email,
@@ -462,7 +449,7 @@ def auth_session_tenant(
 
 @router.post("/auth/refresh")
 def auth_refresh(request: Request, response: Response, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Issue a new JWT for the current user and workspace. Call while the token is still valid if ``director_jwt_expire_hours`` is short."""
+    """Refresh the opaque browser session TTL and optionally align workspace from headers/query."""
     settings = get_settings()
     if not settings.director_auth_enabled:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "not found"})
@@ -480,13 +467,7 @@ def auth_refresh(request: Request, response: Response, db: Session = Depends(get
     )
     if not tid:
         token_in = extract_token(request, settings)
-        if token_in and looks_like_jwt(token_in):
-            try:
-                claims = decode_access_token(settings, token_in)
-                tid = str(claims.get("tid") or "").strip()
-            except jwt.PyJWTError:
-                tid = ""
-        elif token_in:
+        if token_in:
             sess = get_server_session(token_in)
             tid = str(sess.get("tenant_id") or "").strip() if sess else ""
     if not tid or not any(m.tenant_id == tid for m in memberships):
@@ -502,15 +483,13 @@ def auth_refresh(request: Request, response: Response, db: Session = Depends(get
             status_code=403,
             detail={"code": "FORBIDDEN", "message": "not a member of this workspace"},
         )
-    token = issue_access_token(settings=settings, user_id=user.id, tenant_id=tid)
     tenants = _serialize_tenants(db, _tenant_rows_for_user(db, user.id))
     tok = extract_token(request, settings)
-    if tok and not looks_like_jwt(tok):
+    if tok:
         touch_server_session(tok, tenant_id=tid)
         attach_session_cookie(response, tok, settings=settings)
     return {
         "data": {
-            "access_token": token,
             "tenant_id": tid,
             "tenants": [t.model_dump(mode="json") for t in tenants],
             "email": user.email,
@@ -521,7 +500,7 @@ def auth_refresh(request: Request, response: Response, db: Session = Depends(get
 
 @router.get("/auth/me")
 def auth_me(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Return session info and all workspaces (valid Bearer or session cookie; no X-Tenant-Id)."""
+    """Return session info and all workspaces (valid session cookie; ``X-Tenant-Id`` optional hint)."""
     settings = get_settings()
     if not settings.director_auth_enabled:
         return {
@@ -563,7 +542,7 @@ def auth_me(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     tid_header = (request.headers.get("x-tenant-id") or request.headers.get("X-Tenant-Id") or "").strip()
     active_tid = default_tid
     tok = extract_token(request, settings)
-    if tok and not looks_like_jwt(tok):
+    if tok:
         sess = get_server_session(tok)
         if sess:
             stid = str(sess.get("tenant_id") or "").strip()

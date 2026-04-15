@@ -17,8 +17,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from director_api.auth.deps import extract_token
-from director_api.auth.jwtutil import decode_access_token
-from director_api.auth.sessions import get_server_session, looks_like_jwt
+from director_api.auth.sessions import get_server_session
 from director_api.config import Settings, get_settings
 from director_api.infra.redis_client import get_redis_client
 
@@ -37,21 +36,13 @@ _SKIP_PREFIXES = (
     "/redoc",
 )
 
-def _tenant_id_from_bearer_for_rate_limit(request: Request, settings: Settings) -> str | None:
-    """Prefer signed ``tid`` (JWT) or server session default tenant over raw ``X-Tenant-Id``."""
+
+def _tenant_id_from_session_for_rate_limit(request: Request, settings: Settings) -> str | None:
+    """Prefer workspace id from the opaque Redis session over raw ``X-Tenant-Id``."""
     if not settings.director_auth_enabled:
         return None
     token = extract_token(request, settings)
     if not token:
-        return None
-    if looks_like_jwt(token):
-        try:
-            claims = decode_access_token(settings, token)
-        except Exception:
-            return None
-        tid = claims.get("tid")
-        if isinstance(tid, str) and tid.strip():
-            return tid.strip()
         return None
     sess = get_server_session(token)
     if sess:
@@ -125,9 +116,9 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         rpm = self._rpm if self._rpm is not None else int(settings.api_rate_limit_per_minute)
-        jwt_tid = _tenant_id_from_bearer_for_rate_limit(request, settings)
-        if jwt_tid:
-            tenant_hint = jwt_tid
+        session_tid = _tenant_id_from_session_for_rate_limit(request, settings)
+        if session_tid:
+            tenant_hint = session_tid
         else:
             tenant_hint = (request.headers.get("x-tenant-id") or request.headers.get("X-Tenant-Id") or "").strip()
         if not tenant_hint:

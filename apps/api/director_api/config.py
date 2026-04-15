@@ -584,15 +584,24 @@ class Settings(BaseSettings):
     director_jwt_secret: str = Field(
         default="",
         validation_alias=AliasChoices("director_jwt_secret", "DIRECTOR_JWT_SECRET"),
+        description=(
+            "Symmetric secret for signing OAuth state (e.g. YouTube integration HMAC). "
+            "User access JWTs are not used; leave unset if you do not use those features."
+        ),
     )
-    director_jwt_expire_hours: int = Field(default=168, ge=1, le=8760)
+    director_jwt_expire_hours: int = Field(
+        default=168,
+        ge=1,
+        le=8760,
+        description="Deprecated: user access JWTs are removed; kept for env-file compatibility only.",
+    )
     director_jwt_reject_weak_secret: bool = Field(
         default=False,
         validation_alias=AliasChoices(
             "director_jwt_reject_weak_secret",
             "DIRECTOR_JWT_REJECT_WEAK_SECRET",
         ),
-        description="When auth is enabled, refuse API startup if JWT secret is missing or trivially weak.",
+        description="When DIRECTOR_JWT_SECRET is set, refuse API startup if it is trivially weak.",
     )
     runtime_settings_cache_ttl_sec: float = Field(
         default=15.0,
