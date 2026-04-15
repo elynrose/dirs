@@ -74,9 +74,9 @@ import {
   clearDirectorAuthSession,
   getDirectorAuthToken,
   getDirectorTenantId,
-  hasSaasPersistedClientState,
   normalizeDirectorAuthStorage,
   setDirectorAuthSession,
+  setDirectorSaaSClientActive,
   syncDirectorTenantFromMePayload,
 } from "./lib/directorAuthSession.js";
 
@@ -1214,7 +1214,22 @@ export default function App() {
       const me = await parseJson(r2);
       if (r2.ok && me.data) {
         syncDirectorTenantFromMePayload(me.data);
+        setDirectorSaaSClientActive(true);
         setAccountProfile(me.data);
+        if (String(import.meta.env.VITE_API_BASE_URL || "").trim()) {
+          try {
+            const rr = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
+            const bb = await parseJson(rr);
+            if (rr.ok && bb?.data?.access_token) {
+              setDirectorAuthSession({
+                mediaAccessToken: bb.data.access_token,
+                tenantId: String(bb.data.tenant_id || "").trim() || getDirectorTenantId(),
+              });
+            }
+          } catch {
+            /* ignore */
+          }
+        }
       } else {
         setAccountProfile(null);
       }
@@ -1276,11 +1291,7 @@ export default function App() {
           }
         }
         // API blips (502/503/429) must not wipe a valid browser session — only 401 means "signed out".
-        for (
-          let attempt = 0;
-          !cancelled && !r2.ok && hasSaasPersistedClientState() && transientAuthMeStatus(r2.status) && attempt < 4;
-          attempt++
-        ) {
+        for (let attempt = 0; !cancelled && !r2.ok && transientAuthMeStatus(r2.status) && attempt < 4; attempt++) {
           await sleep(400 * (attempt + 1));
           if (cancelled) return;
           r2 = await api("/v1/auth/me");
@@ -1288,6 +1299,7 @@ export default function App() {
         }
         if (r2.ok && me.data?.email) {
           syncDirectorTenantFromMePayload(me.data);
+          setDirectorSaaSClientActive(true);
           authModeRef.current = "saas";
           setSaasTenants(Array.isArray(me.data.tenants) ? me.data.tenants : []);
           setAccountProfile(me.data);
@@ -1297,10 +1309,25 @@ export default function App() {
             needLogin: false,
             allowRegistration,
           });
+          if (String(import.meta.env.VITE_API_BASE_URL || "").trim()) {
+            void (async () => {
+              try {
+                const rr = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
+                const bb = await parseJson(rr);
+                if (rr.ok && bb?.data?.access_token) {
+                  setDirectorAuthSession({
+                    mediaAccessToken: bb.data.access_token,
+                    tenantId: String(bb.data.tenant_id || "").trim() || getDirectorTenantId(),
+                  });
+                }
+              } catch {
+                /* ignore */
+              }
+            })();
+          }
           return;
         }
-        const hadLocalHints = hasSaasPersistedClientState();
-        if (r2.status === 401 || !hadLocalHints) {
+        if (r2.status === 401) {
           clearDirectorAuthSession();
           authModeRef.current = "saas";
           setSaasTenants([]);
@@ -1453,6 +1480,7 @@ export default function App() {
   const onSaaSLoggedIn = useCallback(
     (payload) => {
       resetWorkspaceForTenantBoundary();
+      setDirectorSaaSClientActive(true);
       setDirectorAuthSession({
         mediaAccessToken: payload.access_token,
         tenantId: payload.tenant_id,
@@ -1526,6 +1554,7 @@ export default function App() {
       const r = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
       const b = await parseJson(r);
       if (r.ok && b?.data?.access_token) {
+        setDirectorSaaSClientActive(true);
         setDirectorAuthSession({
           mediaAccessToken: b.data.access_token,
           tenantId: String(b.data.tenant_id || tenant).trim(),
@@ -5575,7 +5604,9 @@ export default function App() {
             <label className="subtle topbar-saas-workspace">
               Workspace
               <select
-                value={getDirectorTenantId()}
+                value={String(
+                  accountProfile?.active_tenant_id || accountProfile?.tenant_id || getDirectorTenantId() || "",
+                ).trim()}
                 onChange={(e) => {
                   const v = e.target.value;
                   void (async () => {

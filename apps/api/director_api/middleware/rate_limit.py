@@ -1,4 +1,4 @@
-"""Redis sliding-window rate limiter (§10.6 baseline: 120 req/min per client IP).
+"""Redis sliding-window rate limiter (default 1000 req/min per client IP + tenant bucket).
 
 Replaces the previous in-process deque implementation, which counted independently
 per Uvicorn worker process and gave each worker its own 120 rpm budget instead of

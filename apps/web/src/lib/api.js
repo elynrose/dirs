@@ -7,8 +7,9 @@
  *   Set VITE_API_BASE_URL only if the UI must call the API on another origin.
  *
  * Media tags (<img>/<video>/<audio>) must use apiPath() too because they bypass the Vite
- * proxy in some configurations. When SaaS auth is on, media URLs must include access_token +
- * tenant_id query params (same as compiled video) — tags cannot send Bearer headers.
+ * proxy in some configurations. Same-origin builds send the HttpOnly session cookie on these
+ * URLs; if ``VITE_API_BASE_URL`` points at another origin, in-memory media JWT query params
+ * are added (see directorAuthSession.js).
  */
 
 import {
@@ -37,12 +38,14 @@ export function sanitizeStudioUuid(raw) {
     .trim();
 }
 
-/** For media elements: API uses `settings_dep` which requires auth when enabled. */
+/** For media elements: same-origin uses session cookie only; cross-origin may need JWT query params. */
 function appendMediaAuthQueryParams(params) {
+  if (!apiBase) return;
   const token = getDirectorAuthToken().trim();
+  if (!token) return;
+  params.set("access_token", token);
   const tenant = getDirectorTenantId().trim();
-  if (token) params.set("access_token", token);
-  if (token && tenant) params.set("tenant_id", tenant);
+  if (tenant) params.set("tenant_id", tenant);
 }
 
 /** Binary content URL for an asset (image or video). Cache-busted by `cacheBust`. */

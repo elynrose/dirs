@@ -41,22 +41,9 @@ def auth_context_dep(request: Request, db: Session = Depends(get_db)) -> AuthCon
             status_code=401,
             detail={"code": "UNAUTHORIZED", "message": "missing credentials"},
         )
-    if looks_like_jwt(token):
-        try:
-            claims = decode_access_token(settings, token)
-        except jwt.PyJWTError:
-            raise HTTPException(
-                status_code=401,
-                detail={"code": "UNAUTHORIZED", "message": "invalid or expired token"},
-            )
-        try:
-            user_id = int(str(claims["sub"]).strip())
-        except (KeyError, ValueError, TypeError):
-            raise HTTPException(
-                status_code=401,
-                detail={"code": "UNAUTHORIZED", "message": "invalid token subject"},
-            )
-    else:
+
+    # Opaque browser session: workspace id is stored server-side (Redis), not in client headers.
+    if not looks_like_jwt(token):
         sess = get_server_session(token)
         if not sess:
             raise HTTPException(
@@ -71,13 +58,49 @@ def auth_context_dep(request: Request, db: Session = Depends(get_db)) -> AuthCon
                 detail={"code": "UNAUTHORIZED", "message": "invalid session subject"},
             )
         touch_server_session(token)
+        tid = str(sess.get("tenant_id") or "").strip()
+        if not tid:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "TENANT_REQUIRED",
+                    "message": "session has no workspace; sign in again or pick a workspace",
+                },
+            )
+        row = db.scalar(
+            select(TenantMembership).where(
+                TenantMembership.user_id == user_id,
+                TenantMembership.tenant_id == tid,
+            )
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "FORBIDDEN", "message": "not a member of this workspace"},
+            )
+        return AuthContext(tenant_id=tid, user_id=str(user_id), role=row.role)
 
-    # Tenant for authorization remains header/query-scoped so users can switch workspaces without
-    # a fresh token; signed ``tid`` in the JWT is used for rate limiting (see middleware).
+    try:
+        claims = decode_access_token(settings, token)
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "UNAUTHORIZED", "message": "invalid or expired token"},
+        )
+    try:
+        user_id = int(str(claims["sub"]).strip())
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "UNAUTHORIZED", "message": "invalid token subject"},
+        )
+
     tid = (
         (request.headers.get("x-tenant-id") or request.headers.get("X-Tenant-Id") or "").strip()
         or (request.query_params.get("tenant_id") or "").strip()
     )
+    if not tid:
+        tid = str(claims.get("tid") or "").strip()
     if not tid:
         raise HTTPException(
             status_code=400,

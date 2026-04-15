@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseJson, apiErrorMessage, formatUserFacingError } from "../lib/apiHelpers.js";
 import { apiPath } from "../lib/api.js";
 import { adminFetch, getAdminKey, setAdminKey } from "../lib/adminApi.js";
-import { getDirectorTenantId } from "../lib/directorAuthSession.js";
 
 const TABS = [
   { id: "dashboard", label: "Dashboard" },
@@ -491,9 +490,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
 
   /** Logged-in Studio workspace (from App: auth/me + session tenant); falls back if prop not ready yet. */
   const resolvedBudgetWorkspaceId = useMemo(() => {
-    const fromProp = (workspaceTenantId || "").trim();
-    if (fromProp) return fromProp;
-    return getDirectorTenantId().trim();
+    return (workspaceTenantId || "").trim();
   }, [workspaceTenantId]);
 
   const tryUnlock = useCallback(async () => {

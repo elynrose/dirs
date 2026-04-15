@@ -1,78 +1,81 @@
 /**
- * Client session for multi-tenant SaaS: HttpOnly cookie carries API auth; we persist
- * workspace id + a media-only JWT for query strings (<img>, EventSource) that cannot send cookies reliably.
+ * SaaS session: HttpOnly cookie + Redis hold the API session and active workspace.
+ * This module keeps only **in-memory** hints for the SPA (no localStorage):
+ * - optional media JWT when the UI is built against a **cross-origin** API (see api.js)
+ * - mirrored workspace id for components that run before React profile state hydrates
+ * - a flag so fetch 401 handling knows the user had established a SaaS session this tab
  */
 
-const LEGACY_TOKEN_KEY = "director_auth_token";
-const MEDIA_JWT_KEY = "director_media_jwt";
-const TENANT_KEY = "director_auth_tenant_id";
+let _mediaQueryJwt = "";
+let _activeTenantId = "";
+let _saasClientActive = false;
 
-/** JWT used only for ``access_token`` / ``tenant_id`` query params (not ``Authorization``). */
-export function getDirectorAuthToken() {
-  try {
-    return localStorage.getItem(MEDIA_JWT_KEY) || "";
-  } catch {
-    return "";
-  }
+/** True after successful SaaS bootstrap/login; cleared on logout (this tab only). */
+export function setDirectorSaaSClientActive(active) {
+  _saasClientActive = Boolean(active);
 }
 
+export function getDirectorSaaSClientActive() {
+  return _saasClientActive;
+}
+
+/** JWT used only for ``access_token`` / ``tenant_id`` query params when API is cross-origin. */
+export function getDirectorAuthToken() {
+  return _mediaQueryJwt;
+}
+
+/** Mirrored active workspace (server is canonical via session); prefer ``accountProfile.active_tenant_id`` in UI. */
 export function getDirectorTenantId() {
+  return _activeTenantId;
+}
+
+function _migrateLegacyLocalStorageOnce() {
+  if (typeof window === "undefined") return;
   try {
-    return localStorage.getItem(TENANT_KEY) || "";
+    window.localStorage?.removeItem?.("director_auth_token");
+    window.localStorage?.removeItem?.("director_media_jwt");
+    window.localStorage?.removeItem?.("director_auth_tenant_id");
   } catch {
-    return "";
+    /* ignore */
   }
 }
 
 /**
  * @param {{ accessToken?: string, mediaAccessToken?: string, tenantId?: string }} opts
  * ``accessToken`` is accepted as an alias for ``mediaAccessToken`` (login JSON field name).
+ * Only keys present on ``opts`` are applied.
  */
-export function setDirectorAuthSession({ accessToken, mediaAccessToken, tenantId }) {
-  const media = (mediaAccessToken ?? accessToken ?? "").trim();
-  try {
-    try {
-      localStorage.removeItem(LEGACY_TOKEN_KEY);
-    } catch {
-      /* ignore */
-    }
-    if (media) localStorage.setItem(MEDIA_JWT_KEY, media);
-    else localStorage.removeItem(MEDIA_JWT_KEY);
-    if (tenantId) localStorage.setItem(TENANT_KEY, tenantId);
-    else localStorage.removeItem(TENANT_KEY);
-  } catch {
-    /* ignore */
+export function setDirectorAuthSession(opts = {}) {
+  const { accessToken, mediaAccessToken, tenantId } = opts;
+  const mediaPayload = mediaAccessToken ?? accessToken;
+  const touchMedia = "mediaAccessToken" in opts || "accessToken" in opts;
+  const touchTenant = "tenantId" in opts;
+  if (touchMedia) {
+    _mediaQueryJwt = (mediaPayload ?? "").trim();
+  }
+  if (touchTenant) {
+    _activeTenantId = (tenantId ?? "").trim();
   }
 }
 
 export function clearDirectorAuthSession() {
-  try {
-    localStorage.removeItem(LEGACY_TOKEN_KEY);
-    localStorage.removeItem(MEDIA_JWT_KEY);
-    localStorage.removeItem(TENANT_KEY);
-  } catch {
-    /* ignore */
-  }
+  _migrateLegacyLocalStorageOnce();
+  _mediaQueryJwt = "";
+  _activeTenantId = "";
+  _saasClientActive = false;
 }
 
-/**
- * Remove legacy primary JWT storage; keep tenant even if media JWT is absent (cookie may still be valid).
- */
 export function normalizeDirectorAuthStorage() {
-  try {
-    localStorage.removeItem(LEGACY_TOKEN_KEY);
-  } catch {
-    /* ignore */
-  }
+  _migrateLegacyLocalStorageOnce();
 }
 
-/** True when local hints suggest a SaaS browser session may exist (tenant and/or media JWT). */
+/** @deprecated use ``getDirectorSaaSClientActive()`` or ``getDirectorAuthToken()`` */
 export function hasSaasPersistedClientState() {
-  return Boolean(getDirectorAuthToken().trim() || getDirectorTenantId().trim());
+  return Boolean(_saasClientActive || _mediaQueryJwt.trim() || _activeTenantId.trim());
 }
 
 /**
- * After GET /v1/auth/me succeeds, persist workspace id when empty or stale.
+ * After GET /v1/auth/me succeeds, mirror workspace id from the server payload when empty or stale.
  */
 export function syncDirectorTenantFromMePayload(meData) {
   if (!meData || typeof meData !== "object") return false;
@@ -82,40 +85,29 @@ export function syncDirectorTenantFromMePayload(meData) {
   const fallback = tenants.length ? String(tenants[0].id || "").trim() : "";
   const pick = active || fallback;
   if (!pick) return false;
-  const cur = getDirectorTenantId().trim();
-  const media = getDirectorAuthToken().trim();
+  const cur = _activeTenantId.trim();
   if (!cur || !tenantSet.has(cur)) {
-    setDirectorAuthSession({ mediaAccessToken: media || undefined, tenantId: pick });
+    setDirectorAuthSession({ tenantId: pick });
     return true;
   }
   return false;
 }
 
 /**
- * Headers for ``fetch``: ``X-Tenant-Id`` when set. API auth uses HttpOnly ``director_session`` cookie
- * (``credentials: "include"``). Optional legacy ``director_auth_token`` Bearer is still honored if present.
+ * Headers for ``fetch``. Workspace + browser session auth live on the server (HttpOnly cookie).
  */
 export function directorAuthHeaders() {
-  const tenant = getDirectorTenantId().trim();
-  let legacyBearer = "";
-  try {
-    legacyBearer = (localStorage.getItem(LEGACY_TOKEN_KEY) || "").trim();
-  } catch {
-    /* ignore */
-  }
-  const out = {};
-  if (legacyBearer) out.Authorization = `Bearer ${legacyBearer}`;
-  if (tenant) out["X-Tenant-Id"] = tenant;
-  return out;
+  return {};
 }
 
-/** Query suffix for EventSource (no custom headers). */
+/** Query suffix for EventSource when the API is on another origin (cookie not sent). */
 export function directorAuthQuerySuffix() {
-  const token = getDirectorAuthToken().trim();
-  const tenant = getDirectorTenantId().trim();
-  if (!token || !tenant) return "";
+  if (!String(import.meta.env.VITE_API_BASE_URL || "").trim()) return "";
+  const token = _mediaQueryJwt.trim();
+  const tenant = _activeTenantId.trim();
+  if (!token) return "";
   const p = new URLSearchParams();
   p.set("access_token", token);
-  p.set("tenant_id", tenant);
+  if (tenant) p.set("tenant_id", tenant);
   return `&${p.toString()}`;
 }

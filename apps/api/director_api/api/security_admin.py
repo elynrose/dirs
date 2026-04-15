@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from director_api.auth.deps import extract_token
 from director_api.auth.jwtutil import decode_access_token
+from director_api.auth.sessions import get_server_session, looks_like_jwt
 from director_api.config import get_settings
 from director_api.db.models import TenantMembership
 
@@ -53,22 +54,37 @@ def _assert_jwt_workspace_admin(request: Request, db: Session, settings) -> None
             status_code=401,
             detail={
                 "code": "ADMIN_UNAUTHORIZED",
-                "message": "invalid or missing admin key; or sign in and send Authorization Bearer with X-Tenant-Id",
+                "message": "invalid or missing admin key; or sign in with X-Tenant-Id (session cookie or Bearer)",
             },
         )
-    try:
-        claims = decode_access_token(settings, token)
-        user_id = int(str(claims["sub"]).strip())
-    except jwt.PyJWTError:
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "ADMIN_UNAUTHORIZED", "message": "invalid or expired token"},
-        ) from None
-    except (KeyError, ValueError, TypeError):
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "ADMIN_UNAUTHORIZED", "message": "invalid token subject"},
-        ) from None
+    if looks_like_jwt(token):
+        try:
+            claims = decode_access_token(settings, token)
+            user_id = int(str(claims["sub"]).strip())
+        except jwt.PyJWTError:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "ADMIN_UNAUTHORIZED", "message": "invalid or expired token"},
+            ) from None
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "ADMIN_UNAUTHORIZED", "message": "invalid token subject"},
+            ) from None
+    else:
+        sess = get_server_session(token)
+        if not sess:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "ADMIN_UNAUTHORIZED", "message": "invalid or expired session"},
+            )
+        try:
+            user_id = int(sess["user_id"])
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "ADMIN_UNAUTHORIZED", "message": "invalid session subject"},
+            ) from None
 
     tid = (request.headers.get("x-tenant-id") or request.headers.get("X-Tenant-Id") or "").strip()
     if not tid:
@@ -76,7 +92,7 @@ def _assert_jwt_workspace_admin(request: Request, db: Session, settings) -> None
             status_code=400,
             detail={
                 "code": "TENANT_REQUIRED",
-                "message": "X-Tenant-Id header is required for admin API access with Bearer token",
+                "message": "X-Tenant-Id header is required for admin API access when signed in",
             },
         )
 

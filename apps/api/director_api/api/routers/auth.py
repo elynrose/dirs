@@ -480,11 +480,15 @@ def auth_refresh(request: Request, response: Response, db: Session = Depends(get
     )
     if not tid:
         token_in = extract_token(request, settings)
-        try:
-            claims = decode_access_token(settings, token_in)
-            tid = str(claims.get("tid") or "").strip()
-        except jwt.PyJWTError:
-            tid = ""
+        if token_in and looks_like_jwt(token_in):
+            try:
+                claims = decode_access_token(settings, token_in)
+                tid = str(claims.get("tid") or "").strip()
+            except jwt.PyJWTError:
+                tid = ""
+        elif token_in:
+            sess = get_server_session(token_in)
+            tid = str(sess.get("tenant_id") or "").strip() if sess else ""
     if not tid or not any(m.tenant_id == tid for m in memberships):
         tid = memberships[0].tenant_id
     row = db.scalar(
@@ -558,7 +562,14 @@ def auth_me(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     default_tid = memberships[0].tenant_id if memberships else None
     tid_header = (request.headers.get("x-tenant-id") or request.headers.get("X-Tenant-Id") or "").strip()
     active_tid = default_tid
-    if tid_header and any(m.tenant_id == tid_header for m in memberships):
+    tok = extract_token(request, settings)
+    if tok and not looks_like_jwt(tok):
+        sess = get_server_session(tok)
+        if sess:
+            stid = str(sess.get("tenant_id") or "").strip()
+            if stid and any(m.tenant_id == stid for m in memberships):
+                active_tid = stid
+    elif tid_header and any(m.tenant_id == tid_header for m in memberships):
         active_tid = tid_header
 
     from director_api.services.tenant_entitlements import billing_summary_for_tenant, get_effective_entitlements

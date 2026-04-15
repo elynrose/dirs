@@ -550,7 +550,12 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # API / rate limiting
     # ------------------------------------------------------------------
-    api_rate_limit_per_minute: int = 120
+    api_rate_limit_per_minute: int = Field(
+        default=1000,
+        ge=1,
+        le=100_000,
+        validation_alias=AliasChoices("api_rate_limit_per_minute", "API_RATE_LIMIT_PER_MINUTE"),
+    )
     api_celery_restart_rate_limit_per_minute: int = Field(
         default=3,
         ge=1,
@@ -618,13 +623,6 @@ class Settings(BaseSettings):
         default="lax",
         validation_alias=AliasChoices("director_session_cookie_samesite", "DIRECTOR_SESSION_COOKIE_SAMESITE"),
         description="Starlette samesite value: lax, strict, or none (none requires Secure).",
-    )
-    director_query_jwt_expire_minutes: int = Field(
-        default=60,
-        ge=5,
-        le=24 * 60,
-        validation_alias=AliasChoices("director_query_jwt_expire_minutes", "DIRECTOR_QUERY_JWT_EXPIRE_MINUTES"),
-        description="Short-lived JWT returned for media/SSE query params (not the HttpOnly session).",
     )
     director_allow_registration: bool = Field(
         default=True,

@@ -7,7 +7,7 @@ import {
   signInWithGooglePopup,
   viteFirebaseWebConfig,
 } from "../lib/firebaseWebAuth.js";
-import { setDirectorAuthSession } from "../lib/directorAuthSession.js";
+import { setDirectorAuthSession, setDirectorSaaSClientActive } from "../lib/directorAuthSession.js";
 
 /**
  * Full-screen login / register when `DIRECTOR_AUTH_ENABLED=true`.
@@ -27,6 +27,7 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
     async (idToken) => {
       const r = await fetch(apiPath("/v1/auth/firebase"), {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id_token: idToken,
@@ -54,6 +55,7 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
         setErr("Unexpected response from server.");
         return false;
       }
+      setDirectorSaaSClientActive(true);
       setDirectorAuthSession({ accessToken: d.access_token, tenantId: d.tenant_id });
       onLoggedIn?.(d);
       return true;
@@ -66,7 +68,7 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
     (async () => {
       let fb = null;
       try {
-        const r = await fetch(apiPath("/v1/auth/config"));
+        const r = await fetch(apiPath("/v1/auth/config"), { credentials: "include" });
         const raw = await parseJson(r);
         const fromApi = raw?.data?.firebase;
         fb = fromApi?.api_key && fromApi?.project_id ? fromApi : viteFirebaseWebConfig();
@@ -94,6 +96,7 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
           : { email, password, tenant_name: tenantName };
       const r = await fetch(apiPath(path), {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
@@ -112,6 +115,7 @@ export function StudioAuthPanel({ onLoggedIn, allowRegistration }) {
         setErr("Unexpected response from server.");
         return;
       }
+      setDirectorSaaSClientActive(true);
       setDirectorAuthSession({ accessToken: d.access_token, tenantId: d.tenant_id });
       onLoggedIn?.(d);
     } catch (x) {
