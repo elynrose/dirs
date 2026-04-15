@@ -3331,6 +3331,30 @@ details.settings-section[open] > .settings-section-summary {
   flex-shrink: 0;
 }
 
+.pipeline-fa-icon--failed {
+  color: #e85555;
+}
+
+.pipeline-run-failed-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgb(120 32 32 / 35%);
+  border: 1px solid rgb(232 85 85 / 32%);
+  color: #ffe4e4;
+  line-height: 1.45;
+  font-size: 0.84rem;
+}
+
+.pipeline-run-failed-alert .fa-circle-xmark {
+  color: #ff6b6b;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
 .pipeline-stall-popup {
   max-width: 420px;
   margin: 10vh auto;

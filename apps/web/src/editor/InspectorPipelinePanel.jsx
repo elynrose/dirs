@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { EditorCardColumn } from "./EditorCard.jsx";
 import { CriticReportIndexList } from "./CriticReportIndex.jsx";
 import { agentRunAutoGenerateSceneVideos } from "../lib/constants.js";
+import { summarizeAgentRunFailure } from "../lib/apiHelpers.js";
 
 // ---------------------------------------------------------------------------
 // Per-step elapsed time
@@ -271,6 +272,18 @@ export function InspectorPipelinePanel({ p }) {
             ),
             children: (
               <>
+                {p.run?.status === "failed" && p.run?.error_message ? (
+                  <div className="pipeline-run-failed-alert" role="alert" style={{ marginBottom: 14 }}>
+                    <i className="fa-solid fa-circle-xmark" aria-hidden="true" />
+                    <div>
+                      <strong>Automation failed</strong>
+                      <div style={{ marginTop: 6 }}>{summarizeAgentRunFailure(p.run.error_message)}</div>
+                      <div className="subtle" style={{ marginTop: 8, fontSize: "0.78rem" }}>
+                        Check <strong>Settings → text provider / API keys</strong>. Use connection test, then start a new run.
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
                 <label htmlFor="title">Title</label>
                 <input id="title" value={p.title} onChange={(e) => p.setTitle(e.target.value)} />
                 <label htmlFor="topic">Topic</label>

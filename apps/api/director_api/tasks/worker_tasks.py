@@ -1580,11 +1580,10 @@ def _characters_generate_core(db, project: Project, settings: Any) -> None:
             bible_err
             or "character agent returned no usable JSON — check Settings text provider, model, and API keys"
         )
-    validate_character_bible_batch(raw)
-    rows = list(raw.get("characters") or [])
+    bible = validate_character_bible_batch(raw)
+    rows = list(bible.get("characters") or [])
     if not rows:
         raise ValueError("character bible was empty")
-    rows = sorted(rows, key=lambda x: int(x.get("sort_order", 0)))
     db.execute(delete(ProjectCharacter).where(ProjectCharacter.project_id == project.id))
     db.flush()
     for i, c in enumerate(rows):
@@ -1593,7 +1592,7 @@ def _characters_generate_core(db, project: Project, settings: Any) -> None:
                 id=uuid.uuid4(),
                 tenant_id=project.tenant_id,
                 project_id=project.id,
-                sort_order=int(c.get("sort_order", i)),
+                sort_order=int(c["sort_order"]),
                 name=sanitize_jsonb_text(str(c.get("name") or "Character"), 256),
                 role_in_story=sanitize_jsonb_text(str(c.get("role_in_story") or ""), 2000),
                 visual_description=sanitize_jsonb_text(str(c.get("visual_description") or ""), 8000),

@@ -12,6 +12,7 @@ import {
   apiErrorMessage,
   formatUserFacingError,
   humanizeErrorText,
+  summarizeAgentRunFailure,
 } from "./lib/apiHelpers.js";
 
 // Extracted lib / hooks / components
@@ -3372,6 +3373,16 @@ export default function App() {
     loadSceneNarrationMeta,
   ]);
 
+  const agentRunFailedToastKeyRef = useRef("");
+  useEffect(() => {
+    if (!studioReady || !agentRunId || !run || run.status !== "failed") return;
+    const key = `${agentRunId}:${run.error_message || ""}`;
+    if (agentRunFailedToastKeyRef.current === key) return;
+    agentRunFailedToastKeyRef.current = key;
+    const msg = summarizeAgentRunFailure(run.error_message || "");
+    showToast(`Automation failed — ${msg}`, { type: "error", durationMs: 14000 });
+  }, [studioReady, agentRunId, run?.status, run?.error_message, showToast]);
+
   useEffect(() => {
     if (!studioReady) return;
     void loadAppSettings();
@@ -4895,7 +4906,7 @@ export default function App() {
       if (st === "blocked" && run.block_code) {
         detail = `${tail} (${run.block_code})`.trim();
       } else if (st === "failed" && run.error_message) {
-        detail = `${tail} — ${humanizeErrorText(run.error_message)}`.slice(0, 420);
+        detail = `${tail} — ${summarizeAgentRunFailure(run.error_message)}`.slice(0, 520);
       } else if (st === "cancelled" && run.error_message) {
         detail = `${tail} ${humanizeErrorText(run.error_message)}`.trim().slice(0, 360);
       }
@@ -4920,7 +4931,9 @@ export default function App() {
             ? "fa-solid fa-circle-check fa-fw pipeline-fa-icon"
             : st === "cancelled"
               ? "fa-solid fa-circle-stop fa-fw pipeline-fa-icon pipeline-fa-icon--cancelled"
-              : "fa-solid fa-triangle-exclamation fa-fw pipeline-fa-icon",
+              : st === "failed"
+                ? "fa-solid fa-circle-xmark fa-fw pipeline-fa-icon pipeline-fa-icon--failed"
+                : "fa-solid fa-triangle-exclamation fa-fw pipeline-fa-icon",
         trackActive: false,
       };
     }

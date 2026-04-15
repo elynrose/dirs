@@ -37,6 +37,26 @@ export function humanizeErrorText(raw) {
   return s || "Something went wrong.";
 }
 
+/**
+ * Short message for failed agent runs (worker errors). Surfaces API key / 401 clearly — raw logs are easy to miss in the UI.
+ */
+export function summarizeAgentRunFailure(raw) {
+  const s0 = String(raw ?? "");
+  const lower = s0.toLowerCase();
+  const auth =
+    /\b401\b/.test(s0) ||
+    /missing authentication|unauthorized|invalid.*api.*key|api key.*not set|openrouter http 401/i.test(lower);
+  if (auth) {
+    const or = /openrouter/i.test(s0);
+    return (
+      "The text AI rejected the request (authentication / API key). " +
+      (or ? "Check your OpenRouter API key in Settings. " : "Check your text provider API key in Settings. ") +
+      "Save, then run connection test or start a new automation run."
+    );
+  }
+  return humanizeErrorText(raw);
+}
+
 /** FastAPI validation: [{ loc, msg, type }, …] */
 function _validationDetailSummary(detailArr) {
   if (!Array.isArray(detailArr) || !detailArr.length) return "";
