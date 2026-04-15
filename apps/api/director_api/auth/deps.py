@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from director_api.auth.context import AuthContext
 from director_api.auth.jwtutil import decode_access_token
+from director_api.auth.sessions import get_server_session, looks_like_jwt, touch_server_session
 from director_api.config import Settings, get_settings
 from director_api.db.models import TenantMembership
 from director_api.db.session import get_db
@@ -40,20 +41,36 @@ def auth_context_dep(request: Request, db: Session = Depends(get_db)) -> AuthCon
             status_code=401,
             detail={"code": "UNAUTHORIZED", "message": "missing credentials"},
         )
-    try:
-        claims = decode_access_token(settings, token)
-    except jwt.PyJWTError:
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "UNAUTHORIZED", "message": "invalid or expired token"},
-        )
-    try:
-        user_id = int(str(claims["sub"]).strip())
-    except (KeyError, ValueError, TypeError):
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "UNAUTHORIZED", "message": "invalid token subject"},
-        )
+    if looks_like_jwt(token):
+        try:
+            claims = decode_access_token(settings, token)
+        except jwt.PyJWTError:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "UNAUTHORIZED", "message": "invalid or expired token"},
+            )
+        try:
+            user_id = int(str(claims["sub"]).strip())
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "UNAUTHORIZED", "message": "invalid token subject"},
+            )
+    else:
+        sess = get_server_session(token)
+        if not sess:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "UNAUTHORIZED", "message": "invalid or expired session"},
+            )
+        try:
+            user_id = int(sess["user_id"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "UNAUTHORIZED", "message": "invalid session subject"},
+            )
+        touch_server_session(token)
 
     # Tenant for authorization remains header/query-scoped so users can switch workspaces without
     # a fresh token; signed ``tid`` in the JWT is used for rate limiting (see middleware).

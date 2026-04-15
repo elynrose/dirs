@@ -602,6 +602,30 @@ class Settings(BaseSettings):
         default="director_session",
         validation_alias=AliasChoices("director_session_cookie_name", "DIRECTOR_SESSION_COOKIE_NAME"),
     )
+    director_session_ttl_seconds: int = Field(
+        default=2_592_000,  # 30 days
+        ge=300,
+        le=31536000,
+        validation_alias=AliasChoices("director_session_ttl_seconds", "DIRECTOR_SESSION_TTL_SECONDS"),
+        description="Redis-backed browser session lifetime for HttpOnly director_session cookie.",
+    )
+    director_session_cookie_secure: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("director_session_cookie_secure", "DIRECTOR_SESSION_COOKIE_SECURE"),
+        description="Set Secure flag on session cookie (required for HTTPS production).",
+    )
+    director_session_cookie_samesite: str = Field(
+        default="lax",
+        validation_alias=AliasChoices("director_session_cookie_samesite", "DIRECTOR_SESSION_COOKIE_SAMESITE"),
+        description="Starlette samesite value: lax, strict, or none (none requires Secure).",
+    )
+    director_query_jwt_expire_minutes: int = Field(
+        default=60,
+        ge=5,
+        le=24 * 60,
+        validation_alias=AliasChoices("director_query_jwt_expire_minutes", "DIRECTOR_QUERY_JWT_EXPIRE_MINUTES"),
+        description="Short-lived JWT returned for media/SSE query params (not the HttpOnly session).",
+    )
     director_allow_registration: bool = Field(
         default=True,
         validation_alias=AliasChoices("director_allow_registration", "DIRECTOR_ALLOW_REGISTRATION"),

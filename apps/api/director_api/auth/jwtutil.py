@@ -35,11 +35,16 @@ def issue_access_token(
     settings: Settings,
     user_id: int,
     tenant_id: str | None = None,
+    ttl_hours: float | None = None,
 ) -> str:
     if not (settings.director_jwt_secret or "").strip():
         raise RuntimeError("DIRECTOR_JWT_SECRET is required when auth is enabled")
     now = datetime.now(tz=UTC)
-    exp = now + timedelta(hours=max(1, int(settings.director_jwt_expire_hours)))
+    if ttl_hours is not None:
+        delta_h = max(1 / 60.0, float(ttl_hours))  # at least one minute
+    else:
+        delta_h = float(max(1, int(settings.director_jwt_expire_hours)))
+    exp = now + timedelta(hours=delta_h)
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "iat": int(now.timestamp()),

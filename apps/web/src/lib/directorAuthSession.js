@@ -1,14 +1,16 @@
 /**
- * Client session for multi-tenant API auth (Bearer + X-Tenant-Id).
- * When the API reports auth disabled, tokens are cleared and the Studio runs in legacy mode.
+ * Client session for multi-tenant SaaS: HttpOnly cookie carries API auth; we persist
+ * workspace id + a media-only JWT for query strings (<img>, EventSource) that cannot send cookies reliably.
  */
 
-const TOKEN_KEY = "director_auth_token";
+const LEGACY_TOKEN_KEY = "director_auth_token";
+const MEDIA_JWT_KEY = "director_media_jwt";
 const TENANT_KEY = "director_auth_tenant_id";
 
+/** JWT used only for ``access_token`` / ``tenant_id`` query params (not ``Authorization``). */
 export function getDirectorAuthToken() {
   try {
-    return localStorage.getItem(TOKEN_KEY) || "";
+    return localStorage.getItem(MEDIA_JWT_KEY) || "";
   } catch {
     return "";
   }
@@ -22,10 +24,20 @@ export function getDirectorTenantId() {
   }
 }
 
-export function setDirectorAuthSession({ accessToken, tenantId }) {
+/**
+ * @param {{ accessToken?: string, mediaAccessToken?: string, tenantId?: string }} opts
+ * ``accessToken`` is accepted as an alias for ``mediaAccessToken`` (login JSON field name).
+ */
+export function setDirectorAuthSession({ accessToken, mediaAccessToken, tenantId }) {
+  const media = (mediaAccessToken ?? accessToken ?? "").trim();
   try {
-    if (accessToken) localStorage.setItem(TOKEN_KEY, accessToken);
-    else localStorage.removeItem(TOKEN_KEY);
+    try {
+      localStorage.removeItem(LEGACY_TOKEN_KEY);
+    } catch {
+      /* ignore */
+    }
+    if (media) localStorage.setItem(MEDIA_JWT_KEY, media);
+    else localStorage.removeItem(MEDIA_JWT_KEY);
     if (tenantId) localStorage.setItem(TENANT_KEY, tenantId);
     else localStorage.removeItem(TENANT_KEY);
   } catch {
@@ -35,7 +47,8 @@ export function setDirectorAuthSession({ accessToken, tenantId }) {
 
 export function clearDirectorAuthSession() {
   try {
-    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    localStorage.removeItem(MEDIA_JWT_KEY);
     localStorage.removeItem(TENANT_KEY);
   } catch {
     /* ignore */
@@ -43,27 +56,26 @@ export function clearDirectorAuthSession() {
 }
 
 /**
- * Drop a stored workspace id when there is no JWT. Otherwise many routes see Bearer missing and
- * return 401 "missing credentials" even though the real problem is a half-cleared session.
+ * Remove legacy primary JWT storage; keep tenant even if media JWT is absent (cookie may still be valid).
  */
 export function normalizeDirectorAuthStorage() {
   try {
-    const token = (localStorage.getItem(TOKEN_KEY) || "").trim();
-    const tenant = (localStorage.getItem(TENANT_KEY) || "").trim();
-    if (!token && tenant) localStorage.removeItem(TENANT_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
   } catch {
     /* ignore */
   }
 }
 
+/** True when local hints suggest a SaaS browser session may exist (tenant and/or media JWT). */
+export function hasSaasPersistedClientState() {
+  return Boolean(getDirectorAuthToken().trim() || getDirectorTenantId().trim());
+}
+
 /**
- * After GET /v1/auth/me succeeds, persist a workspace id whenever local storage is empty or holds
- * a tenant the user no longer belongs to (stale tab, partial clear, or first load after OAuth).
+ * After GET /v1/auth/me succeeds, persist workspace id when empty or stale.
  */
 export function syncDirectorTenantFromMePayload(meData) {
   if (!meData || typeof meData !== "object") return false;
-  const token = getDirectorAuthToken().trim();
-  if (!token) return false;
   const tenants = Array.isArray(meData.tenants) ? meData.tenants : [];
   const tenantSet = new Set(tenants.map((t) => String(t?.id || "").trim()).filter(Boolean));
   const active = String(meData.active_tenant_id || meData.tenant_id || "").trim();
@@ -71,24 +83,29 @@ export function syncDirectorTenantFromMePayload(meData) {
   const pick = active || fallback;
   if (!pick) return false;
   const cur = getDirectorTenantId().trim();
+  const media = getDirectorAuthToken().trim();
   if (!cur || !tenantSet.has(cur)) {
-    setDirectorAuthSession({ accessToken: token, tenantId: pick });
+    setDirectorAuthSession({ mediaAccessToken: media || undefined, tenantId: pick });
     return true;
   }
   return false;
 }
 
 /**
- * Headers merged into `api()` when SaaS session values exist.
- * Send ``X-Tenant-Id`` only together with ``Authorization``: tenant-without-token produced 401
- * "missing credentials" on the API; token-without-tenant still allows /v1/auth/me until we sync.
+ * Headers for ``fetch``: ``X-Tenant-Id`` when set. API auth uses HttpOnly ``director_session`` cookie
+ * (``credentials: "include"``). Optional legacy ``director_auth_token`` Bearer is still honored if present.
  */
 export function directorAuthHeaders() {
-  const token = getDirectorAuthToken().trim();
   const tenant = getDirectorTenantId().trim();
+  let legacyBearer = "";
+  try {
+    legacyBearer = (localStorage.getItem(LEGACY_TOKEN_KEY) || "").trim();
+  } catch {
+    /* ignore */
+  }
   const out = {};
-  if (token) out.Authorization = `Bearer ${token}`;
-  if (token && tenant) out["X-Tenant-Id"] = tenant;
+  if (legacyBearer) out.Authorization = `Bearer ${legacyBearer}`;
+  if (tenant) out["X-Tenant-Id"] = tenant;
   return out;
 }
 

@@ -11,7 +11,12 @@
  * tenant_id query params (same as compiled video) — tags cannot send Bearer headers.
  */
 
-import { directorAuthHeaders, getDirectorAuthToken, getDirectorTenantId } from "./directorAuthSession.js";
+import {
+  directorAuthHeaders,
+  getDirectorAuthToken,
+  getDirectorTenantId,
+  hasSaasPersistedClientState,
+} from "./directorAuthSession.js";
 
 const _rawBase = String(import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/$/, "");
 /** Raw `VITE_API_BASE_URL` (empty string if unset) — for UI hints vs resolved `apiBase`. */
@@ -161,7 +166,8 @@ async function _applySessionPolicyOn401(path, mergedHeaders, response) {
   ) {
     return response;
   }
-  if (!_authorizationWasSent(mergedHeaders)) {
+  const sentBearer = _authorizationWasSent(mergedHeaders);
+  if (!sentBearer && !hasSaasPersistedClientState()) {
     return response;
   }
   const code = await _detailCodeFrom401Response(response);
@@ -189,6 +195,7 @@ export const api = (path, opts = {}) => {
   };
   return fetch(apiPath(path), {
     ...opts,
+    credentials: opts.credentials ?? "include",
     headers,
   }).then((response) => _applySessionPolicyOn401(path, headers, response));
 };
@@ -205,6 +212,7 @@ export function apiForm(path, opts = {}) {
   };
   return fetch(apiPath(path), {
     ...opts,
+    credentials: opts.credentials ?? "include",
     headers,
   }).then((response) => _applySessionPolicyOn401(path, headers, response));
 }

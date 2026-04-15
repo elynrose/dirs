@@ -11,8 +11,6 @@ Redis outage never takes down the API.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
-
 import structlog
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -20,10 +18,9 @@ from starlette.responses import JSONResponse, Response
 
 from director_api.auth.deps import extract_token
 from director_api.auth.jwtutil import decode_access_token
+from director_api.auth.sessions import get_server_session, looks_like_jwt
 from director_api.config import Settings, get_settings
-
-if TYPE_CHECKING:
-    import redis as redis_lib
+from director_api.infra.redis_client import get_redis_client
 
 log = structlog.get_logger(__name__)
 
@@ -40,67 +37,28 @@ _SKIP_PREFIXES = (
     "/redoc",
 )
 
-# Module-level singleton — created once per worker process, reused across requests.
-_redis_client: "redis_lib.Redis | None" = None
-_redis_unavailable: bool = False  # sticky flag to suppress repeated warnings
-
-
-def _close_redis_client() -> None:
-    global _redis_client
-    if _redis_client is not None:
-        try:
-            _redis_client.close()
-        except Exception:
-            pass
-    _redis_client = None
-
-
 def _tenant_id_from_bearer_for_rate_limit(request: Request, settings: Settings) -> str | None:
-    """Prefer signed ``tid`` claim over spoofable ``X-Tenant-Id`` when auth is enabled."""
+    """Prefer signed ``tid`` (JWT) or server session default tenant over raw ``X-Tenant-Id``."""
     if not settings.director_auth_enabled:
         return None
     token = extract_token(request, settings)
     if not token:
         return None
-    try:
-        claims = decode_access_token(settings, token)
-    except Exception:
-        return None
-    tid = claims.get("tid")
-    if isinstance(tid, str) and tid.strip():
-        return tid.strip()
-    return None
-
-
-def _get_redis() -> "redis_lib.Redis | None":
-    global _redis_client, _redis_unavailable
-    if _redis_client is not None:
+    if looks_like_jwt(token):
         try:
-            _redis_client.ping()
-            return _redis_client
-        except Exception as exc:
-            log.warning("rate_limiter_redis_stale", error=str(exc)[:200])
-            _close_redis_client()
-            _redis_unavailable = False
-    try:
-        import redis
-
-        settings = get_settings()
-        _redis_client = redis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_connect_timeout=1,
-            socket_timeout=1,
-        )
-        # Ping to confirm connectivity eagerly so we fail fast rather than on first request.
-        _redis_client.ping()
-        _redis_unavailable = False
-        return _redis_client
-    except Exception as exc:
-        if not _redis_unavailable:
-            log.warning("rate_limiter_redis_unavailable", error=str(exc))
-            _redis_unavailable = True
+            claims = decode_access_token(settings, token)
+        except Exception:
+            return None
+        tid = claims.get("tid")
+        if isinstance(tid, str) and tid.strip():
+            return tid.strip()
         return None
+    sess = get_server_session(token)
+    if sess:
+        tid = str(sess.get("tenant_id") or "").strip()
+        if tid:
+            return tid
+    return None
 
 
 class TenantRateLimitMiddleware(BaseHTTPMiddleware):
@@ -136,7 +94,7 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        r = _get_redis()
+        r = get_redis_client()
         if r is None:
             # Redis unavailable — degrade gracefully, allow request through.
             return await call_next(request)

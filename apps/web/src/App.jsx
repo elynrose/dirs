@@ -74,6 +74,7 @@ import {
   clearDirectorAuthSession,
   getDirectorAuthToken,
   getDirectorTenantId,
+  hasSaasPersistedClientState,
   normalizeDirectorAuthStorage,
   setDirectorAuthSession,
   syncDirectorTenantFromMePayload,
@@ -1258,17 +1259,32 @@ export default function App() {
           }
           return;
         }
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const transientAuthMeStatus = (st) =>
+          st === 0 || st === 429 || st === 408 || (st >= 500 && st < 600);
+
         let r2 = await api("/v1/auth/me");
         let me = await parseJson(r2);
         if (cancelled) return;
-        // Race with Firebase redirect: first /auth/me may 401 before session is stored; retry once if token exists now.
-        if (!r2.ok && getDirectorAuthToken().trim()) {
+        // Race with Firebase redirect: first /auth/me may 401 before the cookie is visible; retry once.
+        if (!r2.ok && r2.status === 401) {
           const r3 = await api("/v1/auth/me");
           const me3 = await parseJson(r3);
           if (r3.ok && me3.data?.email) {
             r2 = r3;
             me = me3;
           }
+        }
+        // API blips (502/503/429) must not wipe a valid browser session — only 401 means "signed out".
+        for (
+          let attempt = 0;
+          !cancelled && !r2.ok && hasSaasPersistedClientState() && transientAuthMeStatus(r2.status) && attempt < 4;
+          attempt++
+        ) {
+          await sleep(400 * (attempt + 1));
+          if (cancelled) return;
+          r2 = await api("/v1/auth/me");
+          me = await parseJson(r2);
         }
         if (r2.ok && me.data?.email) {
           syncDirectorTenantFromMePayload(me.data);
@@ -1283,17 +1299,35 @@ export default function App() {
           });
           return;
         }
-        clearDirectorAuthSession();
+        const hadLocalHints = hasSaasPersistedClientState();
+        if (r2.status === 401 || !hadLocalHints) {
+          clearDirectorAuthSession();
+          authModeRef.current = "saas";
+          setSaasTenants([]);
+          setAccountProfile(null);
+          setError("");
+          setAuthBootstrap({
+            done: true,
+            mode: "saas",
+            needLogin: true,
+            allowRegistration,
+          });
+          return;
+        }
         authModeRef.current = "saas";
         setSaasTenants([]);
         setAccountProfile(null);
-        setError("");
         setAuthBootstrap({
           done: true,
           mode: "saas",
-          needLogin: true,
+          needLogin: false,
           allowRegistration,
         });
+        setError(
+          (prev) =>
+            prev ||
+            `Could not reach the account service (HTTP ${r2.status}). Your session was kept — try refreshing the page.`,
+        );
       } catch {
         if (!cancelled) {
           authModeRef.current = "legacy";
@@ -1420,7 +1454,7 @@ export default function App() {
     (payload) => {
       resetWorkspaceForTenantBoundary();
       setDirectorAuthSession({
-        accessToken: payload.access_token,
+        mediaAccessToken: payload.access_token,
         tenantId: payload.tenant_id,
       });
       setSaasTenants(Array.isArray(payload.tenants) ? payload.tenants : []);
@@ -1434,6 +1468,7 @@ export default function App() {
   );
 
   const signOutSaas = useCallback(() => {
+    void api("/v1/auth/logout", { method: "POST", body: "{}" }).catch(() => {});
     clearDirectorAuthSession();
     resetWorkspaceForTenantBoundary();
     setSaasTenants([]);
@@ -1470,28 +1505,29 @@ export default function App() {
   /** Proactively rotate JWT before expiry when operators use a short ``director_jwt_expire_hours`` (long rough/final-cut runs). */
   const tryRefreshSaaSAccessToken = useCallback(async () => {
     if (authBootstrap.mode !== "saas" || authBootstrap.needLogin) return;
-    const token = getDirectorAuthToken().trim();
     const tenant = getDirectorTenantId().trim();
-    if (!token || !tenant) return;
-    let expMs = null;
-    try {
-      const part = token.split(".")[1];
-      if (!part) return;
-      const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
-      const payload = JSON.parse(atob(b64));
-      if (typeof payload.exp === "number") expMs = payload.exp * 1000;
-    } catch {
-      return;
+    if (!tenant) return;
+    const token = getDirectorAuthToken().trim();
+    if (token) {
+      let expMs = null;
+      try {
+        const part = token.split(".")[1];
+        if (part) {
+          const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+          const payload = JSON.parse(atob(b64));
+          if (typeof payload.exp === "number") expMs = payload.exp * 1000;
+        }
+      } catch {
+        /* fall through to refresh */
+      }
+      if (expMs != null && expMs - Date.now() > 120 * 60 * 1000) return;
     }
-    // Start refreshing well before expiry so a delayed 5-minute timer (or throttled background tabs)
-    // does not miss the window and cause 401s mid-run.
-    if (expMs == null || expMs - Date.now() > 120 * 60 * 1000) return;
     try {
       const r = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
       const b = await parseJson(r);
       if (r.ok && b?.data?.access_token) {
         setDirectorAuthSession({
-          accessToken: b.data.access_token,
+          mediaAccessToken: b.data.access_token,
           tenantId: String(b.data.tenant_id || tenant).trim(),
         });
         setEventAuthKey((k) => k + 1);
@@ -5542,12 +5578,27 @@ export default function App() {
                 value={getDirectorTenantId()}
                 onChange={(e) => {
                   const v = e.target.value;
-                  setDirectorAuthSession({
-                    accessToken: getDirectorAuthToken(),
-                    tenantId: v,
-                  });
-                  setEventAuthKey((k) => k + 1);
-                  window.location.reload();
+                  void (async () => {
+                    try {
+                      const r = await api("/v1/auth/session-tenant", {
+                        method: "POST",
+                        body: JSON.stringify({ tenant_id: v }),
+                      });
+                      const b = await parseJson(r);
+                      if (r.ok && b?.data?.access_token) {
+                        setDirectorAuthSession({
+                          mediaAccessToken: b.data.access_token,
+                          tenantId: v,
+                        });
+                      } else {
+                        setDirectorAuthSession({ tenantId: v });
+                      }
+                    } catch {
+                      setDirectorAuthSession({ tenantId: v });
+                    }
+                    setEventAuthKey((k) => k + 1);
+                    window.location.reload();
+                  })();
                 }}
               >
                 {saasTenants.map((t) => (
@@ -6663,7 +6714,7 @@ export default function App() {
                       <h4 className="settings-inline-heading" style={{ marginTop: 20 }}>
                         {narEditingRef ? "Edit custom style" : "Add custom style"}
                       </h4>
-                      {!getDirectorAuthToken() ? (
+                      {!accountProfile?.email ? (
                         <p className="subtle">Sign in to create or edit custom narration styles.</p>
                       ) : (
                         <>
@@ -6735,7 +6786,7 @@ export default function App() {
                                   <code className="subtle" style={{ fontSize: "0.78rem" }}>
                                     {s.ref}
                                   </code>
-                                  {getDirectorAuthToken() ? (
+                                  {accountProfile?.email ? (
                                     <>
                                       <button
                                         type="button"
@@ -6767,7 +6818,7 @@ export default function App() {
                       {!narrationStylesLibBusy &&
                       narrationStylesLib.length > 0 &&
                       !narrationStylesLib.some((s) => !s.is_builtin) &&
-                      getDirectorAuthToken() ? (
+                      accountProfile?.email ? (
                         <p className="subtle">No custom styles yet — add one above.</p>
                       ) : null}
                     </div>
