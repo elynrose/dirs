@@ -9967,6 +9967,37 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                             reorderScenes(fromId, s.id);
                           }}
                         >
+                          {(() => {
+                            const rows = sceneAssets[String(s.id)] || [];
+                            const ta = bestSceneListThumbAsset(rows);
+                            const ttype = ta ? String(ta.asset_type || "").toLowerCase() : "";
+                            const tsrc = ta
+                              ? apiAssetContentUrl(ta.id, ta.updated_at || ta.created_at || ta.id)
+                              : "";
+                            const phKind = sceneListFallbackThumbKind(s, rows);
+                            return (
+                              <div className="timeline-clip-thumb" aria-hidden="true">
+                                {tsrc && ttype === "image" ? (
+                                  <img src={tsrc} alt="" className="timeline-clip-thumb-media" loading="lazy" />
+                                ) : tsrc && ttype === "video" ? (
+                                  <video
+                                    className="timeline-clip-thumb-media"
+                                    muted
+                                    playsInline
+                                    preload="metadata"
+                                    src={tsrc}
+                                  />
+                                ) : (
+                                  <span className="timeline-clip-thumb-placeholder">
+                                    <i
+                                      className={`fa-solid ${phKind === "video" ? "fa-video" : "fa-image"}`}
+                                      aria-hidden="true"
+                                    />
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                           <button
                             type="button"
                             className="secondary timeline-clip-btn"
