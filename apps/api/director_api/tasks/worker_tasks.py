@@ -1429,6 +1429,28 @@ def _phase2_chapters_core(
             by_idx[ch.order_index] = txt
 
     for ch in chapters:
+        if not _chapter_still_needs_script(ch):
+            continue
+        tsec = ch.target_duration_sec or 120
+        tw = phase2_svc.target_narration_word_count(tsec)
+        min_w = max(80, int(tw * 0.78))
+        emerg = phase2_svc.deterministic_chapter_script_emergency(
+            chapter_title=ch.title,
+            chapter_summary=ch.summary,
+            project_topic=project.topic,
+            min_words=min_w,
+            target_scenes_per_chapter=tsp,
+        )
+        if emerg and emerg.strip():
+            log.warning(
+                "phase2_chapter_script_emergency_fallback",
+                project_id=str(project.id),
+                order_index=ch.order_index,
+                target_scenes_per_chapter=tsp,
+            )
+            by_idx[ch.order_index] = emerg
+
+    for ch in chapters:
         if preserve_substantive_scripts and len((ch.script_text or "").strip()) >= SUBSTANTIVE_SCRIPT_MIN_CHARS:
             continue
         if ch.order_index not in by_idx or not (by_idx[ch.order_index] or "").strip():

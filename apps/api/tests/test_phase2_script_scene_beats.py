@@ -1,6 +1,9 @@
 """Paragraph-beat counting for chapter scripts when target scenes per chapter is set."""
 
-from director_api.services.phase2 import script_scene_beat_paragraph_count
+from director_api.services.phase2 import (
+    deterministic_chapter_script_emergency,
+    script_scene_beat_paragraph_count,
+)
 
 
 def test_script_scene_beat_paragraph_count_empty() -> None:
@@ -20,3 +23,28 @@ def test_script_scene_beat_paragraph_count_blank_lines() -> None:
 def test_script_scene_beat_paragraph_count_crlf() -> None:
     s = "A\r\n\r\nB"
     assert script_scene_beat_paragraph_count(s) == 2
+
+
+def test_deterministic_chapter_script_emergency_non_empty() -> None:
+    s = deterministic_chapter_script_emergency(
+        chapter_title="Cold open",
+        chapter_summary="We introduce the stakes and the place.",
+        project_topic="A documentary about resilience.",
+        min_words=120,
+        target_scenes_per_chapter=0,
+    )
+    assert len(s.strip()) > 80
+    assert len(s.split()) >= 120
+
+
+def test_deterministic_chapter_script_emergency_scene_beats() -> None:
+    tsp = 4
+    s = deterministic_chapter_script_emergency(
+        chapter_title="Act II",
+        chapter_summary="",
+        project_topic="Urban renewal",
+        min_words=200,
+        target_scenes_per_chapter=tsp,
+    )
+    assert script_scene_beat_paragraph_count(s) == tsp
+    assert len(s.split()) >= 200

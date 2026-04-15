@@ -167,6 +167,57 @@ def pad_narration_to_min_words(text: str, min_words: int, topic: str) -> str:
     return sanitize_for_script(out.strip(), 120_000)
 
 
+def deterministic_chapter_script_emergency(
+    *,
+    chapter_title: str | None,
+    chapter_summary: str | None,
+    project_topic: str | None,
+    min_words: int,
+    target_scenes_per_chapter: int = 0,
+) -> str:
+    """
+    Last-resort narration when LLM batch and per-chapter script calls return nothing usable.
+    Builds VO only from outline fields (title, summary, topic) plus neutral padding — no new factual claims.
+    """
+    min_words_i = max(80, int(min_words or 80))
+    title = ((chapter_title or "").strip() or "This chapter")[:500]
+    summary_raw = (chapter_summary or "").strip()
+    topic = (project_topic or "").strip()
+    anchor = (topic[:220] if topic else "") or (summary_raw[:220] if summary_raw else title)
+    tsp = max(0, min(48, int(target_scenes_per_chapter or 0)))
+
+    summary = summary_raw
+    if not summary:
+        summary = (
+            "In documentary voice, the chapter advances the story with steady pacing, holding human detail "
+            "alongside the broader arc the film is tracing for the audience."
+        )
+
+    title_safe = sanitize_for_script(title, 500)
+    summary_safe = sanitize_for_script(summary, 8000)
+    core_seed = (
+        f"In «{title_safe}», the narration continues in measured documentary style. {summary_safe}"
+    )
+
+    if tsp > 0:
+        per_beat = max(40, (min_words_i + tsp - 1) // tsp)
+        parts: list[str] = []
+        for i in range(tsp):
+            beat_prefix = f"Scene beat {i + 1} of {tsp}. "
+            body = pad_narration_to_min_words(beat_prefix + core_seed, per_beat, anchor)
+            parts.append(body.strip())
+        joined = "\n\n".join(parts)
+        if script_scene_beat_paragraph_count(joined) != tsp:
+            one = pad_narration_to_min_words(core_seed, per_beat, anchor).strip()
+            joined = "\n\n".join([one for _ in range(tsp)])
+        return sanitize_for_script(joined.strip(), 120_000)
+
+    return sanitize_for_script(
+        pad_narration_to_min_words(core_seed, min_words_i, anchor).strip(),
+        120_000,
+    )
+
+
 def chapter_outline_from_director(director: dict[str, Any], project: Project) -> list[dict[str, Any]]:
     arcs = director.get("narrative_arc") or ["Chapter 1", "Chapter 2", "Chapter 3"]
     total_sec = max(300, (project.target_runtime_minutes or 10) * 60)

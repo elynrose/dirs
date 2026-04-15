@@ -55,17 +55,36 @@ def resolve_chapter_narration_tts_body(chapter: Chapter, scenes: list[Any]) -> s
 # Seed image prompts: richer than a raw narration paste; still capped in ``build_scene_plan_batch``.
 
 
+def _illustrative_visual_preset_ids() -> frozenset[str]:
+    """Presets where the look is intentionally non-photographic — avoid documentary-photo boilerplate."""
+    return frozenset({"three_d_animation", "hand_drawn_2d", "flat_infographic"})
+
+
 def _image_prompt_boilerplate_for_project(project: Project) -> str:
     shape = image_prompt_aspect_phrase(getattr(project, "frame_aspect_ratio", None))
+    vs = (getattr(project, "visual_style", None) or "").strip()
+    pid = ""
+    if vs.lower().startswith("preset:"):
+        pid = vs.split(":", 1)[1].strip().lower()
+    if pid in _illustrative_visual_preset_ids():
+        return (
+            f"Single full-frame key visual, {shape}, editorial composition. "
+            "Follow the VISUAL TREATMENT below for medium and look (may be non-photoreal when so stated). "
+            "No arbitrary watermark or unrelated on-image branding. Visual treatment: "
+        )
     return (
-        f"Cinematic documentary photograph, {shape}, sharp focal subject, "
-        "readable environment, natural light, photoreal, no typography or watermark on the image. "
-        "Visual treatment: "
+        f"Single photoreal still frame, {shape}, as if from a documentary or prestige film camera — "
+        "sharp hero subject, readable real-world environment, natural motivated light, accurate materials and skin "
+        "texture. No on-image typography, captions, logos, or watermarks. "
+        "STRICTLY AVOID illustration, cartoon, anime, clipart, vector poster, comic linework, painterly concept art, "
+        "storybook watercolor, or stylized graphic-novel rendering unless the visual treatment below explicitly names "
+        "that medium. Visual treatment: "
     )
 
 _DEFAULT_SCENE_NEGATIVE_PROMPT = (
     "text, watermark, logo, subtitles, UI, deformed anatomy, extra limbs, blurry, low resolution, "
-    "oversaturated, cartoon, collage, split screen"
+    "oversaturated, cartoon, anime, illustration, clipart, vector art, comic book, sketch, digital painting, "
+    "concept art, painterly, storybook art, collage, split screen"
 )
 
 # Motion / camera brief for generative video and for coarse FFmpeg Ken Burns hints (local still→video).

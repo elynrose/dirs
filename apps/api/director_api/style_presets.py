@@ -52,70 +52,80 @@ _NARRATION: dict[str, tuple[str, str]] = {
 _VISUAL: dict[str, tuple[str, str, str]] = {
     "cinematic_documentary": (
         "Cinematic Documentary (Live-Action Feel)",
-        "Live-action documentary cinematography: natural lighting, realistic textures, handheld perspective, shallow "
-        "depth of field, subtle film grain, authentic environments, emotionally grounded storytelling, high-end cinema camera.",
-        "in a cinematic documentary style with a live-action feel, natural lighting, realistic textures, handheld camera "
-        "perspective, shallow depth of field, subtle film grain, authentic environmental details, and emotionally grounded "
-        "storytelling, captured with a high-end cinema camera.",
+        "Photoreal live-action documentary: real people, real locations, and real objects as if shot on location with a "
+        "cinema camera. Natural light, true-to-life color, shallow depth of field, subtle grain. Not illustration, not "
+        "cartoon, not vector art, not painterly concept art.",
+        "PHOTOREAL LIVE-ACTION DOCUMENTARY STILL — must look like a frame grab from 35mm or digital cinema footage of "
+        "real cast on real sets or real locations. Natural light, accurate skin and fabric texture, shallow depth of field, "
+        "subtle film grain, believable environment. STRICTLY FORBIDDEN: illustration, cartoon, anime, clipart, vector "
+        "graphics, comic-book linework, watercolor or oil-painting look, cel shading, storybook art, or stylized concept "
+        "painting. No invented graphic poster look.",
     ),
     "archival_historical": (
         "Archival / Historical Stills",
-        "Archival historical photographs: period-accurate detail, monochrome or sepia, grain, soft contrast, fading, "
-        "aging artifacts (scratches, vignetting), timeless documentary composition.",
-        "as an archival historical photograph, featuring period-accurate details, monochrome or sepia tones, visible film "
-        "grain, soft contrast, slight fading, authentic aging artifacts such as scratches and vignetting, and a timeless "
-        "documentary composition.",
+        "Authentic historical photograph: period detail, monochrome or sepia, real film grain, soft contrast, aging "
+        "artifacts (scratches, vignette). Must read as a genuine photo from the era, not a modern illustration mimicking "
+        "old paper.",
+        "AUTHENTIC ARCHIVAL PHOTOGRAPH — as if from a period camera or scanned negative: period-accurate subjects and "
+        "props, monochrome or sepia, visible grain, soft contrast, light fading, believable aging (scratches, edge "
+        "vignette). STRICTLY FORBIDDEN: digital illustration, cartoon, clean vector, painterly faux-vintage, or stylized "
+        "caricature of history.",
     ),
     "aerial_epic": (
         "Aerial / Epic Landscape",
-        "Dramatic aerial perspective over expansive landscapes: sweeping vistas, atmospheric depth, volumetric light, "
-        "majestic scale, cinematic composition, ultra-high-resolution detail.",
-        "captured from a dramatic aerial perspective, showcasing an expansive epic landscape with sweeping vistas, "
-        "atmospheric depth, volumetric lighting, majestic scale, cinematic composition, and ultra-high-resolution detail.",
+        "Photoreal aerial cinematography over real terrain: drone or helicopter plate, atmospheric haze, natural color, "
+        "high detail. Not a matte painting, not an illustrated map, not a fantasy painting.",
+        "PHOTOREAL AERIAL / DRONE FOOTAGE STILL — sweeping real landscape, natural sky and haze, realistic scale and "
+        "terrain detail, cinematic wide composition, natural color grading. STRICTLY FORBIDDEN: illustrated landscape, "
+        "painterly concept art, low-poly 3D, fantasy map graphics, or stylized matte-painting illustration.",
     ),
     "noir_dramatic": (
         "Noir / Dramatic Reenactment",
-        "Classic film noir reenactment: high-contrast black-and-white, deep shadows, low-key lighting, silhouettes, "
-        "haze, tense mysterious framing.",
-        "in a classic film noir style with dramatic reenactment, high-contrast black-and-white tones, deep shadows, "
-        "moody low-key lighting, sharp silhouettes, subtle haze, and a tense, mysterious atmosphere with cinematic framing.",
+        "Photoreal film-noir reenactment: live actors, high-contrast black-and-white, hard shadows, practical haze, "
+        "period wardrobe on real sets. Not comic-book noir, not graphic-novel shading.",
+        "PHOTOREAL FILM NOIR REENACTMENT — live-action B&W cinematography, hard low-key lighting, deep shadows, "
+        "silhouettes, subtle atmospheric haze, tense framing, period-accurate costumes on real people in real space. "
+        "STRICTLY FORBIDDEN: comic illustration, inked graphic novel look, cel animation, or cartoon silhouettes.",
     ),
     "three_d_animation": (
         "Stylized 3D Animation",
-        "Stylized 3D animated film look: rounded characters, expressive eyes, smooth surfaces, saturated colors, global "
-        "illumination, subsurface scattering, gentle depth of field, warm family-friendly mood, ultra-detailed render.",
-        "in a stylized 3D animated film aesthetic, featuring soft rounded character design, large expressive eyes, smooth "
-        "surfaces, vibrant saturated colors, cinematic global illumination, subsurface scattering, gentle depth of field, "
-        "and a warm, family-friendly atmosphere, rendered in ultra-detailed high quality.",
+        "INTENTIONALLY NON-PHOTOGRAPHIC: stylized 3D feature animation — rounded forms, expressive eyes, smooth shaded "
+        "surfaces, saturated color, global illumination. Clearly CG characters, not real actors.",
+        "STYLIZED 3D ANIMATED FILM STILL — clearly computer-generated characters and worlds (Pixar/DreamWorks-style "
+        "family animation): soft rounded forms, large expressive eyes, smooth surfaces, saturated color, cinematic GI and "
+        "subsurface scattering. Do NOT blend toward photoreal humans or documentary footage; avoid uncanny live-action mix.",
     ),
     "hand_drawn_2d": (
         "Hand-Drawn 2D",
-        "Hand-drawn 2D animation: clean line art, expressive characters, soft shading, painterly or watercolor texture, "
-        "warm storybook aesthetic.",
-        "illustrated in a hand-drawn 2D animation style, featuring clean line art, expressive character design, soft shading, "
-        "painterly or watercolor textures, and a warm, storybook-like aesthetic.",
+        "INTENTIONALLY NON-PHOTOGRAPHIC: 2D drawn animation — visible line art, flat or soft shading, watercolor or "
+        "gouache texture, storybook warmth. Not a photo, not 3D render.",
+        "HAND-DRAWN 2D ANIMATION STILL — clean line art, expressive drawn characters, soft cel or watercolor shading, "
+        "warm storybook palette. STRICTLY FORBIDDEN: photoreal skin, photographic backgrounds, or 3D-rendered realism.",
     ),
     "flat_infographic": (
         "Flat / Infographic",
-        "Flat infographic illustration: simplified geometry, minimal layout, solid colors, clear hierarchy, vector look, "
-        "modern educational tone.",
-        "in a clean flat infographic style, using simplified geometric shapes, minimalistic design, solid colors, clear "
-        "visual hierarchy, vector-based graphics, and a modern educational aesthetic.",
+        "INTENTIONALLY NON-PHOTOGRAPHIC: flat vector / infographic — simple geometry, solid fills, clear hierarchy, "
+        "modern educational layout. Not a photograph of a poster; graphic design look.",
+        "FLAT VECTOR INFOGRAPHIC STILL — simplified geometric shapes, solid flat colors, clear typographic hierarchy if "
+        "needed, crisp edges, modern editorial diagram look. STRICTLY FORBIDDEN: photoreal scenes, textured photo "
+        "backgrounds, 3D product renders, or painterly illustration masquerading as data viz.",
     ),
     "sci_tech_cgi": (
         "Sci-Tech CGI",
-        "High-tech sci-fi CGI: sleek futurism, metal and glass, holographic UI hints, neon accents, rim lighting, "
-        "photorealistic detail.",
-        "rendered in a high-tech sci-fi CGI style, featuring sleek futuristic design, metallic and glass materials, "
-        "holographic interface elements, neon accents, dramatic rim lighting, and ultra-detailed photorealistic rendering.",
+        "Photorealistic CGI of plausible sci-fi hardware: metal, glass, practical scale, dramatic light. Looks like a "
+        "VFX shot from a modern sci-fi film — not cartoon sci-fi, not flat icon art.",
+        "PHOTOREAL SCI-FI CGI STILL — sleek futuristic sets and props with believable materials (brushed metal, glass, "
+        "emissive panels), rim light, holographic UI only as subtle diegetic elements, ultra-sharp detail. STRICTLY "
+        "FORBIDDEN: cartoon rocket ships, flat comic sci-fi, low-poly game art, or children's illustrated space art.",
     ),
     "cinematic_historical_epic": (
         "Cinematic Historical Epic",
-        "Historical epic cinematography: grand scale, period-accurate costumes and sets, golden-hour light, rich grade, "
-        "sweeping compositions, majestic emotional atmosphere.",
-        "in a cinematic historical epic style, featuring grand scale, period-accurate costumes and environments, dramatic "
-        "golden-hour lighting, rich color grading, sweeping composition, and a majestic, emotionally powerful atmosphere "
-        "reminiscent of large-scale period films.",
+        "Photoreal historical epic: live-action cast, massive practical sets, golden-hour or torchlight, rich grade, "
+        "sweeping camera. Like a frame from a prestige period film — not painted epic art.",
+        "PHOTOREAL CINEMATIC HISTORICAL EPIC STILL — live-action cast in period-accurate armor and costume on large "
+        "practical sets or real locations, dramatic golden-hour or motivated practical lighting, rich color grade, "
+        "sweeping composition. STRICTLY FORBIDDEN: oil-painting epic, fantasy illustration, matte-painting storybook, "
+        "or stylized game cinematic that abandons photographic skin and fabric.",
     ),
 }
 
