@@ -1487,8 +1487,9 @@ h3 {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  flex: 1 1 0;
-  min-width: 0;
+  /* Don't use flex: 1 1 0 in a narrow rail — it collapses labels and forces one-letter “lines”. */
+  flex: 0 0 auto;
+  max-width: 100%;
   margin: 0;
   /* Global `label` uses uppercase + wide tracking; these are sentence-case toggles. */
   text-transform: none;
@@ -1502,9 +1503,10 @@ h3 {
   min-width: 1em;
 }
 
-.brief-automate-option span {
-  min-width: 0;
-  word-break: break-word;
+.brief-automate-option span:not(.brief-automate-option__num-label) {
+  line-height: 1.35;
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 
 .brief-automate-options-row--media {
