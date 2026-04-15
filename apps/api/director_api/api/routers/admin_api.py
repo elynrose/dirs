@@ -1446,6 +1446,48 @@ def admin_list_agent_runs(
     return {"data": {"agent_runs": runs_out, "total_count": total}, "meta": {}}
 
 
+@router.post("/agent-runs/cancel-all")
+def admin_cancel_all_agent_runs(
+    db: Session = Depends(get_db),
+    _: None = AdminDep,
+    tenant_id: str | None = None,
+    project_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    """
+    Request stop on every non-terminal agent run matching optional filters (same semantics as
+    ``POST /v1/admin/agent-runs/{id}/control`` with ``action: stop``). Queued runs become cancelled
+    immediately; running/paused runs get ``stop_requested`` until the worker exits.
+    """
+    stmt = select(AgentRun).where(AgentRun.status.in_(["queued", "running", "paused"]))
+    if tenant_id:
+        stmt = stmt.where(AgentRun.tenant_id == tenant_id.strip())
+    if project_id:
+        stmt = stmt.where(AgentRun.project_id == project_id)
+    rows = list(db.scalars(stmt.order_by(AgentRun.created_at.asc())).all())
+    run_ids = [r.id for r in rows]
+    stopped_ids: list[str] = []
+    body = AgentRunPipelineControl(action="stop")
+    for rid in run_ids:
+        r = db.get(AgentRun, rid)
+        if r is None or r.status in _TERMINAL_STATUSES:
+            continue
+        _handle_agent_run_control(db, r, body)
+        stopped_ids.append(str(r.id))
+    log.info(
+        "admin_agent_runs_cancel_all",
+        count=len(stopped_ids),
+        tenant_id=(tenant_id or "").strip() or None,
+        project_id=str(project_id) if project_id else None,
+    )
+    return {
+        "data": {
+            "stopped_count": len(stopped_ids),
+            "agent_run_ids": stopped_ids,
+        },
+        "meta": {},
+    }
+
+
 @router.get("/agent-runs/{agent_run_id}")
 def admin_get_agent_run(
     agent_run_id: uuid.UUID,

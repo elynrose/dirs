@@ -343,6 +343,8 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
   const [projTenant, setProjTenant] = useState("");
   const [runTenant, setRunTenant] = useState("");
   const [runProject, setRunProject] = useState("");
+  const [runCancelBusyId, setRunCancelBusyId] = useState("");
+  const [runCancelAllBusy, setRunCancelAllBusy] = useState(false);
   const [jobTenant, setJobTenant] = useState("");
   const [jobStatus, setJobStatus] = useState("");
   const [entitlementDefs, setEntitlementDefs] = useState(null);
@@ -886,6 +888,67 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     [showToast],
   );
 
+  const cancelAdminAgentRun = useCallback(
+    async (runId) => {
+      const id = String(runId || "").trim();
+      if (!id) return;
+      setRunCancelBusyId(id);
+      setErr("");
+      try {
+        const r = await adminFetch(`/v1/admin/agent-runs/${encodeURIComponent(id)}/control`, {
+          method: "POST",
+          body: JSON.stringify({ action: "stop" }),
+        });
+        const b = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+        showToast?.("Cancel requested for that run", { type: "success" });
+        await loadTab();
+      } catch (e) {
+        const msg = formatUserFacingError(e);
+        setErr(msg);
+        showToast?.(msg, { type: "error" });
+      } finally {
+        setRunCancelBusyId("");
+      }
+    },
+    [loadTab, showToast],
+  );
+
+  const cancelAllAdminAgentRuns = useCallback(async () => {
+    const tid = runTenant.trim();
+    const pid = runProject.trim();
+    const filtered = Boolean(tid || pid);
+    const ok = window.confirm(
+      filtered
+        ? `Send stop to every queued / running / paused agent run${tid ? ` for workspace ${tid}` : ""}${pid ? ` for project ${pid}` : ""}?`
+        : "Send stop to EVERY queued / running / paused agent run on this platform (all workspaces). Continue?",
+    );
+    if (!ok) return;
+    setRunCancelAllBusy(true);
+    setErr("");
+    try {
+      const qs = new URLSearchParams();
+      if (tid) qs.set("tenant_id", tid);
+      if (pid) qs.set("project_id", pid);
+      const q = qs.toString();
+      const r = await adminFetch(`/v1/admin/agent-runs/cancel-all${q ? `?${q}` : ""}`, { method: "POST" });
+      const b = await parseJson(r);
+      if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
+      const n = Number(b?.data?.stopped_count);
+      showToast?.(
+        Number.isFinite(n) ? `Stop requested for ${n} run(s)` : "Cancel-all completed",
+        { type: "success" },
+      );
+      await loadTab();
+    } catch (e) {
+      const msg = formatUserFacingError(e);
+      setErr(msg);
+      showToast?.(msg, { type: "error" });
+    } finally {
+      setRunCancelAllBusy(false);
+    }
+  }, [runTenant, runProject, loadTab, showToast]);
+
   const lock = () => {
     setAdminKey("");
     setUnlocked(false);
@@ -1318,12 +1381,12 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
             <AdminProjectsTable data={list} onRefresh={loadTab} showToast={showToast} />
           ) : null}
           {tab === "runs" && list?.agent_runs ? (
-            <AdminGenericTable
+            <AdminAgentRunsTable
               rows={list.agent_runs}
-              columns={["id", "tenant_name", "project_id", "status", "created_at"]}
-              getCellTitle={(row, c) =>
-                c === "tenant_name" && row.tenant_id ? `Workspace id: ${row.tenant_id}` : undefined
-              }
+              onCancelRun={cancelAdminAgentRun}
+              cancelRunBusyId={runCancelBusyId}
+              onCancelAll={cancelAllAdminAgentRuns}
+              cancelAllBusy={runCancelAllBusy}
             />
           ) : null}
           {tab === "jobs" && list?.jobs ? (
@@ -1502,6 +1565,85 @@ function AdminStripePanel({ data, onRefresh, showToast }) {
 function adminColumnHeaderLabel(c) {
   if (c === "tenant_name") return "tenant";
   return c;
+}
+
+function agentRunStatusCancellable(st) {
+  return ["queued", "running", "paused"].includes(String(st || "").trim());
+}
+
+function AdminAgentRunsTable({ rows, onCancelRun, cancelRunBusyId, onCancelAll, cancelAllBusy }) {
+  const r = Array.isArray(rows) ? rows : [];
+  return (
+    <div>
+      <div className="action-row" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <button
+          type="button"
+          className="secondary"
+          disabled={cancelAllBusy}
+          onClick={() => void onCancelAll()}
+          title="POST /v1/admin/agent-runs/cancel-all — uses tenant / project filters when set; otherwise all active runs."
+        >
+          {cancelAllBusy ? "…" : "Cancel all (filtered)"}
+        </button>
+        <span className="subtle" style={{ fontSize: "0.78rem", maxWidth: 520, lineHeight: 1.4 }}>
+          Sends the same stop signal as per-row Cancel. Empty filters = every queued / running / paused run on the server.
+        </span>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="usage-table" style={{ fontSize: "0.82rem", width: "100%" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left" }}>id</th>
+              <th style={{ textAlign: "left" }}>tenant</th>
+              <th style={{ textAlign: "left" }}>project_id</th>
+              <th style={{ textAlign: "left" }}>status</th>
+              <th style={{ textAlign: "left" }}>created_at</th>
+              <th style={{ textAlign: "left" }}>actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {r.map((row) => {
+              const rid = row.id != null ? String(row.id) : "";
+              const canCancel = agentRunStatusCancellable(row.status);
+              return (
+                <tr key={rid || JSON.stringify(row)}>
+                  <td title={rid}>
+                    {rid.length > 14 ? <TruncId id={rid} /> : rid || "—"}
+                  </td>
+                  <td className={row.tenant_name ? undefined : "mono"} title={row.tenant_id ? `Workspace id: ${row.tenant_id}` : undefined}>
+                    {row.tenant_name || "—"}
+                  </td>
+                  <td className="mono" title={row.project_id}>
+                    {row.project_id != null && String(row.project_id).length > 14 ? (
+                      <TruncId id={String(row.project_id)} />
+                    ) : (
+                      row.project_id ?? "—"
+                    )}
+                  </td>
+                  <td className="mono">{row.status ?? "—"}</td>
+                  <td className="mono">{row.created_at ?? "—"}</td>
+                  <td>
+                    {canCancel ? (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={cancelRunBusyId === rid}
+                        onClick={() => void onCancelRun(rid)}
+                      >
+                        {cancelRunBusyId === rid ? "…" : "Cancel"}
+                      </button>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function AdminGenericTable({ rows, columns, getCellTitle }) {
