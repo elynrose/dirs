@@ -495,7 +495,7 @@ export function InspectorPipelinePanel({ p }) {
                           p.run.pipeline_control_json.stop_requested
                         ? " — worker exits after the current step."
                         : p.run.status === "succeeded" || p.run.status === "failed" || p.run.status === "blocked"
-                          ? " — project cards above refresh with the latest data."
+                          ? " — the project list above updates automatically; use Reload list if something looks stale."
                           : ""}
                   </p>
                 ) : p.agentRunId ? (

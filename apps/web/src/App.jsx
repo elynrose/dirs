@@ -1230,6 +1230,11 @@ export default function App() {
     500,
     Math.min(120_000, Number(appConfig.studio_job_poll_interval_ms) || 800),
   );
+  /** Background refresh for the project list (Project & story → Projects). */
+  const projectsListPollMs = useMemo(
+    () => Math.min(15_000, Math.max(2_500, jobPollIntervalMs * 3)),
+    [jobPollIntervalMs],
+  );
   const { job: charactersJob } = usePollJob(
     charactersJobId,
     Boolean(charactersJobId) && studioReady,
@@ -2484,7 +2489,8 @@ export default function App() {
     if (r.ok) setProjectCharacters(body.data?.characters || []);
   }, []);
 
-  const loadProjects = useCallback(async () => {
+  const loadProjects = useCallback(async (opts) => {
+    const silent = Boolean(opts && typeof opts === "object" && opts.silent);
     try {
       const r = await api("/v1/projects?limit=100");
       const body = await parseJson(r);
@@ -2492,25 +2498,29 @@ export default function App() {
         setProjects(body.data?.projects || []);
         return;
       }
-      setError(apiErrorMessage(body) || `Could not load projects (HTTP ${r.status}).`);
-      setProjects([]);
+      if (!silent) {
+        setError(apiErrorMessage(body) || `Could not load projects (HTTP ${r.status}).`);
+        setProjects([]);
+      }
     } catch (e) {
-      const net =
-        e instanceof TypeError || String(e).toLowerCase().includes("fetch") || String(e).includes("NetworkError");
-      const hint = String(e?.message || e || "").trim();
-      setError(
-        net
-          ? [
-              "Could not reach the API to load projects (network error before any HTTP response).",
-              hint ? `Details: ${hint}` : null,
-              "Check: (1) API is running on the host you expect. (2) If you set VITE_API_BASE_URL=http://127.0.0.1:8000 and open the Studio from another device or https://, the browser cannot reach that URL—leave VITE_API_BASE_URL unset and use the Vite/nginx same-origin /v1 proxy, or point it at a reachable API and set CORS_EXTRA_ORIGINS.",
-              "Electron: wait until Docker + API finish starting.",
-            ]
-              .filter(Boolean)
-              .join(" ")
-          : formatUserFacingError(e),
-      );
-      setProjects([]);
+      if (!silent) {
+        const net =
+          e instanceof TypeError || String(e).toLowerCase().includes("fetch") || String(e).includes("NetworkError");
+        const hint = String(e?.message || e || "").trim();
+        setError(
+          net
+            ? [
+                "Could not reach the API to load projects (network error before any HTTP response).",
+                hint ? `Details: ${hint}` : null,
+                "Check: (1) API is running on the host you expect. (2) If you set VITE_API_BASE_URL=http://127.0.0.1:8000 and open the Studio from another device or https://, the browser cannot reach that URL—leave VITE_API_BASE_URL unset and use the Vite/nginx same-origin /v1 proxy, or point it at a reachable API and set CORS_EXTRA_ORIGINS.",
+                "Electron: wait until Docker + API finish starting.",
+              ]
+                .filter(Boolean)
+                .join(" ")
+            : formatUserFacingError(e),
+        );
+        setProjects([]);
+      }
     }
   }, []);
 
@@ -3400,6 +3410,24 @@ export default function App() {
     loadGeminiTtsVoices,
     loadElevenlabsVoices,
   ]);
+
+  /** Live-updates project titles/status/phase in Project & story (and Chat rail list) without manual reload. */
+  useEffect(() => {
+    if (!studioReady) return undefined;
+    const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      void loadProjects({ silent: true });
+    };
+    const id = window.setInterval(tick, projectsListPollMs);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void loadProjects({ silent: true });
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [studioReady, loadProjects, projectsListPollMs]);
 
   useEffect(() => {
     if (activePage !== "usage") return;
