@@ -314,6 +314,36 @@ export function agentRunAutoGenerateSceneVideos(cfg) {
   return c.agent_run_auto_generate_scene_videos !== false;
 }
 
+/** Workspace default: generate scene stills in Auto / Hands-off full-video tail (explicit false turns off). */
+export function agentRunAutoGenerateSceneImages(cfg) {
+  const c = cfg && typeof cfg === "object" ? cfg : {};
+  return c.agent_run_auto_generate_scene_images !== false;
+}
+
+function _clampAutomationMinPerScene(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 1;
+  return Math.max(1, Math.min(10, Math.floor(v)));
+}
+
+export function agentRunMinSceneImages(cfg) {
+  return _clampAutomationMinPerScene(cfg?.agent_run_min_scene_images);
+}
+
+export function agentRunMinSceneVideos(cfg) {
+  return _clampAutomationMinPerScene(cfg?.agent_run_min_scene_videos);
+}
+
+/** Sent on full-video / unattended agent runs — worker uses these for the scene media tail. */
+export function sceneAutomationMediaPipelineOptions(cfg) {
+  return {
+    auto_generate_scene_images: agentRunAutoGenerateSceneImages(cfg),
+    auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(cfg),
+    min_scene_images: agentRunMinSceneImages(cfg),
+    min_scene_videos: agentRunMinSceneVideos(cfg),
+  };
+}
+
 /**
  * Map Settings → Providers into `brief` preferred_* fields for POST /v1/agent-runs (new projects).
  * This is the production path: real image/video/speech/text providers from workspace Settings.

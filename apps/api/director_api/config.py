@@ -422,6 +422,9 @@ class Settings(BaseSettings):
     agent_run_scene_repair_max_rounds: int = Field(default=2, ge=0, le=8)
     agent_run_chapter_repair_max_rounds: int = Field(default=1, ge=0, le=5)
     agent_run_auto_generate_scene_videos: bool = False
+    agent_run_auto_generate_scene_images: bool = True
+    agent_run_min_scene_images: int = Field(default=1, ge=1, le=10)
+    agent_run_min_scene_videos: int = Field(default=1, ge=1, le=10)
     openai_agents_parallel: bool = True
     agent_oversight_llm_enabled: bool = True
 

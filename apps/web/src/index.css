@@ -1507,6 +1507,27 @@ h3 {
   word-break: break-word;
 }
 
+.brief-automate-options-row--media {
+  align-items: center;
+}
+
+.brief-automate-option--num {
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.brief-automate-option--num input[type="number"] {
+  width: 3.25rem;
+  padding: 4px 6px;
+  font-size: 0.78rem;
+}
+
+.brief-automate-option__num-label {
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
 .brief-run-automate-row {
   margin-top: 8px;
   margin-bottom: 0;

@@ -476,7 +476,11 @@ def list_music_beds(
 ) -> dict:
     _project_or_404(db, settings, project_id)
     tenant_ok = MusicBed.tenant_id == settings.default_tenant_id
-    if auth.user_id:
+    # Legacy / self-hosted (auth off): single operator — show every bed in the tenant in every project's picker.
+    # SaaS / signed in: this project's beds plus the current user's library (uploads may use project_id NULL).
+    if not settings.director_auth_enabled:
+        scope = True
+    elif auth.user_id:
         try:
             uid = int(str(auth.user_id).strip())
         except (ValueError, TypeError):
@@ -517,7 +521,7 @@ def create_music_bed(
     mb = MusicBed(
         id=uuid.uuid4(),
         tenant_id=settings.default_tenant_id,
-        project_id=project_id,
+        project_id=None if starter_uid is not None else project_id,
         uploaded_by_user_id=starter_uid,
         title=body.title[:500],
         storage_url=body.storage_url,
@@ -599,15 +603,18 @@ async def upload_music_bed_file(
     if ext not in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".webm"):
         ext = ".mp3"
     storage = FilesystemStorage(settings.local_storage_root)
-    key = f"music_beds/{project_id}/{uuid.uuid4().hex}{ext}"
-    ct = file.content_type or ("audio/mpeg" if ext == ".mp3" else "application/octet-stream")
-    url = storage.put_bytes(key, raw, content_type=ct)
     starter_uid: int | None = None
     if auth.user_id:
         try:
             starter_uid = int(str(auth.user_id).strip())
         except (ValueError, TypeError):
             starter_uid = None
+    if starter_uid is not None:
+        key = f"music_beds/user/{starter_uid}/{uuid.uuid4().hex}{ext}"
+    else:
+        key = f"music_beds/{project_id}/{uuid.uuid4().hex}{ext}"
+    ct = file.content_type or ("audio/mpeg" if ext == ".mp3" else "application/octet-stream")
+    url = storage.put_bytes(key, raw, content_type=ct)
     mb = MusicBed(
         id=uuid.uuid4(),
         tenant_id=settings.default_tenant_id,

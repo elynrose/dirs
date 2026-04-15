@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { EditorCardColumn } from "./EditorCard.jsx";
 import { CriticReportIndexList } from "./CriticReportIndex.jsx";
-import { agentRunAutoGenerateSceneVideos } from "../lib/constants.js";
+import {
+  agentRunAutoGenerateSceneImages,
+  agentRunAutoGenerateSceneVideos,
+  agentRunMinSceneImages,
+  agentRunMinSceneVideos,
+} from "../lib/constants.js";
 import { summarizeAgentRunFailure } from "../lib/apiHelpers.js";
 
 // ---------------------------------------------------------------------------
@@ -455,9 +460,9 @@ export function InspectorPipelinePanel({ p }) {
                 ) : null}
                 {(p.pipelineMode === "auto" || p.pipelineMode === "unattended") && p.projectId ? (
                   <div
-                    className="brief-automate-options-row"
+                    className="brief-automate-options-row brief-automate-options-row--media"
                     role="group"
-                    aria-label="Rewrite scenes and generate videos"
+                    aria-label="Scene automation media"
                   >
                     <label
                       className="subtle brief-automate-option"
@@ -472,7 +477,33 @@ export function InspectorPipelinePanel({ p }) {
                     </label>
                     <label
                       className="subtle brief-automate-option"
-                      title="When enabled, runs that go through final video also generate a scene video for each scene missing one (uses your workspace video provider). Saved to Settings. Default is on until you turn it off in Settings."
+                      title="Queue scene still generations in the full-video tail (image provider). Saved to workspace Settings."
+                    >
+                      <input
+                        type="checkbox"
+                        checked={agentRunAutoGenerateSceneImages(p.appConfig)}
+                        disabled={Boolean(p.settingsBusy || p.busy)}
+                        onChange={(e) => void p.patchWorkspaceConfig({ agent_run_auto_generate_scene_images: e.target.checked })}
+                      />
+                      <span>Stills per scene</span>
+                    </label>
+                    <label className="subtle brief-automate-option brief-automate-option--num" title="Minimum succeeded still assets per scene (1–10).">
+                      <span className="brief-automate-option__num-label">Min stills</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={agentRunMinSceneImages(p.appConfig)}
+                        disabled={Boolean(p.settingsBusy || p.busy) || !agentRunAutoGenerateSceneImages(p.appConfig)}
+                        onChange={(e) => {
+                          const n = Math.min(10, Math.max(1, Number.parseInt(e.target.value, 10) || 1));
+                          void p.patchWorkspaceConfig({ agent_run_min_scene_images: n });
+                        }}
+                      />
+                    </label>
+                    <label
+                      className="subtle brief-automate-option"
+                      title="When enabled, full-video automation also generates scene video clips (video provider). Saved to Settings."
                     >
                       <input
                         type="checkbox"
@@ -480,7 +511,21 @@ export function InspectorPipelinePanel({ p }) {
                         disabled={Boolean(p.settingsBusy || p.busy)}
                         onChange={(e) => void p.patchWorkspaceConfig({ agent_run_auto_generate_scene_videos: e.target.checked })}
                       />
-                      <span>Generate videos</span>
+                      <span>Clips per scene</span>
+                    </label>
+                    <label className="subtle brief-automate-option brief-automate-option--num" title="Minimum succeeded video assets per scene (1–10).">
+                      <span className="brief-automate-option__num-label">Min clips</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={agentRunMinSceneVideos(p.appConfig)}
+                        disabled={Boolean(p.settingsBusy || p.busy) || !agentRunAutoGenerateSceneVideos(p.appConfig)}
+                        onChange={(e) => {
+                          const n = Math.min(10, Math.max(1, Number.parseInt(e.target.value, 10) || 1));
+                          void p.patchWorkspaceConfig({ agent_run_min_scene_videos: n });
+                        }}
+                      />
                     </label>
                   </div>
                 ) : null}

@@ -68,6 +68,11 @@ def test_normalize_tail_resume_skips_video_when_disabled() -> None:
     assert po.normalize_tail_resume("auto_videos", auto_scene_videos=True) == "auto_videos"
 
 
+def test_normalize_tail_resume_skips_images_when_disabled() -> None:
+    assert po.normalize_tail_resume("auto_images", auto_scene_videos=True, auto_scene_images=False) == "auto_videos"
+    assert po.normalize_tail_resume("auto_images", auto_scene_videos=False, auto_scene_images=False) == "auto_narration"
+
+
 def test_tail_resume_from_oversight_includes_auto_characters() -> None:
     assert po.tail_resume_from_oversight("auto_characters") == "auto_characters"
     assert po.tail_resume_from_oversight("auto_images") == "auto_images"

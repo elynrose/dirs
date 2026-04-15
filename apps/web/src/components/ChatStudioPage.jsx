@@ -5,7 +5,7 @@ import { parseJson, apiErrorMessage, formatUserFacingError } from "../lib/apiHel
 import {
   DEFAULT_NARRATION_PRESET_ID,
   RUN_STEP_LABEL,
-  agentRunAutoGenerateSceneVideos,
+  sceneAutomationMediaPipelineOptions,
   briefPreferredMediaProvidersFromAppConfig,
 } from "../lib/constants.js";
 
@@ -518,11 +518,27 @@ export function ChatStudioPage({
   ]);
 
   const restoredSelectionRef = useRef(false);
+  const projectsRef = useRef(projects);
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+
+  /** Which project rows exist (ids only). Live list polls change ``projects`` every tick; key only changes when ids are added/removed. */
+  const projectsListIdentityKey = useMemo(() => {
+    if (!Array.isArray(projects) || projects.length === 0) return "";
+    return projects
+      .map((p) => String(p.id))
+      .filter((id) => id && /^[0-9a-f-]{36}$/i.test(id))
+      .sort()
+      .join("|");
+  }, [projects]);
+
   /** Prefer the main Studio ``projectId``; otherwise one-shot restore from Chat’s last-saved id. */
   useEffect(() => {
-    if (!Array.isArray(projects) || projects.length === 0) return;
+    const list = projectsRef.current;
+    if (!Array.isArray(list) || list.length === 0) return;
     const sid = String(studioProjectId || "").trim();
-    const studioOk = Boolean(sid && /^[0-9a-f-]{36}$/i.test(sid) && projects.some((p) => String(p.id) === sid));
+    const studioOk = Boolean(sid && /^[0-9a-f-]{36}$/i.test(sid) && list.some((p) => String(p.id) === sid));
 
     if (studioOk) {
       if (sid !== selectedProjectId) void loadProjectIntoComposer(sid);
@@ -539,10 +555,10 @@ export function ChatStudioPage({
     }
     const pid = last.trim();
     if (!pid || !/^[0-9a-f-]{36}$/i.test(pid)) return;
-    if (!projects.some((p) => String(p.id) === pid)) return;
+    if (!list.some((p) => String(p.id) === pid)) return;
     restoredSelectionRef.current = true;
     void loadProjectIntoComposer(pid);
-  }, [projects, studioProjectId, selectedProjectId, loadProjectIntoComposer]);
+  }, [projectsListIdentityKey, studioProjectId, selectedProjectId, loadProjectIntoComposer]);
 
   useEffect(() => {
     const el = setupThreadRef.current;
@@ -690,7 +706,7 @@ export function ChatStudioPage({
       through: "full_video",
       unattended: true,
       narration_granularity: "scene",
-      auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(appConfig),
+      ...sceneAutomationMediaPipelineOptions(appConfig),
     };
   }, [appConfig]);
 

@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from celery.exceptions import SoftTimeLimitExceeded
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from director_api.agents import phase2_llm, phase3_llm, phase4_llm
@@ -1756,6 +1756,32 @@ def _scene_has_succeeded_image(db, scene_id: uuid.UUID) -> bool:
     return int(n or 0) > 0
 
 
+def _scene_succeeded_image_count(db, scene_id: uuid.UUID) -> int:
+    n = db.scalar(
+        select(func.count())
+        .select_from(Asset)
+        .where(
+            Asset.scene_id == scene_id,
+            Asset.asset_type == "image",
+            Asset.status == "succeeded",
+        )
+    )
+    return int(n or 0)
+
+
+def _scene_succeeded_video_count(db, scene_id: uuid.UUID) -> int:
+    n = db.scalar(
+        select(func.count())
+        .select_from(Asset)
+        .where(
+            Asset.scene_id == scene_id,
+            Asset.asset_type == "video",
+            Asset.status == "succeeded",
+        )
+    )
+    return int(n or 0)
+
+
 def _scene_has_succeeded_video(db, scene_id: uuid.UUID) -> bool:
     n = db.scalar(
         select(func.count())
@@ -1945,11 +1971,38 @@ def _run_agent_full_pipeline_tail(
         auto_scene_videos_pre = bool(run_opts_pre.get("auto_generate_scene_videos"))
     else:
         auto_scene_videos_pre = bool(getattr(settings, "agent_run_auto_generate_scene_videos", False))
+    if "auto_generate_scene_images" in run_opts_pre:
+        auto_scene_images_pre = bool(run_opts_pre.get("auto_generate_scene_images"))
+    else:
+        auto_scene_images_pre = bool(getattr(settings, "agent_run_auto_generate_scene_images", True))
+
+    def _clamp_min_scene_media(n: Any) -> int:
+        try:
+            return max(1, min(10, int(n)))
+        except (TypeError, ValueError):
+            return 1
+
+    min_scene_images = _clamp_min_scene_media(
+        run_opts_pre.get("min_scene_images", getattr(settings, "agent_run_min_scene_images", 1))
+    )
+    min_scene_videos = _clamp_min_scene_media(
+        run_opts_pre.get("min_scene_videos", getattr(settings, "agent_run_min_scene_videos", 1))
+    )
+
     tr = pipeline_oversight_svc.normalize_tail_resume(
         tail_resume_from,
         auto_scene_videos=auto_scene_videos_pre,
+        auto_scene_images=auto_scene_images_pre,
     )
-    hard_floor = pipeline_oversight_svc.compute_hard_tail_floor(db, pid, [s.id for s in all_scenes])
+    hard_floor = pipeline_oversight_svc.compute_hard_tail_floor(
+        db,
+        pid,
+        [s.id for s in all_scenes],
+        auto_generate_scene_images=auto_scene_images_pre,
+        auto_generate_scene_videos=auto_scene_videos_pre,
+        min_scene_images=min_scene_images,
+        min_scene_videos=min_scene_videos,
+    )
     tr = pipeline_oversight_svc.clamp_tail_resume_to_hard_floor(tr, hard_floor)
 
     # Character bible (LLM) — image/video prompts use consistency prefixes from ProjectCharacter rows.
@@ -1999,16 +2052,10 @@ def _run_agent_full_pipeline_tail(
     _AUTO_SCENE_MEDIA_MAX_PASSES = 5
 
     def _auto_image_pass(target_scenes: list[Scene]) -> list[uuid.UUID] | None:
-        """Return scene ids still missing a succeeded image after this pass; None if user stopped."""
-        failed_ids: list[uuid.UUID] = []
-        have_vis = _scene_ids_with_succeeded_visual_media(db, [s.id for s in target_scenes])
-        for sc in target_scenes:
-            if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
-                return None
-            if sc.id in have_vis and not force_regen_images:
-                _auto_pipeline_approve_scene_image(db, sc)
-                db.commit()
-                continue
+        """Return scene ids still missing enough succeeded stills after this pass; None if user stopped."""
+
+        def _gen_one_image(sc: Scene) -> str:
+            """ok | fail | stop"""
             j_img = _synthetic_job(
                 tenant_id=tenant_id,
                 project_id=pid,
@@ -2028,25 +2075,52 @@ def _run_agent_full_pipeline_tail(
                     scene_id=str(sc.id),
                     error=str(e)[:800],
                 )
-                failed_ids.append(sc.id)
-                db.commit()
-                continue
+                return "fail"
             if isinstance(out, dict) and out.get("stopped"):
-                return None
+                return "stop"
             aid_s = out.get("asset_id")
             if aid_s:
                 ast = db.get(Asset, uuid.UUID(str(aid_s)))
                 if ast and ast.status == "succeeded" and ast.approved_at is None:
                     ast.approved_at = datetime.now(timezone.utc)
+            return "ok"
+
+        failed_ids: list[uuid.UUID] = []
+        for sc in target_scenes:
+            if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                return None
+            scene_failed = False
+            while _scene_succeeded_image_count(db, sc.id) < min_scene_images:
+                if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                    return None
+                g = _gen_one_image(sc)
+                if g == "stop":
+                    return None
+                if g == "fail":
+                    failed_ids.append(sc.id)
+                    scene_failed = True
+                    break
+                db.commit()
+            if scene_failed:
+                continue
+            if force_regen_images:
+                if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                    return None
+                g = _gen_one_image(sc)
+                if g == "stop":
+                    return None
+                if g == "fail":
+                    failed_ids.append(sc.id)
+                    db.commit()
+                    continue
+                db.commit()
             _auto_pipeline_approve_scene_image(db, sc)
-            if not _scene_has_succeeded_image(db, sc.id):
+            if _scene_succeeded_image_count(db, sc.id) < min_scene_images:
                 failed_ids.append(sc.id)
-            else:
-                have_vis.add(sc.id)
             db.commit()
         return failed_ids
 
-    if pipeline_oversight_svc.tail_should_run_with_force("auto_images", tr, fs):
+    if pipeline_oversight_svc.tail_should_run_with_force("auto_images", tr, fs) and auto_scene_images_pre:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
             run.current_step = "auto_images"
@@ -2092,7 +2166,12 @@ def _run_agent_full_pipeline_tail(
     else:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
-            _append_event(run, "auto_images", "skipped", reason="oversight_tail_resume")
+            skip_reason = (
+                "auto_generate_scene_images_false"
+                if not auto_scene_images_pre
+                else "oversight_tail_resume"
+            )
+            _append_event(run, "auto_images", "skipped", reason=skip_reason)
         db.commit()
 
     auto_scene_videos = auto_scene_videos_pre
@@ -2109,11 +2188,8 @@ def _run_agent_full_pipeline_tail(
 
         def _auto_video_pass(target_scenes: list[Scene]) -> list[uuid.UUID] | None:
             failed_v: list[uuid.UUID] = []
-            for sc in target_scenes:
-                if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
-                    return None
-                if _scene_has_succeeded_video(db, sc.id) and not force_regen_videos:
-                    continue
+
+            def _gen_one_video(sc: Scene) -> str:
                 jv = _synthetic_job(
                     tenant_id=tenant_id,
                     project_id=pid,
@@ -2133,14 +2209,42 @@ def _run_agent_full_pipeline_tail(
                         scene_id=str(sc.id),
                         error=str(e)[:800],
                     )
-                    failed_v.append(sc.id)
-                    db.commit()
-                    continue
+                    return "fail"
                 if isinstance(vout, dict) and vout.get("stopped"):
+                    return "stop"
+                return "ok"
+
+            for sc in target_scenes:
+                if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
                     return None
-                db.commit()
-                if not _scene_has_succeeded_video(db, sc.id) and sc.id not in failed_v:
+                scene_failed = False
+                while _scene_succeeded_video_count(db, sc.id) < min_scene_videos:
+                    if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                        return None
+                    g = _gen_one_video(sc)
+                    if g == "stop":
+                        return None
+                    if g == "fail":
+                        failed_v.append(sc.id)
+                        scene_failed = True
+                        break
+                    db.commit()
+                if scene_failed:
+                    continue
+                if force_regen_videos:
+                    if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                        return None
+                    g = _gen_one_video(sc)
+                    if g == "stop":
+                        return None
+                    if g == "fail":
+                        failed_v.append(sc.id)
+                        db.commit()
+                        continue
+                    db.commit()
+                if _scene_succeeded_video_count(db, sc.id) < min_scene_videos and sc.id not in failed_v:
                     failed_v.append(sc.id)
+                db.commit()
             return failed_v
 
         vid_failed = _auto_video_pass(all_scenes)
@@ -2513,7 +2617,12 @@ def _run_agent_full_pipeline_tail(
         return False
     db.refresh(tv)
     _attach_latest_music_bed_if_missing(
-        db, tv, tenant_id=tenant_id, project_id=pid, storage_root=storage_root_pre
+        db,
+        tv,
+        tenant_id=tenant_id,
+        project_id=pid,
+        storage_root=storage_root_pre,
+        director_auth_enabled=bool(getattr(settings, "director_auth_enabled", True)),
     )
     db.refresh(tv)
     run = db.get(AgentRun, agent_run_uuid)
@@ -2737,6 +2846,10 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                     auto_sv_pipeline = bool(opts_raw.get("auto_generate_scene_videos"))
                 else:
                     auto_sv_pipeline = bool(getattr(settings, "agent_run_auto_generate_scene_videos", False))
+                if isinstance(opts_raw, dict) and "auto_generate_scene_images" in opts_raw:
+                    auto_si_pipeline = bool(opts_raw.get("auto_generate_scene_images"))
+                else:
+                    auto_si_pipeline = bool(getattr(settings, "agent_run_auto_generate_scene_images", True))
 
                 if rerun_from and rerun_from in pipeline_oversight_svc.OVERSIGHT_STEP_RANK:
                     cont = True
@@ -2744,6 +2857,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                         tail_resume = pipeline_oversight_svc.normalize_tail_resume(
                             rerun_from,
                             auto_scene_videos=auto_sv_pipeline,
+                            auto_scene_images=auto_si_pipeline,
                         )
                     else:
                         tail_resume = pipeline_oversight_svc.tail_resume_from_oversight(oversight_earliest)
@@ -2757,6 +2871,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                     tail_resume = pipeline_oversight_svc.normalize_tail_resume(
                         pipeline_floor,
                         auto_scene_videos=auto_sv_pipeline,
+                        auto_scene_images=auto_si_pipeline,
                     )
 
                 # Outline can use deterministic `chapter_outline_from_director` without API keys; chapter
@@ -5621,8 +5736,12 @@ def _attach_latest_music_bed_if_missing(
     tenant_id: str,
     project_id: uuid.UUID,
     storage_root: Path,
+    director_auth_enabled: bool = True,
 ) -> None:
-    """If the timeline has no ``music_bed_id``, attach the newest *usable* project bed.
+    """If the timeline has no ``music_bed_id``, attach the newest *usable* bed.
+
+    Scope matches ``GET /v1/projects/{id}/music-beds``: project-local beds plus, when auth is on,
+    the latest agent run's user's library uploads; when auth is off, any bed in the tenant.
 
     Usable = non-empty ``license_or_source_ref`` and ``storage_url`` resolving to a readable file
     under ``storage_root``. Skips beds with missing files so final mux always has audio on disk.
@@ -5630,16 +5749,22 @@ def _attach_latest_music_bed_if_missing(
     tj = tv.timeline_json if isinstance(tv.timeline_json, dict) else {}
     if tj.get("music_bed_id"):
         return
-    rows = list(
-        db.scalars(
-            select(MusicBed)
-            .where(
-                MusicBed.project_id == project_id,
-                MusicBed.tenant_id == tenant_id,
+    stmt = select(MusicBed).where(MusicBed.tenant_id == tenant_id)
+    if director_auth_enabled:
+        uid = db.scalar(
+            select(AgentRun.started_by_user_id)
+            .where(AgentRun.project_id == project_id, AgentRun.tenant_id == tenant_id)
+            .order_by(AgentRun.created_at.desc())
+            .limit(1)
+        )
+        if uid is not None:
+            stmt = stmt.where(
+                or_(MusicBed.project_id == project_id, MusicBed.uploaded_by_user_id == uid)
             )
-            .order_by(MusicBed.created_at.desc())
-        ).all()
-    )
+        else:
+            stmt = stmt.where(MusicBed.project_id == project_id)
+    stmt = stmt.order_by(MusicBed.created_at.desc())
+    rows = list(db.scalars(stmt).all())
     chosen: MusicBed | None = None
     for mb_row in rows:
         if not (mb_row.license_or_source_ref or "").strip():
@@ -5703,7 +5828,12 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
 
     db.refresh(tv)
     _attach_latest_music_bed_if_missing(
-        db, tv, tenant_id=tenant, project_id=project.id, storage_root=storage_root
+        db,
+        tv,
+        tenant_id=tenant,
+        project_id=project.id,
+        storage_root=storage_root,
+        director_auth_enabled=bool(getattr(settings, "director_auth_enabled", True)),
     )
     db.refresh(tv)
 

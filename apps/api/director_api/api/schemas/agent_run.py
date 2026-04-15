@@ -22,7 +22,8 @@ class AgentRunCreate(BaseModel):
     # Server-side parsing treats unattended as full depth: missing ``through`` defaults to full_video, and ``through: critique``
     # is coerced to full_video so hands-off runs do not stop after story vs research.
     # force_replan_scenes: replan every scripted chapter even if workflow_phase already has scenes_planned.
-    # auto_generate_scene_videos: when true and the run reaches the full-video tail, generate scene videos for scenes missing one
+    # auto_generate_scene_videos / auto_generate_scene_images: when true in the full-video tail, generate that media type per scene
+    # until min_scene_videos / min_scene_images succeeded assets exist (1–10; default 1). Omit to use workspace Settings.
     # (overrides workspace default for this run if set).
     # rerun_from_step: optional canonical phase to re-execute (implies continue_from_existing); merges with oversight so earlier
     # structural gaps still run first. Values: director, research, outline, chapters, scenes,

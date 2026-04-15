@@ -272,10 +272,15 @@ def normalize_tail_resume(
     resume_from: str | None,
     *,
     auto_scene_videos: bool,
+    auto_scene_images: bool = True,
 ) -> str | None:
-    """If resuming at auto_videos but scene videos are disabled, jump to narration."""
+    """If resuming at a disabled tail step, jump to the next enabled step (or narration)."""
     if not resume_from:
         return None
+    if resume_from == "auto_images" and not auto_scene_images:
+        if auto_scene_videos:
+            return "auto_videos"
+        return "auto_narration"
     if resume_from == "auto_videos" and not auto_scene_videos:
         return "auto_narration"
     return resume_from
@@ -309,8 +314,63 @@ def scene_ids_with_succeeded_visual_media(db: Session, scene_ids: list[uuid.UUID
     return {sid for sid in rows if sid is not None}
 
 
-def compute_hard_tail_floor(db: Session, project_id: uuid.UUID, scene_ids: list[uuid.UUID]) -> str | None:
-    """Earliest tail step that must still run given DB facts (characters, then scene stills). LLM resume cannot skip past this."""
+def _per_scene_succeeded_asset_counts(
+    db: Session, scene_ids: list[uuid.UUID]
+) -> tuple[dict[uuid.UUID, int], dict[uuid.UUID, int]]:
+    """Succeeded image / video asset counts per scene id."""
+    if not scene_ids:
+        return {}, {}
+    img: dict[uuid.UUID, int] = {}
+    vid: dict[uuid.UUID, int] = {}
+    for asset_type, out in (("image", img), ("video", vid)):
+        rows = db.execute(
+            select(Asset.scene_id, func.count())
+            .where(
+                Asset.scene_id.in_(scene_ids),
+                Asset.asset_type == asset_type,
+                Asset.status == "succeeded",
+            )
+            .group_by(Asset.scene_id)
+        ).all()
+        for sid, cnt in rows:
+            if sid is not None:
+                out[sid] = int(cnt or 0)
+    return img, vid
+
+
+def compute_tail_media_floor(
+    scene_ids: list[uuid.UUID],
+    img_counts: dict[uuid.UUID, int],
+    vid_counts: dict[uuid.UUID, int],
+    *,
+    auto_generate_scene_images: bool = True,
+    auto_generate_scene_videos: bool = True,
+    min_scene_images: int = 1,
+    min_scene_videos: int = 1,
+) -> str | None:
+    """Earliest media tail step still incomplete (pure; used by tests)."""
+    mi = max(1, min(10, int(min_scene_images)))
+    mv = max(1, min(10, int(min_scene_videos)))
+    for sid in scene_ids:
+        if auto_generate_scene_images and int(img_counts.get(sid, 0)) < mi:
+            return "auto_images"
+    for sid in scene_ids:
+        if auto_generate_scene_videos and int(vid_counts.get(sid, 0)) < mv:
+            return "auto_videos"
+    return None
+
+
+def compute_hard_tail_floor(
+    db: Session,
+    project_id: uuid.UUID,
+    scene_ids: list[uuid.UUID],
+    *,
+    auto_generate_scene_images: bool = True,
+    auto_generate_scene_videos: bool = True,
+    min_scene_images: int = 1,
+    min_scene_videos: int = 1,
+) -> str | None:
+    """Earliest tail step that must still run given DB facts. LLM resume cannot skip past this."""
     n_chars = (
         db.scalar(select(func.count()).select_from(ProjectCharacter).where(ProjectCharacter.project_id == project_id)) or 0
     )
@@ -318,11 +378,16 @@ def compute_hard_tail_floor(db: Session, project_id: uuid.UUID, scene_ids: list[
         return "auto_characters"
     if not scene_ids:
         return None
-    have = scene_ids_with_succeeded_visual_media(db, scene_ids)
-    missing = [sid for sid in scene_ids if sid not in have]
-    if missing:
-        return "auto_images"
-    return None
+    img_c, vid_c = _per_scene_succeeded_asset_counts(db, scene_ids)
+    return compute_tail_media_floor(
+        scene_ids,
+        img_c,
+        vid_c,
+        auto_generate_scene_images=auto_generate_scene_images,
+        auto_generate_scene_videos=auto_generate_scene_videos,
+        min_scene_images=min_scene_images,
+        min_scene_videos=min_scene_videos,
+    )
 
 
 def clamp_tail_resume_to_hard_floor(tail_resume: str | None, floor: str | None) -> str | None:

@@ -51,6 +51,10 @@ import {
   PHASE5_TIMELINE_UUID_RE,
   EVENT_META_LABELS,
   agentRunAutoGenerateSceneVideos,
+  agentRunAutoGenerateSceneImages,
+  agentRunMinSceneImages,
+  agentRunMinSceneVideos,
+  sceneAutomationMediaPipelineOptions,
   briefPreferredMediaProvidersFromAppConfig,
 } from "./lib/constants.js";
 import { usePollJob } from "./hooks/usePollJob.js";
@@ -125,6 +129,21 @@ function partitionFalVideoModels(models) {
     (falVideoEndpointKind(m) === "i2v" ? i2v : t2v).push(m);
   }
   return { t2v, i2v };
+}
+
+/** Compare GET /v1/projects payloads so silent polls skip setState when nothing changed (avoids full-app re-renders). */
+function projectsPollSnapshotFromRows(rows) {
+  if (!Array.isArray(rows)) return "[]";
+  return JSON.stringify(
+    [...rows]
+      .map((p) => ({
+        id: String(p?.id ?? ""),
+        title: String(p?.title ?? ""),
+        status: String(p?.status ?? ""),
+        workflow_phase: String(p?.workflow_phase ?? ""),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  );
 }
 
 /** When the field is typed manually and not in catalog, infer from endpoint id. */
@@ -1043,6 +1062,7 @@ const UI_BOOT = initialBootFromDirectorSession();
 export default function App() {
   const [activePage, setActivePage] = useState(() => readDirectorUiSession()?.activePage ?? "editor");
   const [projects, setProjects] = useState([]);
+  const lastProjectsPollSnapshotRef = useRef("");
   const [appConfig, setAppConfig] = useState({});
   /** Optional secret keys filled from platform workspace (GET /v1/settings); UI explains instead of showing values. */
   const [platformCredentialKeysInherited, setPlatformCredentialKeysInherited] = useState([]);
@@ -2495,11 +2515,18 @@ export default function App() {
       const r = await api("/v1/projects?limit=100");
       const body = await parseJson(r);
       if (r.ok) {
-        setProjects(body.data?.projects || []);
+        const next = body.data?.projects || [];
+        const snap = projectsPollSnapshotFromRows(next);
+        if (silent && snap === lastProjectsPollSnapshotRef.current) {
+          return;
+        }
+        lastProjectsPollSnapshotRef.current = snap;
+        setProjects(next);
         return;
       }
       if (!silent) {
         setError(apiErrorMessage(body) || `Could not load projects (HTTP ${r.status}).`);
+        lastProjectsPollSnapshotRef.current = projectsPollSnapshotFromRows([]);
         setProjects([]);
       }
     } catch (e) {
@@ -2519,6 +2546,7 @@ export default function App() {
                 .join(" ")
             : formatUserFacingError(e),
         );
+        lastProjectsPollSnapshotRef.current = projectsPollSnapshotFromRows([]);
         setProjects([]);
       }
     }
@@ -3979,13 +4007,13 @@ export default function App() {
                 through: "full_video",
                 unattended: true,
                 narration_granularity: "scene",
-                auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(appConfig),
+                ...sceneAutomationMediaPipelineOptions(appConfig),
               }
             : {
                 through: autoThrough,
                 ...(autoThrough === "full_video"
                   ? {
-                      auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(appConfig),
+                      ...sceneAutomationMediaPipelineOptions(appConfig),
                       narration_granularity: "scene",
                     }
                   : {}),
@@ -4052,7 +4080,7 @@ export default function App() {
             ...(forceReplanScenesOnContinue ? { force_replan_scenes: true } : {}),
             ...(pipelineMode === "unattended" || (pipelineMode === "auto" && autoThrough === "full_video")
               ? {
-                  auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(appConfig),
+                  ...sceneAutomationMediaPipelineOptions(appConfig),
                   narration_granularity: "scene",
                 }
               : {}),
@@ -4124,7 +4152,7 @@ export default function App() {
             ...(pipelineMode === "unattended" ? { unattended: true } : {}),
             ...(through === "full_video" || pipelineMode === "unattended"
               ? {
-                  auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(appConfig),
+                  ...sceneAutomationMediaPipelineOptions(appConfig),
                   narration_granularity: "scene",
                 }
               : {}),
@@ -4153,7 +4181,7 @@ export default function App() {
     restartAutomationThrough,
     restartRerunWebResearch,
     pipelineMode,
-    appConfig.agent_run_auto_generate_scene_videos,
+    appConfig,
     loadPipelineStatus,
   ]);
 
@@ -4200,7 +4228,7 @@ export default function App() {
               ...(pipelineMode === "unattended" ? { unattended: true } : {}),
               ...(through === "full_video" || pipelineMode === "unattended"
                 ? {
-                    auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(appConfig),
+                    ...sceneAutomationMediaPipelineOptions(appConfig),
                     narration_granularity: "scene",
                   }
                 : {}),
@@ -4226,7 +4254,7 @@ export default function App() {
       projectId,
       pipelineMode,
       autoThrough,
-      appConfig.agent_run_auto_generate_scene_videos,
+      appConfig,
       loadPipelineStatus,
     ],
   );
@@ -7199,6 +7227,52 @@ export default function App() {
                 setAppConfig((p) => ({ ...p, agent_run_chapter_critique_max_rounds: n }));
               }}
             />
+            <label htmlFor="cfg-auto-scene-images" style={{ marginTop: 14, textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
+              <input
+                id="cfg-auto-scene-images"
+                type="checkbox"
+                checked={agentRunAutoGenerateSceneImages(appConfig)}
+                onChange={(e) =>
+                  setAppConfig((p) => ({ ...p, agent_run_auto_generate_scene_images: e.target.checked }))
+                }
+                style={{ width: "auto", marginRight: 8 }}
+              />
+              Auto / Hands-off: generate scene stills (preview images per scene in the media tail)
+            </label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "12px 24px", alignItems: "center", marginTop: 8 }}>
+              <label htmlFor="cfg-min-scene-images" style={{ textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
+                Min stills per scene (1–10)
+                <input
+                  id="cfg-min-scene-images"
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={agentRunMinSceneImages(appConfig)}
+                  disabled={!agentRunAutoGenerateSceneImages(appConfig)}
+                  onChange={(e) => {
+                    const n = Math.min(10, Math.max(1, Number.parseInt(e.target.value, 10) || 1));
+                    setAppConfig((p) => ({ ...p, agent_run_min_scene_images: n }));
+                  }}
+                  style={{ marginLeft: 8, width: "3.5rem" }}
+                />
+              </label>
+              <label htmlFor="cfg-min-scene-videos" style={{ textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
+                Min clips per scene (1–10)
+                <input
+                  id="cfg-min-scene-videos"
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={agentRunMinSceneVideos(appConfig)}
+                  disabled={!agentRunAutoGenerateSceneVideos(appConfig)}
+                  onChange={(e) => {
+                    const n = Math.min(10, Math.max(1, Number.parseInt(e.target.value, 10) || 1));
+                    setAppConfig((p) => ({ ...p, agent_run_min_scene_videos: n }));
+                  }}
+                  style={{ marginLeft: 8, width: "3.5rem" }}
+                />
+              </label>
+            </div>
             <label htmlFor="cfg-auto-scene-videos" style={{ marginTop: 14, textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
               <input
                 id="cfg-auto-scene-videos"
@@ -7209,10 +7283,10 @@ export default function App() {
                 }
                 style={{ width: "auto", marginRight: 8 }}
               />
-              Auto pipeline: generate scene videos (when enabled, full auto queues scene video for scenes missing a video asset)
+              Auto / Hands-off: generate scene video clips (when enabled, full auto queues clips until each scene meets the minimum)
             </label>
             <p className="subtle" style={{ marginTop: -6 }}>
-              Default is on until you save this workspace setting as off (matches the budget CLI test script).
+              Defaults match new projects: stills and clips on, minimum one each per scene. Turn off either type if you only want images or only motion clips.
             </p>
             <label htmlFor="cfg-scene-repair-rounds" style={{ marginTop: 14 }}>
               Auto pipeline: scene critic repair cycles
@@ -8896,8 +8970,8 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                       </button>
                     </div>
                     <p className="subtle" style={{ marginTop: 6, fontSize: "0.72rem", lineHeight: 1.45 }}>
-                      When you are signed in, <strong>uploaded</strong> beds are listed here for <strong>every project</strong> in this workspace,
-                      not only the one where you uploaded them.
+                      <strong>Uploaded</strong> beds appear in this picker for <strong>every project</strong> you open: when signed in they follow your account;
+                      without account auth they are shared across the whole workspace.
                     </p>
                     <p className="subtle" style={{ marginTop: 6, fontSize: "0.72rem", lineHeight: 1.45 }}>
                       <strong>Scene timeline</strong> narration: each scene&rsquo;s VO is aligned to its clip in the final cut.

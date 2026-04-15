@@ -178,6 +178,15 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
                 clean.pop(_rk, None)
     if "agent_run_auto_generate_scene_videos" in clean:
         clean["agent_run_auto_generate_scene_videos"] = bool(clean["agent_run_auto_generate_scene_videos"])
+    if "agent_run_auto_generate_scene_images" in clean:
+        clean["agent_run_auto_generate_scene_images"] = bool(clean["agent_run_auto_generate_scene_images"])
+    for _mk in ("agent_run_min_scene_images", "agent_run_min_scene_videos"):
+        if _mk in clean:
+            try:
+                mv = int(clean[_mk])
+                clean[_mk] = max(1, min(10, mv))
+            except (TypeError, ValueError):
+                clean.pop(_mk, None)
     if "comfyui_video_use_scene_image" in clean:
         clean["comfyui_video_use_scene_image"] = bool(clean["comfyui_video_use_scene_image"])
     if "comfyui_api_flavor" in clean:
