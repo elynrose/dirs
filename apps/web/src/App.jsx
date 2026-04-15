@@ -74,7 +74,9 @@ import {
   clearDirectorAuthSession,
   getDirectorAuthToken,
   getDirectorTenantId,
+  normalizeDirectorAuthStorage,
   setDirectorAuthSession,
+  syncDirectorTenantFromMePayload,
 } from "./lib/directorAuthSession.js";
 
 /** Primary areas — vertical rail with sideways labels (Blender-style). Order matches former top tabs. */
@@ -1189,6 +1191,7 @@ export default function App() {
 
   const refreshAccountProfile = useCallback(async () => {
     try {
+      normalizeDirectorAuthStorage();
       const r = await api("/v1/auth/config");
       const cfg = await parseJson(r);
       if (!cfg.data?.auth_enabled) {
@@ -1209,6 +1212,7 @@ export default function App() {
       const r2 = await api("/v1/auth/me");
       const me = await parseJson(r2);
       if (r2.ok && me.data) {
+        syncDirectorTenantFromMePayload(me.data);
         setAccountProfile(me.data);
       } else {
         setAccountProfile(null);
@@ -1222,6 +1226,7 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
+        normalizeDirectorAuthStorage();
         const r = await api("/v1/auth/config");
         const body = await parseJson(r);
         if (cancelled) return;
@@ -1266,6 +1271,7 @@ export default function App() {
           }
         }
         if (r2.ok && me.data?.email) {
+          syncDirectorTenantFromMePayload(me.data);
           authModeRef.current = "saas";
           setSaasTenants(Array.isArray(me.data.tenants) ? me.data.tenants : []);
           setAccountProfile(me.data);
@@ -1277,25 +1283,6 @@ export default function App() {
           });
           return;
         }
-        // #region agent log
-        fetch("http://localhost:7813/ingest/697b30bc-3590-4d28-870a-7f8c016e2c27", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6de9e4" },
-          body: JSON.stringify({
-            sessionId: "6de9e4",
-            hypothesisId: "B",
-            location: "App.jsx:authBootstrap",
-            message: "auth/me not ok — clearing session",
-            data: {
-              r2Ok: r2.ok,
-              r2Status: r2.status,
-              hadTokenBeforeClear: Boolean(getDirectorAuthToken().trim()),
-              hadTenantBeforeClear: Boolean(getDirectorTenantId().trim()),
-            },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         clearDirectorAuthSession();
         authModeRef.current = "saas";
         setSaasTenants([]);
@@ -1463,20 +1450,6 @@ export default function App() {
 
   useEffect(() => {
     const onSessionExpired = () => {
-      // #region agent log
-      fetch("http://localhost:7813/ingest/697b30bc-3590-4d28-870a-7f8c016e2c27", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6de9e4" },
-        body: JSON.stringify({
-          sessionId: "6de9e4",
-          hypothesisId: "C",
-          location: "App.jsx:onSessionExpired",
-          message: "session-expired event",
-          data: { authMode: authModeRef.current },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       if (authModeRef.current !== "saas") return;
       clearDirectorAuthSession();
       resetWorkspaceForTenantBoundary();
@@ -5183,26 +5156,6 @@ export default function App() {
   const openProject = async (pid, restore = null) => {
     const id = sanitizeStudioUuid(pid);
     if (!id) return;
-    // #region agent log
-    fetch("http://localhost:7813/ingest/697b30bc-3590-4d28-870a-7f8c016e2c27", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6de9e4" },
-      body: JSON.stringify({
-        sessionId: "6de9e4",
-        hypothesisId: "D",
-        location: "App.jsx:openProject",
-        message: "openProject start",
-        data: {
-          pidLen: id.length,
-          hasToken: Boolean(getDirectorAuthToken().trim()),
-          hasTenant: Boolean(getDirectorTenantId().trim()),
-          authDone: authBootstrap.done,
-          authNeedLogin: authBootstrap.needLogin,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     setBusy(true);
     setError("");
     setProjectId(id);
@@ -5318,21 +5271,7 @@ export default function App() {
         /* ignore — non-fatal */
       }
     } catch (e) {
-      // #region agent log
       const em = formatUserFacingError(e);
-      fetch("http://localhost:7813/ingest/697b30bc-3590-4d28-870a-7f8c016e2c27", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6de9e4" },
-        body: JSON.stringify({
-          sessionId: "6de9e4",
-          hypothesisId: "A",
-          location: "App.jsx:openProject:catch",
-          message: "openProject failed",
-          data: { errSlice: String(em).slice(0, 160) },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       setError(em);
       setProjectId("");
       setChapters([]);
@@ -5355,23 +5294,6 @@ export default function App() {
     sessionRestoreStartedRef.current = true;
 
     if (authBootstrap.mode === "saas" && authBootstrap.needLogin) {
-      // #region agent log
-      fetch("http://localhost:7813/ingest/697b30bc-3590-4d28-870a-7f8c016e2c27", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6de9e4" },
-        body: JSON.stringify({
-          sessionId: "6de9e4",
-          hypothesisId: "B",
-          location: "App.jsx:sessionRestore",
-          message: "skip restore — needLogin",
-          data: {
-            hasToken: Boolean(getDirectorAuthToken().trim()),
-            hasTenant: Boolean(getDirectorTenantId().trim()),
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       setUiSessionReady(true);
       return;
     }
@@ -5412,40 +5334,8 @@ export default function App() {
           return;
         }
 
-        // #region agent log
-        fetch("http://localhost:7813/ingest/697b30bc-3590-4d28-870a-7f8c016e2c27", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6de9e4" },
-          body: JSON.stringify({
-            sessionId: "6de9e4",
-            hypothesisId: "D",
-            location: "App.jsx:sessionRestore",
-            message: "before GET project",
-            data: {
-              projectIdToOpenLen: projectIdToOpen.length,
-              hasToken: Boolean(getDirectorAuthToken().trim()),
-              hasTenant: Boolean(getDirectorTenantId().trim()),
-            },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         const r = await api(`/v1/projects/${projectIdToOpen}`);
         if (!r.ok) {
-          // #region agent log
-          fetch("http://localhost:7813/ingest/697b30bc-3590-4d28-870a-7f8c016e2c27", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6de9e4" },
-            body: JSON.stringify({
-              sessionId: "6de9e4",
-              hypothesisId: "A",
-              location: "App.jsx:sessionRestore",
-              message: "GET project failed",
-              data: { status: r.status },
-              timestamp: Date.now(),
-            }),
-          }).catch(() => {});
-          // #endregion
           try {
             localStorage.removeItem(DIRECTOR_UI_SESSION_KEY);
           } catch {

@@ -22,7 +22,7 @@ from director_api.db.models import Project, TimelineVersion
 from director_api.db.session import get_db
 from director_api.services.runtime_settings import (
     get_or_create_app_settings,
-    invalidate_runtime_settings_cache,
+    invalidate_runtime_settings_cache_after_tenant_config_persisted,
     sanitize_overrides,
 )
 from director_api.services.youtube_upload import (
@@ -54,7 +54,7 @@ def _persist_youtube_refresh(db: Session, tenant_id: str, refresh_token: str) ->
     row.config_json = sanitize_overrides(cfg)
     db.add(row)
     db.commit()
-    invalidate_runtime_settings_cache(tenant_id)
+    invalidate_runtime_settings_cache_after_tenant_config_persisted(get_settings(), tenant_id)
 
 
 def _clear_youtube_refresh(db: Session, tenant_id: str) -> None:
@@ -64,7 +64,7 @@ def _clear_youtube_refresh(db: Session, tenant_id: str) -> None:
     row.config_json = sanitize_overrides(cfg)
     db.add(row)
     db.commit()
-    invalidate_runtime_settings_cache(tenant_id)
+    invalidate_runtime_settings_cache_after_tenant_config_persisted(get_settings(), tenant_id)
 
 
 class YoutubeManualUploadBody(BaseModel):

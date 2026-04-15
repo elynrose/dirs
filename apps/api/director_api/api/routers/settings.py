@@ -28,7 +28,7 @@ from director_api.services.chatterbox_voice_ref import (
 )
 from director_api.services.runtime_settings import (
     get_or_create_app_settings,
-    invalidate_runtime_settings_cache,
+    invalidate_runtime_settings_cache_after_tenant_config_persisted,
     merge_app_settings_config_patch,
     platform_inherited_credential_keys_for_settings_response,
     redact_settings_config_for_api,
@@ -73,6 +73,8 @@ def get_settings_row(
         base_settings=base_env,
     )
     client_cfg, cred_present = redact_settings_config_for_api(saved)
+    for k in inherited:
+        cred_present[k] = True
     return {
         "data": AppSettingsOut(
             id=row.id,
@@ -102,7 +104,7 @@ def patch_settings_row(
     row.config_json = sanitize_overrides(merged)
     db.commit()
     db.refresh(row)
-    invalidate_runtime_settings_cache(settings.default_tenant_id)
+    invalidate_runtime_settings_cache_after_tenant_config_persisted(get_settings(), str(row.tenant_id))
     base_env = get_settings()
     saved = sanitize_overrides(row.config_json)
     inherited = platform_inherited_credential_keys_for_settings_response(
@@ -113,6 +115,8 @@ def patch_settings_row(
         base_settings=base_env,
     )
     client_cfg, cred_present = redact_settings_config_for_api(saved)
+    for k in inherited:
+        cred_present[k] = True
     return {
         "data": AppSettingsOut(
             id=row.id,

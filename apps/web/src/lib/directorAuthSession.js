@@ -43,17 +43,52 @@ export function clearDirectorAuthSession() {
 }
 
 /**
+ * Drop a stored workspace id when there is no JWT. Otherwise many routes see Bearer missing and
+ * return 401 "missing credentials" even though the real problem is a half-cleared session.
+ */
+export function normalizeDirectorAuthStorage() {
+  try {
+    const token = (localStorage.getItem(TOKEN_KEY) || "").trim();
+    const tenant = (localStorage.getItem(TENANT_KEY) || "").trim();
+    if (!token && tenant) localStorage.removeItem(TENANT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * After GET /v1/auth/me succeeds, persist a workspace id whenever local storage is empty or holds
+ * a tenant the user no longer belongs to (stale tab, partial clear, or first load after OAuth).
+ */
+export function syncDirectorTenantFromMePayload(meData) {
+  if (!meData || typeof meData !== "object") return false;
+  const token = getDirectorAuthToken().trim();
+  if (!token) return false;
+  const tenants = Array.isArray(meData.tenants) ? meData.tenants : [];
+  const tenantSet = new Set(tenants.map((t) => String(t?.id || "").trim()).filter(Boolean));
+  const active = String(meData.active_tenant_id || meData.tenant_id || "").trim();
+  const fallback = tenants.length ? String(tenants[0].id || "").trim() : "";
+  const pick = active || fallback;
+  if (!pick) return false;
+  const cur = getDirectorTenantId().trim();
+  if (!cur || !tenantSet.has(cur)) {
+    setDirectorAuthSession({ accessToken: token, tenantId: pick });
+    return true;
+  }
+  return false;
+}
+
+/**
  * Headers merged into `api()` when SaaS session values exist.
- * Send each header independently: if only one of token/tenant is present, the API returns
- * `TENANT_REQUIRED` or `missing credentials` instead of masking a valid token with empty headers
- * (which produced confusing 401s during long runs / workspace edge cases).
+ * Send ``X-Tenant-Id`` only together with ``Authorization``: tenant-without-token produced 401
+ * "missing credentials" on the API; token-without-tenant still allows /v1/auth/me until we sync.
  */
 export function directorAuthHeaders() {
   const token = getDirectorAuthToken().trim();
   const tenant = getDirectorTenantId().trim();
   const out = {};
   if (token) out.Authorization = `Bearer ${token}`;
-  if (tenant) out["X-Tenant-Id"] = tenant;
+  if (token && tenant) out["X-Tenant-Id"] = tenant;
   return out;
 }
 

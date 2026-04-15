@@ -40,6 +40,23 @@ def invalidate_runtime_settings_cache_for_user(db: Session, user_id: int) -> Non
     for tid in {str(x) for x in rows if x}:
         invalidate_runtime_settings_cache(tenant_id=tid)
 
+
+def invalidate_runtime_settings_cache_after_tenant_config_persisted(
+    base: Settings, written_tenant_id: str
+) -> None:
+    """Invalidate merged runtime settings after ``AppSetting.config_json`` is saved.
+
+    Child workspaces merge optional API keys from ``director_platform_credentials_source_tenant_id``.
+    When that *source* row changes, every tenant's cached merge can be stale, so we clear the whole cache.
+    """
+    tid = (written_tenant_id or "").strip()
+    if tid:
+        invalidate_runtime_settings_cache(tenant_id=tid)
+    src = (getattr(base, "director_platform_credentials_source_tenant_id", None) or "").strip()
+    if src and tid == src:
+        invalidate_runtime_settings_cache()
+
+
 # DB/infra bootstrap values remain env-backed; runtime behavior can be overridden.
 # Job caps must not come from app_settings JSON: PATCH /v1/settings sends the whole client config dict;
 # a saved toggle + defaults once persisted `job_caps_enforced` and low caps and overrode .env forever.
@@ -339,7 +356,11 @@ def tenant_may_inherit_platform_api_credentials(
     if not tid or not _platform_credentials_source_configured(base, tid):
         return False
     if not bool(getattr(base, "director_auth_enabled", False)):
-        return _user_flag_allows_platform_credentials(db, tid, explicit_user_id)
+        # Legacy / self-hosted (auth off): if a platform source workspace is configured for *other*
+        # tenants, always allow merge — including Celery workers with ``user_id=None``. Requiring exactly
+        # one ``User.use_platform_api_credentials`` flag was brittle and caused intermittent "missing
+        # credentials" when jobs ran without that narrow condition.
+        return True
     ent = get_effective_entitlements(db, tid, auth_enabled=True)
     if bool(ent.get(ENTITLEMENT_PLATFORM_API_CREDENTIALS, False)):
         return True
@@ -478,6 +499,7 @@ def resolve_runtime_settings(
     When the workspace (plan entitlement) or the user has ``use_platform_api_credentials``, optional API keys
     missing on this tenant are filled from ``director_platform_credentials_source_tenant_id`` (env).
     With auth on, plan entitlement ``platform_api_credentials`` allows merge even when ``user_id`` is None.
+    With auth off and a source tenant configured, merge is always allowed for non-source workspaces.
 
     Results are cached briefly (``runtime_settings_cache_ttl_sec`` on ``Settings``) to avoid
     repeated merges on hot paths; invalidate via ``invalidate_runtime_settings_cache``.

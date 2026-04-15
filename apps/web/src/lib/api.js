@@ -37,7 +37,7 @@ function appendMediaAuthQueryParams(params) {
   const token = getDirectorAuthToken().trim();
   const tenant = getDirectorTenantId().trim();
   if (token) params.set("access_token", token);
-  if (tenant) params.set("tenant_id", tenant);
+  if (token && tenant) params.set("tenant_id", tenant);
 }
 
 /** Binary content URL for an asset (image or video). Cache-busted by `cacheBust`. */
@@ -118,7 +118,7 @@ export function apiChatterboxVoiceRefContentUrl(cacheBust) {
  * Thin fetch wrapper that:
  * - Defaults GET/HEAD to no Content-Type header.
  * - Passes through any extra options (method, headers, body, signal, …).
- * - Adds Bearer and/or X-Tenant-Id when stored (see directorAuthSession.js); both are required for API routes that use `auth_context_dep`.
+ * - Adds Bearer and X-Tenant-Id when both are stored (see directorAuthSession.js); most API routes require both.
  */
 function shouldIgnoreUnauthorizedForPath(path) {
   const p = String(path || "");
@@ -135,17 +135,6 @@ function _authorizationWasSent(mergedHeaders) {
   const a = mergedHeaders?.Authorization ?? mergedHeaders?.authorization;
   return typeof a === "string" && /^Bearer\s+\S/.test(a.trim());
 }
-
-// #region agent log
-function _agentDbgApi(payload) {
-  if (typeof window === "undefined") return;
-  fetch("http://localhost:7813/ingest/697b30bc-3590-4d28-870a-7f8c016e2c27", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6de9e4" },
-    body: JSON.stringify({ sessionId: "6de9e4", timestamp: Date.now(), ...payload }),
-  }).catch(() => {});
-}
-// #endregion
 
 /** Best-effort JSON detail.code from a 401 body (FastAPI HTTPException shape). */
 async function _detailCodeFrom401Response(response) {
@@ -184,14 +173,6 @@ async function _applySessionPolicyOn401(path, mergedHeaders, response) {
   if (code !== "UNAUTHORIZED") {
     return response;
   }
-  // #region agent log
-  _agentDbgApi({
-    hypothesisId: "C",
-    location: "api.js:_applySessionPolicyOn401",
-    message: "dispatch director:session-expired",
-    data: { path: String(path).slice(0, 160), code },
-  });
-  // #endregion
   window.dispatchEvent(new CustomEvent("director:session-expired"));
   return response;
 }
@@ -209,33 +190,7 @@ export const api = (path, opts = {}) => {
   return fetch(apiPath(path), {
     ...opts,
     headers,
-  }).then((response) => {
-    // #region agent log
-    const p = String(path || "");
-    const logIt =
-      response.status === 401 ||
-      response.status === 403 ||
-      p.startsWith("/v1/projects") ||
-      p.startsWith("/v1/agent-runs") ||
-      p.startsWith("/v1/auth/me");
-    if (logIt) {
-      const xt = headers["X-Tenant-Id"] || headers["x-tenant-id"] || "";
-      _agentDbgApi({
-        hypothesisId: response.status === 401 ? "A" : "E",
-        location: "api.js:api",
-        message: "fetch response",
-        data: {
-          method: String(opts.method || "GET"),
-          path: p.slice(0, 180),
-          status: response.status,
-          hasAuthz: _authorizationWasSent(headers),
-          hasXTenant: typeof xt === "string" && xt.length > 0,
-        },
-      });
-    }
-    // #endregion
-    return _applySessionPolicyOn401(path, headers, response);
-  });
+  }).then((response) => _applySessionPolicyOn401(path, headers, response));
 };
 
 /**
@@ -251,27 +206,7 @@ export function apiForm(path, opts = {}) {
   return fetch(apiPath(path), {
     ...opts,
     headers,
-  }).then((response) => {
-    // #region agent log
-    const p = String(path || "");
-    if (response.status === 401 || response.status === 403 || p.startsWith("/v1/projects")) {
-      const xt = headers["X-Tenant-Id"] || headers["x-tenant-id"] || "";
-      _agentDbgApi({
-        hypothesisId: "A",
-        location: "api.js:apiForm",
-        message: "fetch response",
-        data: {
-          method: String(opts.method || "GET"),
-          path: p.slice(0, 180),
-          status: response.status,
-          hasAuthz: _authorizationWasSent(headers),
-          hasXTenant: typeof xt === "string" && xt.length > 0,
-        },
-      });
-    }
-    // #endregion
-    return _applySessionPolicyOn401(path, headers, response);
-  });
+  }).then((response) => _applySessionPolicyOn401(path, headers, response));
 }
 
 /** Strip origin from an absolute API URL so it can be passed to `api()` / `apiForm()` (same as `apiPath` input). */

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from director_api.auth.deps import extract_token
 from director_api.auth.jwtutil import decode_access_token, issue_access_token
 from director_api.auth.passwords import hash_password, verify_password
-from director_api.config import get_settings
+from director_api.config import Settings, get_settings
 from director_api.db.models import Tenant, TenantMembership, User
 from director_api.db.session import get_db
 from director_api.services.billing_plans_seed import assign_free_plan_to_new_tenant
@@ -122,6 +122,31 @@ def _serialize_tenants(db: Session, memberships: list[TenantMembership]) -> list
         name = t.name if t else m.tenant_id
         out.append(TenantOut(id=m.tenant_id, name=name, role=m.role))
     return out
+
+
+def _ensure_user_has_workspace_membership(db: Session, user: User, settings: Settings) -> None:
+    """Create a default workspace + owner membership when the user has none (admin-created users, imports, etc.)."""
+    if _tenant_rows_for_user(db, user.id):
+        return
+    tid = str(uuid.uuid4())
+    label = "My workspace"
+    fn = (user.full_name or "").strip()
+    if fn:
+        first = fn.split()[0]
+        if first:
+            label = f"{first}'s workspace"[:256]
+    tenant = Tenant(id=tid, name=label, slug=None)
+    mem = TenantMembership(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        tenant_id=tid,
+        role="owner",
+    )
+    db.add(tenant)
+    db.add(mem)
+    db.flush()
+    assign_free_plan_to_new_tenant(db, tid, settings)
+    db.commit()
 
 
 @router.post("/auth/register")
@@ -260,11 +285,15 @@ def auth_firebase(body: FirebaseSignInIn, db: Session = Depends(get_db)) -> dict
         db.commit()
         db.refresh(user)
 
+    _ensure_user_has_workspace_membership(db, user, settings)
     memberships = _tenant_rows_for_user(db, user.id)
     if not memberships:
         raise HTTPException(
-            status_code=403,
-            detail={"code": "NO_WORKSPACE", "message": "user has no workspace membership"},
+            status_code=503,
+            detail={
+                "code": "WORKSPACE_PROVISION_FAILED",
+                "message": "could not create a workspace; try again or contact support",
+            },
         )
     default_tid = memberships[0].tenant_id
     token = issue_access_token(settings=settings, user_id=user.id, tenant_id=default_tid)
@@ -293,11 +322,15 @@ def login(body: LoginIn, db: Session = Depends(get_db)) -> dict[str, Any]:
             detail={"code": "INVALID_CREDENTIALS", "message": "invalid email or password"},
         )
 
+    _ensure_user_has_workspace_membership(db, user, settings)
     memberships = _tenant_rows_for_user(db, user.id)
     if not memberships:
         raise HTTPException(
-            status_code=403,
-            detail={"code": "NO_WORKSPACE", "message": "user has no workspace membership"},
+            status_code=503,
+            detail={
+                "code": "WORKSPACE_PROVISION_FAILED",
+                "message": "could not create a workspace; try again or contact support",
+            },
         )
     default_tid = memberships[0].tenant_id
     token = issue_access_token(settings=settings, user_id=user.id, tenant_id=default_tid)
@@ -328,15 +361,26 @@ def auth_refresh(request: Request, db: Session = Depends(get_db)) -> dict[str, A
     if not settings.director_auth_enabled:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "not found"})
     user = _require_user(request, db)
+    _ensure_user_has_workspace_membership(db, user, settings)
+    memberships = _tenant_rows_for_user(db, user.id)
+    if not memberships:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "WORKSPACE_PROVISION_FAILED", "message": "could not create a workspace; try again or contact support"},
+        )
     tid = (
         (request.headers.get("x-tenant-id") or request.headers.get("X-Tenant-Id") or "").strip()
         or (request.query_params.get("tenant_id") or "").strip()
     )
     if not tid:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "TENANT_REQUIRED", "message": "X-Tenant-Id header is required"},
-        )
+        token_in = extract_token(request, settings)
+        try:
+            claims = decode_access_token(settings, token_in)
+            tid = str(claims.get("tid") or "").strip()
+        except jwt.PyJWTError:
+            tid = ""
+    if not tid or not any(m.tenant_id == tid for m in memberships):
+        tid = memberships[0].tenant_id
     row = db.scalar(
         select(TenantMembership).where(
             TenantMembership.user_id == user.id,
@@ -421,6 +465,7 @@ def auth_me(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     if not user:
         raise HTTPException(status_code=401, detail={"code": "UNAUTHORIZED", "message": "user not found"})
 
+    _ensure_user_has_workspace_membership(db, user, settings)
     memberships = _tenant_rows_for_user(db, user.id)
     tenants = _serialize_tenants(db, memberships)
     default_tid = memberships[0].tenant_id if memberships else None
