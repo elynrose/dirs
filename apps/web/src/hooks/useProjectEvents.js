@@ -35,10 +35,11 @@ export function useProjectEvents(projectId, handlers, reloadKey = 0) {
       return;
     }
 
-    const url = apiPath(
-      `/v1/events?project_id=${encodeURIComponent(projectId)}${directorAuthQuerySuffix()}`,
-    );
-    let es = new EventSource(url);
+    const streamUrl = () =>
+      apiPath(
+        `/v1/events?project_id=${encodeURIComponent(projectId)}${directorAuthQuerySuffix()}`,
+      );
+    let es = new EventSource(streamUrl());
     let reconnectTimer = null;
     let destroyed = false;
 
@@ -65,7 +66,7 @@ export function useProjectEvents(projectId, handlers, reloadKey = 0) {
         reconnectTimer = null;
         if (destroyed) return;
         es?.close();
-        es = new EventSource(url);
+        es = new EventSource(streamUrl());
         attach(es);
       }, delayMs);
     };

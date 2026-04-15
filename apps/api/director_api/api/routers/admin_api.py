@@ -1229,7 +1229,12 @@ def admin_list_payments(
 
 
 class AdminBudgetPipelineTestBody(BaseModel):
-    """Same autonomous brief shape as ``scripts/budget_pipeline_test.py`` (placeholder images, local FFmpeg video; narration uses workspace TTS)."""
+    """Budget/smoke enqueue: same worker as Studio, with optional cheap media defaults.
+
+    By default the brief pins ``placeholder`` + ``local_ffmpeg`` so tests do not spend paid image APIs.
+    Set ``production_media`` true to omit those overrides (project inherits workspace Settings) and to
+    enable ``auto_generate_scene_videos`` like a typical Studio full_video run.
+    """
 
     title: str = Field(default="Budget pipeline test", min_length=1, max_length=500)
     topic: str = Field(default="", max_length=8000)
@@ -1251,6 +1256,14 @@ class AdminBudgetPipelineTestBody(BaseModel):
         default=None,
         description="Existing project to resume; required when continue_pipeline is true.",
     )
+    production_media: bool = Field(
+        default=False,
+        description=(
+            "When false (default): brief uses placeholder image + local_ffmpeg video; pipeline sets "
+            "auto_generate_scene_videos false (cheap smoke). When true: omit those brief overrides so "
+            "the tenant's workspace provider settings apply, and scene auto-videos match Studio defaults."
+        ),
+    )
 
     @model_validator(mode="after")
     def _budget_continue_rules(self) -> "AdminBudgetPipelineTestBody":
@@ -1263,12 +1276,12 @@ class AdminBudgetPipelineTestBody(BaseModel):
         return self
 
 
-def _budget_smoke_pipeline_options(mode: str) -> dict[str, Any]:
+def _budget_smoke_pipeline_options(mode: str, *, production_media: bool = False) -> dict[str, Any]:
     """Shared pipeline_options for admin budget / CLI smoke runs."""
     opts: dict[str, Any] = {
         "through": "full_video",
         "narration_granularity": "scene",
-        "auto_generate_scene_videos": False,
+        "auto_generate_scene_videos": True if production_media else False,
     }
     if mode == "hands-off":
         opts["unattended"] = True
@@ -1300,7 +1313,7 @@ def admin_budget_pipeline_test(
 
     settings = resolve_runtime_settings(db, base, tid)
 
-    po: dict[str, Any] = _budget_smoke_pipeline_options(body.mode)
+    po: dict[str, Any] = _budget_smoke_pipeline_options(body.mode, production_media=bool(body.production_media))
 
     if body.continue_pipeline:
         assert body.project_id is not None
@@ -1312,19 +1325,20 @@ def admin_budget_pipeline_test(
             )
         po["continue_from_existing"] = True
     else:
-        brief = ProjectCreate(
-            title=body.title.strip(),
-            topic=(body.topic or "").strip(),
-            target_runtime_minutes=body.target_runtime_minutes,
-            audience="general",
-            tone="documentary",
-            narration_style="preset:narrative_documentary",
-            visual_style="preset:cinematic_documentary",
-            preferred_image_provider="placeholder",
-            preferred_video_provider="local_ffmpeg",
-            frame_aspect_ratio=body.frame_aspect_ratio or "16:9",
-            # Omit speech provider so narration uses workspace ``active_speech_provider`` (real TTS), not FFmpeg ding.
-        )
+        brief_kwargs: dict[str, Any] = {
+            "title": body.title.strip(),
+            "topic": (body.topic or "").strip(),
+            "target_runtime_minutes": body.target_runtime_minutes,
+            "audience": "general",
+            "tone": "documentary",
+            "narration_style": "preset:narrative_documentary",
+            "visual_style": "preset:cinematic_documentary",
+            "frame_aspect_ratio": body.frame_aspect_ratio or "16:9",
+        }
+        if not body.production_media:
+            brief_kwargs["preferred_image_provider"] = "placeholder"
+            brief_kwargs["preferred_video_provider"] = "local_ffmpeg"
+        brief = ProjectCreate(**brief_kwargs)
         create_body = AgentRunCreate(brief=brief, pipeline_options=po)
         # Platform admin smoke test: do not enforce workspace subscription gates (project cap,
         # hands-off / full-through entitlements). Caller is already authenticated via AdminDep.
@@ -1351,6 +1365,7 @@ def admin_budget_pipeline_test(
         project_id=str(p.id),
         tenant_id=tid,
         continue_pipeline=bool(body.continue_pipeline),
+        production_media=bool(body.production_media),
     )
     hint = (
         "Continuing on existing project — worker skips phases already satisfied (oversight + resume rules). "

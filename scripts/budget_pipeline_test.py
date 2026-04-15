@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-Drive an Auto or Hands-off agent run while avoiding paid *image* APIs (fal).
+Drive an Auto or Hands-off ``full_video`` agent run for smoke / CI.
 
-Uses project-level providers for cheap visuals (no FAL_KEY needed for images/video in this path):
-  - preferred_image_provider: placeholder  (solid FFmpeg lavfi frame)
-  - preferred_video_provider: local_ffmpeg (still → MP4 on your machine)
-  - preferred_speech_provider: omitted — narration uses the workspace default TTS from API settings
-    (``active_speech_provider`` / OpenAI, Kokoro, etc.), not FFmpeg ding. Set ``DIRECTOR_PLACEHOLDER_MEDIA=1``
-    on the worker to force placeholder *images* for any project (narration still uses real TTS unless you set speech to placeholder).
+**Default (cheap tests):** the brief pins placeholder images + local FFmpeg video and sets
+``auto_generate_scene_videos: false`` so routine runs do not call paid image APIs or enqueue per-scene
+video jobs. That is intentional: production Studio sends workspace providers from Settings and
+typically enables scene videos — see ``--production-media`` below when you want that parity.
 
-Studio parity: starting an agent run from the web app sends the same optional brief fields from
-Settings → Providers (image / video / speech / text) and defaults auto scene-video generation to on
-unless you explicitly disable it in Settings (matches this script’s full_video + auto_generate_scene_videos).
-The full-video automation tail also builds or refreshes the character bible before scene images when needed (same as Studio).
+**Production parity (optional):** ``--production-media`` omits ``preferred_image_provider`` /
+``preferred_video_provider`` on the brief (project inherits tenant workspace ``active_*_provider``
+from the API like Studio) and sets ``auto_generate_scene_videos: true``. Use when you accept real
+image/video API usage.
+
+Narration: ``preferred_speech_provider`` is omitted in both modes so VO follows workspace
+``active_speech_provider``. Set ``DIRECTOR_PLACEHOLDER_MEDIA=1`` on the worker to force placeholder
+images for any project regardless of brief.
 
 You still need a **text** LLM path (OpenAI, LM Studio, etc.) and whatever research uses (Tavily optional);
 this script does not stub those.
@@ -40,6 +42,7 @@ Examples
   python scripts/budget_pipeline_test.py --mode hands-off
   python scripts/budget_pipeline_test.py --mode hands-off --login-email you@example.com
   python scripts/budget_pipeline_test.py --mode auto --api-base http://127.0.0.1:8000
+  python scripts/budget_pipeline_test.py --mode hands-off --production-media
 """
 
 from __future__ import annotations
@@ -159,6 +162,14 @@ def main() -> int:
         help="hands-off = unattended full_video; auto = full_video without unattended flag.",
     )
     ap.add_argument(
+        "--production-media",
+        action="store_true",
+        help=(
+            "Match Studio production brief: omit placeholder/local_ffmpeg on the project brief (use "
+            "workspace Settings providers) and set auto_generate_scene_videos true. Costs real image/video API usage."
+        ),
+    )
+    ap.add_argument(
         "--music-path",
         type=Path,
         default=None,
@@ -212,27 +223,26 @@ def main() -> int:
     pipeline_options: dict[str, Any] = {
         "through": "full_video",
         "narration_granularity": "scene",
-        # Timeline uses stills; skip per-scene MP4 generation so a worker glitch there cannot abort the run.
-        "auto_generate_scene_videos": False,
+        "auto_generate_scene_videos": True if args.production_media else False,
     }
     if args.mode == "hands-off":
         pipeline_options["unattended"] = True
 
-    body: dict[str, Any] = {
-        "brief": {
-            "title": args.title,
-            "topic": args.topic,
-            "target_runtime_minutes": max(2, min(120, int(args.runtime))),
-            "audience": "general",
-            "tone": "documentary",
-            "narration_style": "preset:narrative_documentary",
-            "visual_style": "preset:cinematic_documentary",
-            "preferred_image_provider": "placeholder",
-            "preferred_video_provider": "local_ffmpeg",
-            "frame_aspect_ratio": str(args.frame_aspect_ratio),
-        },
-        "pipeline_options": pipeline_options,
+    brief: dict[str, Any] = {
+        "title": args.title,
+        "topic": args.topic,
+        "target_runtime_minutes": max(2, min(120, int(args.runtime))),
+        "audience": "general",
+        "tone": "documentary",
+        "narration_style": "preset:narrative_documentary",
+        "visual_style": "preset:cinematic_documentary",
+        "frame_aspect_ratio": str(args.frame_aspect_ratio),
     }
+    if not args.production_media:
+        brief["preferred_image_provider"] = "placeholder"
+        brief["preferred_video_provider"] = "local_ffmpeg"
+
+    body: dict[str, Any] = {"brief": brief, "pipeline_options": pipeline_options}
 
     print("POST /v1/agent-runs …")
     with httpx.Client(timeout=120.0) as client:

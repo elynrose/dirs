@@ -316,7 +316,9 @@ export function agentRunAutoGenerateSceneVideos(cfg) {
 
 /**
  * Map Settings → Providers into `brief` preferred_* fields for POST /v1/agent-runs (new projects).
- * Aligns Studio with budget_pipeline_test.py passing project-level image/video/speech (and text) providers.
+ * This is the production path: real image/video/speech/text providers from workspace Settings.
+ * Budget/smoke tests default to placeholder + local_ffmpeg on the brief so routine CI does not call
+ * paid image APIs; use ``--production-media`` (CLI) or ``production_media`` (admin budget test) for parity.
  */
 export function briefPreferredMediaProvidersFromAppConfig(cfg) {
   const c = cfg && typeof cfg === "object" ? cfg : {};

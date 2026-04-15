@@ -189,7 +189,9 @@ class Settings(BaseSettings):
 
     # When true, worker uses placeholder lavfi images (and similar) instead of cloud image APIs where
     # applicable; narration still follows ``active_speech_provider`` / project preferred speech unless set to placeholder.
-    # See scripts/budget_pipeline_test.py.
+    # Default budget/smoke runs pin cheap project providers in the brief; production Studio runs use
+    # workspace Settings (``active_*_provider``) and real image/video APIs — see ``--production-media`` on
+    # ``scripts/budget_pipeline_test.py`` and ``production_media`` on ``POST /v1/admin/budget-pipeline-test``.
     director_placeholder_media: bool = Field(
         default=False,
         validation_alias=AliasChoices("director_placeholder_media", "DIRECTOR_PLACEHOLDER_MEDIA"),

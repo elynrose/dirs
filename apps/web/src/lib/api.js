@@ -126,7 +126,8 @@ function shouldIgnoreUnauthorizedForPath(path) {
     p.includes("/v1/auth/login") ||
     p.includes("/v1/auth/register") ||
     p.includes("/v1/auth/config") ||
-    p.includes("/v1/auth/me")
+    p.includes("/v1/auth/me") ||
+    p.includes("/v1/auth/refresh")
   );
 }
 
@@ -165,6 +166,11 @@ async function _applySessionPolicyOn401(path, mergedHeaders, response) {
   }
   const code = await _detailCodeFrom401Response(response);
   if (code === "AUTH_REQUIRED") {
+    return response;
+  }
+  // Only treat explicit JWT/session failures as "logged out". Proxies and edge cases
+  // sometimes return 401 without our JSON shape; those must not clear SaaS session.
+  if (code !== "UNAUTHORIZED") {
     return response;
   }
   window.dispatchEvent(new CustomEvent("director:session-expired"));

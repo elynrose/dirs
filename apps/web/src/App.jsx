@@ -1477,7 +1477,9 @@ export default function App() {
     } catch {
       return;
     }
-    if (expMs == null || expMs - Date.now() > 45 * 60 * 1000) return;
+    // Start refreshing well before expiry so a delayed 5-minute timer (or throttled background tabs)
+    // does not miss the window and cause 401s mid-run.
+    if (expMs == null || expMs - Date.now() > 120 * 60 * 1000) return;
     try {
       const r = await api("/v1/auth/refresh", { method: "POST", body: "{}" });
       const b = await parseJson(r);
@@ -1498,6 +1500,16 @@ export default function App() {
     const id = setInterval(() => void tryRefreshSaaSAccessToken(), 5 * 60 * 1000);
     void tryRefreshSaaSAccessToken();
     return () => clearInterval(id);
+  }, [authBootstrap.done, authBootstrap.needLogin, authBootstrap.mode, tryRefreshSaaSAccessToken]);
+
+  /** Long runs often background the tab; timers are throttled so JWT can expire before the next refresh tick. */
+  useEffect(() => {
+    if (!authBootstrap.done || authBootstrap.needLogin || authBootstrap.mode !== "saas") return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void tryRefreshSaaSAccessToken();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [authBootstrap.done, authBootstrap.needLogin, authBootstrap.mode, tryRefreshSaaSAccessToken]);
 
   useEffect(() => {
@@ -5136,10 +5148,11 @@ export default function App() {
   };
 
   const openProject = async (pid, restore = null) => {
-    if (!pid) return;
+    const id = sanitizeStudioUuid(pid);
+    if (!id) return;
     setBusy(true);
     setError("");
-    setProjectId(pid);
+    setProjectId(id);
     const keepAgent =
       Boolean(restore?.agentRunId && String(restore.agentRunId).length >= 32);
     if (!keepAgent) {
@@ -5169,9 +5182,17 @@ export default function App() {
     setPhase3Summary(null);
     setCriticReport(null);
     try {
-      const pr = await api(`/v1/projects/${pid}`);
+      const pe = encodeURIComponent(id);
+      const pr = await api(`/v1/projects/${pe}`);
       const pb = await parseJson(pr);
-      if (!pr.ok) throw new Error(pb?.detail?.message || "project load failed");
+      if (!pr.ok) {
+        const msg = apiErrorMessage(pb);
+        const hint404 =
+          pr.status === 404
+            ? " Wrong workspace? Open the tenant where this project was created (workspace / account switcher), then choose the project again."
+            : "";
+        throw new Error(`${msg}${hint404}`);
+      }
       const p = pb.data || {};
       setTitle(p.title || "");
       setTopic(p.topic || "");
@@ -5179,9 +5200,11 @@ export default function App() {
       setFrameAspectRatio(p.frame_aspect_ratio === "9:16" ? "9:16" : "16:9");
       setUseAllApprovedSceneMedia(Boolean(p.use_all_approved_scene_media));
 
-      const cr = await api(`/v1/projects/${pid}/chapters`);
+      const cr = await api(`/v1/projects/${pe}/chapters`);
       const cb = await parseJson(cr);
-      if (!cr.ok) throw new Error(cb?.detail?.message || "chapters load failed");
+      if (!cr.ok) {
+        throw new Error(apiErrorMessage(cb) || `Chapters request failed (HTTP ${cr.status})`);
+      }
       const nextChapters = cb.data?.chapters || [];
       setChapters(nextChapters);
 
@@ -5209,7 +5232,7 @@ export default function App() {
         }
       }
 
-      await refreshPhase5Readiness({ pid });
+      await refreshPhase5Readiness({ pid: id });
 
       if (keepAgent) {
         setAgentRunId(restore.agentRunId);
@@ -5217,7 +5240,7 @@ export default function App() {
       }
 
       try {
-        const jr = await api(`/v1/projects/${pid}/jobs/active`);
+        const jr = await api(`/v1/projects/${pe}/jobs/active`);
         const jb = await parseJson(jr);
         if (jr.ok) {
           const jobs = jb.data?.jobs || [];
@@ -5243,6 +5266,13 @@ export default function App() {
       }
     } catch (e) {
       setError(formatUserFacingError(e));
+      setProjectId("");
+      setChapters([]);
+      setChapterId("");
+      setScenes([]);
+      setExpandedScene(null);
+      setTitle("");
+      setTopic("");
     } finally {
       setBusy(false);
     }

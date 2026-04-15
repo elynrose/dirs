@@ -2754,6 +2754,32 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                         auto_scene_videos=auto_sv_pipeline,
                     )
 
+                # Outline can use deterministic `chapter_outline_from_director` without API keys; chapter
+                # scripts always need the configured text provider. Fail here so Automate / hands-off does
+                # not spend phases then stall with workflow_phase stuck at outline_ready.
+                if through in ("chapters", "critique", "full_video"):
+                    proj_chk = db.get(Project, run_project_id)
+                    if proj_chk:
+                        would_skip_chapters = agent_resume_svc.should_skip_chapters(cont, proj_chk, db)
+                        if not pipeline_oversight_svc.effective_resume_skip_with_force(
+                            cont,
+                            oversight_earliest,
+                            "chapters",
+                            would_skip_chapters,
+                            force_steps,
+                        ):
+                            try:
+                                _require_active_text_llm(settings, for_what="chapter script generation")
+                            except ValueError as e:
+                                run = db.get(AgentRun, aid)
+                                if run:
+                                    _agent_run_mark_failed(db, run, "pipeline", e)
+                                log.warning(
+                                    "agent_run_chapters_preflight_no_text_provider",
+                                    agent_run_id=agent_run_id,
+                                )
+                                return
+
                 if halt():
                     return
 

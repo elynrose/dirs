@@ -364,6 +364,11 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     const p = readBudgetPipelinePersisted();
     return p?.budgetFrameAspect === "9:16" ? "9:16" : "16:9";
   });
+  /** When true, POST body sets ``production_media`` — workspace image/video providers + scene auto-videos (costs APIs). */
+  const [budgetProductionMedia, setBudgetProductionMedia] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return p?.budgetProductionMedia === true;
+  });
   const [budgetBusy, setBudgetBusy] = useState(false);
   const [budgetErr, setBudgetErr] = useState(() => {
     const p = readBudgetPipelinePersisted();
@@ -409,6 +414,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
           budgetRuntime,
           budgetMode,
           budgetFrameAspect,
+          budgetProductionMedia,
           budgetLast,
           budgetErr,
           budgetRunHistory,
@@ -424,6 +430,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     budgetRuntime,
     budgetMode,
     budgetFrameAspect,
+    budgetProductionMedia,
     budgetLast,
     budgetErr,
     budgetRunHistory,
@@ -640,6 +647,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
         target_runtime_minutes: tr,
         mode: budgetMode === "auto" ? "auto" : "hands-off",
         frame_aspect_ratio: budgetFrameAspect === "9:16" ? "9:16" : "16:9",
+        production_media: budgetProductionMedia,
       };
       const tid = resolvedBudgetWorkspaceId.trim();
       if (tid) payload.tenant_id = tid;
@@ -683,7 +691,16 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     } finally {
       setBudgetBusy(false);
     }
-  }, [budgetTitle, budgetTopic, budgetRuntime, budgetMode, budgetFrameAspect, resolvedBudgetWorkspaceId, showToast]);
+  }, [
+    budgetTitle,
+    budgetTopic,
+    budgetRuntime,
+    budgetMode,
+    budgetFrameAspect,
+    budgetProductionMedia,
+    resolvedBudgetWorkspaceId,
+    showToast,
+  ]);
 
   const continueBudgetPipeline = useCallback(async () => {
     const pid =
@@ -712,6 +729,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
         target_runtime_minutes: tr,
         mode: budgetMode === "auto" ? "auto" : "hands-off",
         frame_aspect_ratio: budgetFrameAspect === "9:16" ? "9:16" : "16:9",
+        production_media: budgetProductionMedia,
       };
       const tid = resolvedBudgetWorkspaceId.trim();
       if (tid) payload.tenant_id = tid;
@@ -764,6 +782,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     budgetRuntime,
     budgetMode,
     budgetFrameAspect,
+    budgetProductionMedia,
     resolvedBudgetWorkspaceId,
     showToast,
   ]);
@@ -1036,6 +1055,19 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                     <option value="hands-off">Hands-off (unattended)</option>
                     <option value="auto">Auto</option>
                   </select>
+                </label>
+                <label className="subtle" style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 4 }}>
+                  <input
+                    type="checkbox"
+                    checked={budgetProductionMedia}
+                    onChange={(e) => setBudgetProductionMedia(e.target.checked)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span style={{ lineHeight: 1.35 }}>
+                    Production media — use workspace image/video providers and enable auto scene videos (matches a
+                    typical Studio full_video run; costs paid APIs). Leave off for cheap smoke (placeholder + local
+                    FFmpeg, no scene MP4 jobs).
+                  </span>
                 </label>
                 <label className="subtle" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   Picture frame (aspect ratio)
