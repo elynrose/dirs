@@ -1358,7 +1358,22 @@ def admin_budget_pipeline_test(
     db.add(run)
     db.commit()
     db.refresh(run)
-    run_agent_run.delay(str(run.id))
+    try:
+        run_agent_run.delay(str(run.id))
+    except Exception:
+        log.exception(
+            "admin_budget_pipeline_celery_enqueue_failed",
+            agent_run_id=str(run.id),
+            project_id=str(p.id),
+            tenant_id=tid,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "WORKER_UNAVAILABLE",
+                "message": "Failed to enqueue agent run (Celery broker or worker misconfiguration).",
+            },
+        ) from None
     log.info(
         "admin_budget_pipeline_enqueued",
         agent_run_id=str(run.id),
@@ -1366,6 +1381,11 @@ def admin_budget_pipeline_test(
         tenant_id=tid,
         continue_pipeline=bool(body.continue_pipeline),
         production_media=bool(body.production_media),
+        mode=body.mode,
+        frame_aspect_ratio=str(body.frame_aspect_ratio or "16:9"),
+        title_len=len((body.title or "").strip()),
+        topic_len=len((body.topic or "").strip()),
+        target_runtime_minutes=body.target_runtime_minutes,
     )
     hint = (
         "Continuing on existing project — worker skips phases already satisfied (oversight + resume rules). "

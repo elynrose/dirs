@@ -1745,6 +1745,19 @@ details.editor-readiness-details pre {
   color: #f0d080;
   animation: none !important;
 }
+.pipeline-fa-icon--stall {
+  color: #ffb070;
+  animation: none !important;
+}
+.pipeline-progress-alert--stall {
+  border: 1px solid rgb(255 120 80 / 32%);
+  background: rgb(48 22 18 / 45%);
+}
+.pipeline-progress-alert--stall .pipeline-progress-alert__icon-wrap {
+  background: linear-gradient(145deg, rgb(200 90 50 / 28%), rgb(90 40 24 / 20%));
+  border-color: rgb(255 150 100 / 38%);
+  color: #ffc9a8;
+}
 .pipeline-progress-alert__body {
   flex: 1;
   min-width: 0;
@@ -3268,6 +3281,60 @@ details.settings-section[open] > .settings-section-summary {
 .pipeline-step-timing--done {
   background: rgb(255 255 255 / 6%);
   color: #9c9c9c;
+}
+
+.pipeline-step-stall-btn {
+  margin-left: 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: rgb(180 60 40 / 22%);
+  color: #ffb090;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.pipeline-step-stall-btn:hover {
+  background: rgb(220 90 50 / 32%);
+  color: #ffd0c0;
+}
+.pipeline-step--running:has(.pipeline-step-stall-btn) {
+  border: 1px solid rgb(255 120 80 / 22%);
+  background: rgb(80 32 24 / 25%);
+}
+
+.pipeline-stall-inline-warn {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgb(90 40 28 / 35%);
+  border: 1px solid rgb(255 140 90 / 28%);
+}
+.pipeline-stall-inline-warn__btn {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: #f0c8b8;
+  font: inherit;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.pipeline-stall-inline-warn__btn .fa-triangle-exclamation {
+  color: #ff9860;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.pipeline-stall-popup {
+  max-width: 420px;
+  margin: 10vh auto;
+  padding: 16px 18px;
 }
 
 .run-events-block {

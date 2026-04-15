@@ -111,6 +111,7 @@ export function InspectorPipelinePanel({ p }) {
   const allowUnattended = p.entitlementUnattended !== false;
   const showProgress = Boolean(p.projectId && Array.isArray(p.pipelineStatus?.steps));
   const stepTimingMap = buildStepTimingMap(p.run?.steps_json);
+  const [pipelineStallModal, setPipelineStallModal] = useState(null);
   const showReviews =
     Boolean(p.blocked) ||
     Boolean(p.run?.status === "failed" && p.failedReadinessIssues?.length > 0) ||
@@ -153,6 +154,20 @@ export function InspectorPipelinePanel({ p }) {
                     satisfied). Rows here stay tied to <strong>project</strong> state, not the old run.
                   </p>
                 ) : null}
+                {p.agentRunStallInfo?.stalled && !p.agentRunStallInfo.pipelineStepId ? (
+                  <div className="pipeline-stall-inline-warn" role="alert">
+                    <button
+                      type="button"
+                      className="pipeline-stall-inline-warn__btn"
+                      onClick={() => setPipelineStallModal(p.agentRunStallInfo)}
+                    >
+                      <i className="fa-solid fa-triangle-exclamation" aria-hidden="true" />
+                      <span>
+                        No run heartbeat for <strong>{p.agentRunStallInfo.stallLabel}</strong> — tap for likely causes (API / network / worker).
+                      </span>
+                    </button>
+                  </div>
+                ) : null}
                 <ul className="pipeline-steps">
                   {p.pipelineStatus.steps.map((s) => (
                     <li key={s.id} className={`pipeline-step pipeline-step--${s.status || "pending"}`}>
@@ -167,6 +182,19 @@ export function InspectorPipelinePanel({ p }) {
                           />
                         ) : null}
                         {s.label}
+                        {p.agentRunStallInfo?.stalled &&
+                        s.status === "running" &&
+                        p.agentRunStallInfo.pipelineStepId === s.id ? (
+                          <button
+                            type="button"
+                            className="pipeline-step-stall-btn"
+                            aria-label={`Stalled step — ${p.agentRunStallInfo.title}`}
+                            title="No recent run update — open for API / network hints"
+                            onClick={() => setPipelineStallModal(p.agentRunStallInfo)}
+                          >
+                            <i className="fa-solid fa-triangle-exclamation" aria-hidden="true" />
+                          </button>
+                        ) : null}
                       </span>
                       <span className="pipeline-step-badge">{p.friendlyPipelineStepStatus(s.status)}</span>
                       {(() => {
@@ -197,6 +225,38 @@ export function InspectorPipelinePanel({ p }) {
                     </li>
                   ))}
                 </ul>
+                {pipelineStallModal ? (
+                  <div
+                    className="restart-automation-modal-backdrop"
+                    role="presentation"
+                    onClick={() => setPipelineStallModal(null)}
+                  >
+                    <div
+                      className="panel pipeline-stall-popup"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-labelledby="pipeline-stall-title"
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") setPipelineStallModal(null);
+                      }}
+                    >
+                      <h3 id="pipeline-stall-title">{pipelineStallModal.title}</h3>
+                      <p className="subtle" style={{ marginTop: 10, lineHeight: 1.55 }}>
+                        {pipelineStallModal.body}
+                      </p>
+                      <p className="subtle mono" style={{ marginTop: 10, fontSize: "0.72rem", lineHeight: 1.45 }}>
+                        No server heartbeat for {pipelineStallModal.stallLabel} (from run timestamps; scene planning also considers
+                        per-chapter progress when present).
+                      </p>
+                      <div style={{ marginTop: 14 }}>
+                        <button type="button" className="secondary" onClick={() => setPipelineStallModal(null)}>
+                          Close
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null,
           },

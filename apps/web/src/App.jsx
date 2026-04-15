@@ -836,6 +836,154 @@ function mergePipelineStepsWithAgentActivity(pipelineStatus, run, activeProjectJ
   return { ...pipelineStatus, steps };
 }
 
+function safeIsoMs(iso) {
+  if (!iso || typeof iso !== "string") return 0;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : 0;
+}
+
+function activeStudioJobsMatchEffKey(activeProjectJobs, effKey) {
+  if (!Array.isArray(activeProjectJobs) || !effKey) return false;
+  for (const rule of JOB_TYPE_MACRO_STEP_RULES) {
+    if (rule.macro !== effKey) continue;
+    for (const j of activeProjectJobs) {
+      if (!j || (j.status !== "running" && j.status !== "queued")) continue;
+      if (rule.types.has(String(j.type || ""))) return true;
+    }
+  }
+  return false;
+}
+
+function stallThresholdMs(effKey, runStatus) {
+  if (runStatus === "queued") return 120_000;
+  if (effKey === "chapters" || effKey === "scenes") return 600_000;
+  return 180_000;
+}
+
+function scenesProgressHeartbeatMs(stepsJson) {
+  const p = lastScenesProgressEvent(stepsJson);
+  if (!p?.at) return 0;
+  return safeIsoMs(p.at);
+}
+
+/** Popup copy when the agent run shows no heartbeat — likely external API / network (client-side heuristic). */
+const AGENT_STEP_STALL_COPY = {
+  __default__: {
+    title: "This step looks stalled",
+    body: "The worker has not updated the automation run for a while. That usually means a call to an external API (text LLM, search, image, video, or speech) is taking a long time, failing slowly, or cannot be reached from the machine running the Celery worker. Verify Settings → Integrations, confirm the worker host can reach your API base URL (same network / firewall), and check worker logs for timeouts.",
+  },
+  queued: {
+    title: "Run not picked up yet",
+    body: "The run is still queued — the Celery worker may be busy, not running, or unable to connect to Redis. Check that workers are up and the broker is healthy.",
+  },
+  director: {
+    title: "Director pack (text model)",
+    body: "This step calls your configured text provider (OpenAI, LM Studio, OpenRouter, xAI, Gemini, etc.) to build the director pack. A wrong base URL, offline server, or long model load can block until the HTTP client times out.",
+  },
+  research: {
+    title: "Research (search + text model)",
+    body: "This step uses web search (e.g. Tavily when configured) and may call a text model to structure the dossier. Missing keys, rate limits, or an unreachable LLM endpoint can stall progress.",
+  },
+  outline: {
+    title: "Outline (text model)",
+    body: "Chapter outline generation uses your workspace text provider. Check connectivity and model availability on the worker host.",
+  },
+  chapters: {
+    title: "Chapter scripts (long batched call)",
+    body: "All chapter scripts are often produced in one large model call — several minutes without a database update can be normal. If it exceeds ~10 minutes with no run update, treat it like other API stalls: verify the text endpoint and worker logs.",
+  },
+  scenes: {
+    title: "Scene planning (text model)",
+    body: "Scene breakdown runs per chapter in sequence. Long scripts or many chapters take time. If per-chapter progress in the list is not advancing and the run timestamp is old, the text API may be hanging or unreachable.",
+  },
+  story_research_review: {
+    title: "Story vs research (text model)",
+    body: "This automated check compares the script to the research dossier via your text provider. Failures here are usually LLM timeouts or connectivity.",
+  },
+  auto_characters: {
+    title: "Character bible (text model)",
+    body: "Character inference uses your text provider. The same connectivity and timeout rules apply as other LLM steps.",
+  },
+  auto_images: {
+    title: "Scene images (image providers)",
+    body: "Images are requested from your configured image backend (e.g. Fal, Comfy, placeholders). Slow or failing provider APIs can stall this phase. Also confirm Studio background jobs are not blocked.",
+  },
+  auto_videos: {
+    title: "Scene videos (video providers)",
+    body: "Video generation depends on your video provider and queue. Long encodes or unreachable services look like a stalled step until a job completes or errors.",
+  },
+  auto_narration: {
+    title: "Narration (speech APIs)",
+    body: "TTS calls your configured speech provider. API keys, quotas, or unreachable endpoints cause long waits.",
+  },
+  auto_timeline: {
+    title: "Timeline build",
+    body: "Timeline assembly is mostly server-side; if it stalls for many minutes with no run update, check worker logs for exceptions or database issues.",
+  },
+  auto_rough_cut: {
+    title: "Rough cut (render / ffmpeg)",
+    body: "Rendering can take a long time for long programs. Very long stalls may indicate a stuck encoder or disk issue — see worker logs.",
+  },
+  auto_final_cut: {
+    title: "Final cut / mux",
+    body: "Final mux combines narration, music, and mix. External tools or I/O problems can delay completion.",
+  },
+  working: {
+    title: "Worker between checkpoints",
+    body: "The run is between named steps. If this persists, the worker may be blocked on a provider call that has not yet updated the database.",
+  },
+  pipeline: {
+    title: "Pipeline control",
+    body: "The worker is updating pipeline state. If this lasts unusually long, inspect worker logs.",
+  },
+};
+
+function formatStallDuration(sec) {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+/**
+ * Client-side stall signal: no recent `updated_at` on the agent run (and no scenes progress heartbeat when relevant),
+ * while not explained by active Studio jobs for the same macro-step.
+ */
+function computeAgentRunStallInfo(run, activeProjectJobs, nowMs) {
+  const empty = { stalled: false };
+  if (!run) return empty;
+  const st = run.status;
+  if (st !== "running" && st !== "queued") return empty;
+  if (st === "paused") return empty;
+  if (st === "running" && pipelineStopRequested(run.pipeline_control_json)) return empty;
+
+  const effKey = resolveEffectiveAgentStepKey(run, { activeProjectJobs });
+  if (activeStudioJobsMatchEffKey(activeProjectJobs, effKey)) return empty;
+
+  const thr = stallThresholdMs(effKey, st);
+  let hb = safeIsoMs(run.updated_at);
+  if (effKey === "scenes") {
+    hb = Math.max(hb, scenesProgressHeartbeatMs(run.steps_json));
+  }
+
+  if (hb <= 0) return empty;
+  const age = nowMs - hb;
+  if (age < thr) return empty;
+
+  const stallSeconds = Math.floor(age / 1000);
+  const pipelineStepId = AGENT_STEP_TO_PIPELINE_STEP_ID[effKey] ?? null;
+  const copy = AGENT_STEP_STALL_COPY[effKey] || AGENT_STEP_STALL_COPY.__default__;
+  return {
+    stalled: true,
+    effKey,
+    pipelineStepId,
+    stallSeconds,
+    stallLabel: formatStallDuration(stallSeconds),
+    title: copy.title,
+    body: copy.body,
+  };
+}
+
 /** Restore Editor vs Settings + last project/chapter/run after refresh. */
 function readDirectorUiSession() {
   try {
@@ -4561,6 +4709,18 @@ export default function App() {
     return null;
   }, [runStoppingUi, run, activeProjectJobs, runStepGuidance]);
 
+  const [agentRunStallTick, setAgentRunStallTick] = useState(0);
+  useEffect(() => {
+    if (!run || !["running", "queued"].includes(run.status)) return undefined;
+    const id = window.setInterval(() => setAgentRunStallTick((x) => x + 1), 10_000);
+    return () => window.clearInterval(id);
+  }, [run?.id, run?.status]);
+
+  const agentRunStallInfo = useMemo(
+    () => computeAgentRunStallInfo(run, activeProjectJobs, Date.now()),
+    [run, activeProjectJobs, agentRunStallTick],
+  );
+
   /** Top alert: agent run, Studio-only jobs (image/video/…), and last completion (does not vanish when work finishes). */
   const headerProgressBanner = useMemo(() => {
     const studioActive = (activeProjectJobs || []).filter(
@@ -4629,6 +4789,12 @@ export default function App() {
           ? `${detail} — Paused; use Resume in the inspector when ready.`
           : "Automation is paused — use Resume in the inspector when ready.";
       }
+      const stallActive =
+        Boolean(agentRunStallInfo?.stalled) && (st === "running" || st === "queued");
+      if (stallActive) {
+        const prefix = `No run heartbeat for ${agentRunStallInfo.stallLabel} — likely slow or unreachable APIs. `;
+        detail = detail ? prefix + detail : prefix.trim();
+      }
       const throughLabel =
         through === "full_video" ? "Full video" : through === "chapters" ? "Through chapter scripts" : "Through story review";
       return {
@@ -4641,8 +4807,11 @@ export default function App() {
         throughLabel,
         statusLabel: friendlyRunStatus(st),
         stepShort: friendlyPipelineStep(effKey),
-        iconClassName: agentPipelineActivityIconClass(effKey, st),
+        iconClassName: stallActive
+          ? "fa-solid fa-triangle-exclamation fa-fw pipeline-fa-icon pipeline-fa-icon--stall"
+          : agentPipelineActivityIconClass(effKey, st),
         trackActive: st === "running" || st === "queued",
+        stallAlert: stallActive,
       };
     }
 
@@ -4785,6 +4954,7 @@ export default function App() {
     autoThrough,
     runStepGuidance,
     activeProjectJobs,
+    agentRunStallInfo,
     projectId,
     mediaJobId,
     mediaJob,
@@ -5656,7 +5826,12 @@ export default function App() {
       />
 
       {headerProgressBanner ? (
-        <div className="pipeline-progress-alert panel" role="status" aria-live="polite" aria-atomic="true">
+        <div
+          className={`pipeline-progress-alert panel${headerProgressBanner.stallAlert ? " pipeline-progress-alert--stall" : ""}`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           <div className="pipeline-progress-alert__top">
             <div className="pipeline-progress-alert__icon-wrap" aria-hidden="true">
               <i className={headerProgressBanner.iconClassName} />
@@ -9984,6 +10159,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
             friendlyPipelineStep,
             runStepNow,
             pipelineBanner: headerProgressBanner,
+            agentRunStallInfo,
             pipelineActivityRunStatus,
             blocked,
             run,

@@ -30,32 +30,75 @@ Music
   - Adjust with --music-path. Use a path to any supported audio file you have.
 
 Auth (when DIRECTOR_AUTH_ENABLED=true)
-  - Log in from the script (session cookie, same as Studio — no JWT, no localStorage):
+  - **Studio session:** POST /v1/auth/login (cookie jar), then POST /v1/agent-runs and poll GET /v1/agent-runs/{id}:
       python scripts/budget_pipeline_test.py --login-email you@example.com --login-password '…'
     Password can come from env instead: DIRECTOR_TEST_PASSWORD
+  - **Platform admin (CI / no user account):** ``DIRECTOR_ADMIN_API_KEY`` or ``--admin-key`` enqueues
+    ``POST /v1/admin/budget-pipeline-test`` and polls ``GET /v1/admin/agent-runs/{id}`` (music upload is skipped — it needs a session).
+
+Logging
+  - Default: INFO to stderr. Use ``-v`` / ``--verbose`` for DEBUG (every poll tick + request bodies).
+  - Env ``BUDGET_PIPELINE_LOG_LEVEL=DEBUG`` also works.
+
+Programmatic use
+  - ``python -c "from scripts.budget_pipeline_test import run_budget_pipeline; import sys; sys.exit(run_budget_pipeline(['--mode','hands-off','--login-email','a@b.c']))"``
+  - Or import ``run_budget_pipeline`` from another tool (pass argv without script name).
 
 Examples
   python scripts/budget_pipeline_test.py --mode hands-off
   python scripts/budget_pipeline_test.py --mode hands-off --login-email you@example.com
   python scripts/budget_pipeline_test.py --mode auto --api-base http://127.0.0.1:8000
-  python scripts/budget_pipeline_test.py --mode hands-off --production-media
+  python scripts/budget_pipeline_test.py --mode hands-off --production-media -v
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 try:
     import httpx
 except ImportError as e:
     print("Install httpx in this interpreter (e.g. apps/api .venv: pip install httpx)", file=sys.stderr)
     raise SystemExit(2) from e
+
+LOG = logging.getLogger("budget_pipeline_test")
+
+
+def _configure_logging(level_name: str) -> None:
+    root = logging.getLogger()
+    root.handlers.clear()
+    lvl = getattr(logging, level_name.upper(), logging.INFO)
+    h = logging.StreamHandler(sys.stderr)
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root.addHandler(h)
+    root.setLevel(lvl)
+    LOG.setLevel(lvl)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _truncate(s: str, n: int = 2000) -> str:
+    s = str(s)
+    return s if len(s) <= n else s[: n - 3] + "..."
+
+
+def _log_response(method: str, url: str, resp: httpx.Response, *, ok_body: bool = False) -> None:
+    extra = f" status={resp.status_code}"
+    if resp.status_code >= 400:
+        LOG.error("HTTP %s %s%s body=%s", method, url, extra, _truncate(resp.text, 4000))
+    elif ok_body and LOG.isEnabledFor(logging.DEBUG):
+        body = _truncate(resp.text, 3000)
+        LOG.debug("HTTP %s %s%s body=%s", method, url, extra, body)
+    else:
+        LOG.info("HTTP %s %s%s", method, url, extra)
 
 
 def _default_music_path() -> Path:
@@ -70,44 +113,58 @@ def _default_music_path() -> Path:
 
 def _ensure_api_auth(client: httpx.Client, base: str, args: argparse.Namespace) -> dict[str, str]:
     """POST /v1/auth/login when needed; session cookie is stored on ``client`` (no Bearer headers)."""
-    cr = client.get(f"{base}/v1/auth/config", timeout=30.0)
+    url_cfg = f"{base}/v1/auth/config"
+    LOG.info("Checking auth: GET %s", url_cfg)
+    cr = client.get(url_cfg, timeout=30.0)
+    _log_response("GET", url_cfg, cr)
     if cr.status_code >= 400:
-        print(f"GET /v1/auth/config failed: {cr.status_code} {cr.text[:500]}", file=sys.stderr)
         raise SystemExit(1)
-    auth_on = bool((cr.json().get("data") or {}).get("auth_enabled"))
+    cfg = cr.json() if cr.content else {}
+    auth_on = bool((cfg.get("data") or {}).get("auth_enabled"))
+    LOG.info("auth_enabled=%s", auth_on)
     if not auth_on:
         return {}
 
     email = (args.login_email or os.environ.get("DIRECTOR_TEST_EMAIL", "")).strip()
     pw = ((args.login_password or "") or os.environ.get("DIRECTOR_TEST_PASSWORD", "") or "").strip()
     if email and pw:
+        url_login = f"{base}/v1/auth/login"
+        LOG.info("Logging in: POST %s (email=%s)", url_login, email)
         lr = client.post(
-            f"{base}/v1/auth/login",
+            url_login,
             json={"email": email, "password": pw},
             timeout=60.0,
         )
+        _log_response("POST", url_login, lr, ok_body=lr.status_code < 400)
         if lr.status_code >= 400:
-            print(f"POST /v1/auth/login failed: {lr.status_code} {lr.text[:1500]}", file=sys.stderr)
             raise SystemExit(1)
         d = (lr.json().get("data") or {}) if lr.content else {}
         tid = (d.get("tenant_id") or "").strip()
         if not tid:
-            print("Login response missing tenant_id.", file=sys.stderr)
+            LOG.error("Login response missing tenant_id. data keys=%s", list(d.keys()))
             raise SystemExit(1)
-        print(f"Logged in as {d.get('email', email)} (workspace {tid[:8]}…); using session cookie.")
+        cookies = list(client.cookies.jar)
+        LOG.info(
+            "Session established for %s workspace=%s… cookies=%s",
+            d.get("email", email),
+            tid[:8],
+            len(cookies),
+        )
+        if LOG.isEnabledFor(logging.DEBUG):
+            for c in cookies:
+                LOG.debug("cookie %s domain=%s path=%s", c.name, getattr(c, "domain", ""), getattr(c, "path", ""))
         return {}
 
-    print(
-        "API has DIRECTOR_AUTH_ENABLED=true but no credentials were provided.\n\n"
-        "  Log in from the script (session cookie, same as Studio):\n"
-        "    python scripts/budget_pipeline_test.py --login-email YOU@MAIL --login-password '…'\n"
-        "    (or set DIRECTOR_TEST_EMAIL and DIRECTOR_TEST_PASSWORD)\n",
-        file=sys.stderr,
+    LOG.error(
+        "API has DIRECTOR_AUTH_ENABLED=true but no session credentials. "
+        "Use --login-email / --login-password (or DIRECTOR_TEST_EMAIL / DIRECTOR_TEST_PASSWORD), "
+        "or set DIRECTOR_ADMIN_API_KEY / --admin-key for admin enqueue + poll."
     )
     raise SystemExit(1)
 
 
-def main() -> int:
+def run_budget_pipeline(argv: Sequence[str] | None = None) -> int:
+    """Run the budget pipeline (same as CLI). Pass ``argv`` without the script name, or ``None`` for ``sys.argv``."""
     ap = argparse.ArgumentParser(description="Budget pipeline test: auto / hands-off without fal; uses workspace TTS for narration.")
     ap.add_argument(
         "--api-base",
@@ -164,18 +221,43 @@ def main() -> int:
         default=None,
         help="Password for --login-email (avoid: use DIRECTOR_TEST_PASSWORD env).",
     )
-    args = ap.parse_args()
+    ap.add_argument(
+        "--admin-key",
+        default=None,
+        help="X-Director-Admin-Key for /v1/admin/budget-pipeline-test + /v1/admin/agent-runs polling. Env: DIRECTOR_ADMIN_API_KEY.",
+    )
+    ap.add_argument("-v", "--verbose", action="store_true", help="DEBUG logging (every poll + response snippets).")
+    ap.add_argument(
+        "--log-level",
+        default=os.environ.get("BUDGET_PIPELINE_LOG_LEVEL", "INFO"),
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="Log level (default INFO; env BUDGET_PIPELINE_LOG_LEVEL overrides unless -v).",
+    )
+    ns = ap.parse_args(argv if argv is not None else None)
+    level = "DEBUG" if ns.verbose else str(ns.log_level).upper()
+    _configure_logging(level)
+
+    args = ns
+    admin_key = ((args.admin_key or "") or (os.environ.get("DIRECTOR_ADMIN_API_KEY") or "")).strip()
+    skip_music = bool(args.skip_music_upload)
+    if admin_key and not skip_music:
+        LOG.warning("Admin-key mode has no session; skipping music upload.")
+        skip_music = True
 
     music_path = Path(args.music_path) if args.music_path else _default_music_path()
-    if not args.skip_music_upload and not music_path.is_file():
-        print(
-            f"Music file not found: {music_path}\n"
-            "Pass --music-path to an existing audio file or --skip-music-upload.",
-            file=sys.stderr,
-        )
+    if not skip_music and not music_path.is_file():
+        LOG.error("Music file not found: %s (use --music-path or --skip-music-upload)", music_path)
         return 1
 
     base = args.api_base.rstrip("/")
+    LOG.info(
+        "api_base=%s mode=%s production_media=%s skip_music=%s admin_key=%s",
+        base,
+        args.mode,
+        args.production_media,
+        skip_music,
+        "set" if admin_key else "no",
+    )
 
     pipeline_options: dict[str, Any] = {
         "through": "full_video",
@@ -200,68 +282,116 @@ def main() -> int:
         brief["preferred_video_provider"] = "local_ffmpeg"
 
     body: dict[str, Any] = {"brief": brief, "pipeline_options": pipeline_options}
+    LOG.debug("agent-runs body=%s", json.dumps(body, indent=2)[:8000])
 
-    print("POST /v1/agent-runs …")
+    admin_body: dict[str, Any] = {
+        "title": args.title,
+        "topic": args.topic,
+        "target_runtime_minutes": max(2, min(120, int(args.runtime))),
+        "mode": args.mode,
+        "frame_aspect_ratio": str(args.frame_aspect_ratio),
+        "production_media": bool(args.production_media),
+    }
+    tid_env = (os.environ.get("DIRECTOR_API_TENANT_ID") or "").strip()
+    if tid_env:
+        try:
+            uuid.UUID(tid_env)
+        except ValueError:
+            LOG.warning("Ignoring DIRECTOR_API_TENANT_ID (not a valid workspace UUID).")
+        else:
+            admin_body["tenant_id"] = tid_env
+    LOG.debug("admin budget-pipeline-test body=%s", json.dumps(admin_body, indent=2)[:4000])
+
+    url_runs = f"{base}/v1/agent-runs"
+    url_admin_budget = f"{base}/v1/admin/budget-pipeline-test"
     with httpx.Client(timeout=120.0) as client:
-        hdr = _ensure_api_auth(client, base, args)
-
-        r = client.post(f"{base}/v1/agent-runs", headers={**hdr, "Content-Type": "application/json"}, json=body)
+        if admin_key:
+            hdr = {"X-Director-Admin-Key": admin_key}
+            LOG.info("Queueing agent run (admin): POST %s", url_admin_budget)
+            r = client.post(url_admin_budget, headers={**hdr, "Content-Type": "application/json"}, json=admin_body)
+            _log_response("POST", url_admin_budget, r, ok_body=r.status_code < 400)
+        else:
+            hdr = _ensure_api_auth(client, base, args)
+            LOG.info("Queueing agent run: POST %s", url_runs)
+            r = client.post(url_runs, headers={**hdr, "Content-Type": "application/json"}, json=body)
+            _log_response("POST", url_runs, r, ok_body=r.status_code < 400)
         if r.status_code >= 400:
-            print(r.status_code, r.text[:4000], file=sys.stderr)
             return 1
-        data = r.json()
+        try:
+            data = r.json()
+        except json.JSONDecodeError as e:
+            LOG.exception("Invalid JSON from enqueue response: %s", e)
+            return 1
         run = data.get("data", {}).get("agent_run") or {}
         proj = data.get("data", {}).get("project") or {}
         run_id = run.get("id")
         project_id = proj.get("id")
         if not run_id or not project_id:
-            print("Unexpected response:", json.dumps(data, indent=2)[:4000])
+            LOG.error("Unexpected enqueue response structure: %s", _truncate(json.dumps(data, indent=2), 4000))
             return 1
-        print(f"  agent_run_id={run_id}")
-        print(f"  project_id={project_id}")
+        LOG.info("agent_run_id=%s project_id=%s", run_id, project_id)
 
-        if not args.skip_music_upload:
-            print(f"POST music bed upload ({music_path.name}) …")
+        if not skip_music:
+            sz = music_path.stat().st_size
+            LOG.info("Uploading music bed %s (%d bytes)", music_path.name, sz)
             with music_path.open("rb") as f:
                 files = {"file": (music_path.name, f, "audio/mpeg")}
                 form = {
                     "title": "Budget test bed",
                     "license_or_source_ref": f"Local test file: {music_path.name} (not for distribution)",
                 }
-                um = client.post(
-                    f"{base}/v1/projects/{project_id}/music-beds/upload",
-                    headers=hdr,
-                    data=form,
-                    files=files,
-                )
+                um_url = f"{base}/v1/projects/{project_id}/music-beds/upload"
+                um = client.post(um_url, headers=hdr, data=form, files=files)
+            _log_response("POST", um_url, um, ok_body=um.status_code < 400)
             if um.status_code >= 400:
-                print(um.status_code, um.text[:2000], file=sys.stderr)
                 return 1
-            print("  music bed registered.")
+            LOG.info("Music bed registered.")
 
         deadline = time.monotonic() + float(args.max_wait_sec)
         poll = max(1.0, float(args.poll_sec))
         last_step = None
+        poll_url = (
+            f"{base}/v1/admin/agent-runs/{run_id}"
+            if admin_key
+            else f"{base}/v1/agent-runs/{run_id}"
+        )
+        tick = 0
         while time.monotonic() < deadline:
-            gr = client.get(f"{base}/v1/agent-runs/{run_id}", headers=hdr)
+            tick += 1
+            gr = client.get(poll_url, headers=hdr)
             if gr.status_code >= 400:
-                print(gr.status_code, gr.text[:2000], file=sys.stderr)
+                _log_response("GET", poll_url, gr)
                 return 1
-            payload = gr.json().get("data") or {}
+            try:
+                payload = gr.json().get("data") or {}
+            except json.JSONDecodeError as e:
+                LOG.exception("Poll invalid JSON: %s", e)
+                return 1
             status = payload.get("status")
             step = payload.get("current_step")
             if step != last_step:
-                print(f"  status={status} step={step}")
+                LOG.info("poll #%d status=%s step=%s (was step=%s)", tick, status, step, last_step)
                 last_step = step
+            elif LOG.isEnabledFor(logging.DEBUG):
+                LOG.debug("poll #%d status=%s step=%s", tick, status, step)
             if status in ("succeeded", "failed", "cancelled", "blocked"):
-                print(json.dumps(payload, indent=2)[:8000])
+                err = payload.get("error_message")
+                if err:
+                    LOG.warning("terminal status=%s error_message=%s", status, _truncate(str(err), 2000))
+                LOG.info("final payload excerpt: %s", _truncate(json.dumps(payload, indent=2), 8000))
                 if status == "succeeded":
+                    LOG.info("Budget pipeline finished successfully.")
                     return 0
+                LOG.error("Budget pipeline ended with status=%s", status)
                 return 1
             time.sleep(poll)
 
-        print("Timed out waiting for terminal agent run status.", file=sys.stderr)
+        LOG.error("Timed out after %.0fs (poll every %.1fs). Last step=%s", args.max_wait_sec, poll, last_step)
         return 1
+
+
+def main() -> int:
+    return run_budget_pipeline(sys.argv[1:])
 
 
 if __name__ == "__main__":
