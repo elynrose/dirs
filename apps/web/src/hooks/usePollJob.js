@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "../lib/api.js";
-import { parseJson } from "../lib/apiHelpers.js";
+import { apiErrorMessage, parseJson } from "../lib/apiHelpers.js";
 
 export function usePollJob(jobId, active, pollIntervalMs = 800) {
   const [job, setJob] = useState(null);
@@ -27,6 +27,11 @@ export function usePollJob(jobId, active, pollIntervalMs = 800) {
         const r = await api(`/v1/jobs/${jobId}`);
         const j = await parseJson(r);
         if (!cancelled) {
+          if (!r.ok) {
+            setJob(null);
+            setErr(apiErrorMessage(j) || `HTTP ${r.status}`);
+            return;
+          }
           setJob(j.data ?? j);
           setErr(null);
         }

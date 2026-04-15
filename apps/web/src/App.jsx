@@ -1092,9 +1092,10 @@ export default function App() {
   // ---------------------------------------------------------------------------
   const { toasts, toast: showToast, dismissToast } = useToast({ durationMs: 5000 });
 
+  /** Do not gate on ``studioReady`` — bootstrap can lag after POST /v1/jobs; polling must run or the test appears stuck. */
   const { job: adapterSmokeJob, err: adapterSmokePollErr } = usePollJob(
     adapterSmokeJobId,
-    adapterSmokePollActive && Boolean(adapterSmokeJobId) && studioReady,
+    adapterSmokePollActive && Boolean(adapterSmokeJobId),
     jobPollIntervalMs,
   );
 
@@ -8088,6 +8089,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
               onChange={(e) => setAppConfig((p) => ({ ...p, comfyui_base_url: e.target.value }))}
             />
             <label htmlFor="cfg-comfy-api-key">API key</label>
+            {credKeyNote("comfyui_api_key")}
             <input
               id="cfg-comfy-api-key"
               type="password"
