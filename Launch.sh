@@ -150,7 +150,7 @@ load_repo_env() {
 (
   cd "$API_DIR"
   load_repo_env
-  nohup "$VENV_CELERY" -A director_api.tasks.celery_app worker -l info >>"$RUN_DIR/director-worker.log" 2>&1 &
+  nohup "$VENV_CELERY" -A director_api.tasks.celery_app worker -Q text,media,compile -l info >>"$RUN_DIR/director-worker.log" 2>&1 &
   echo $! >"$RUN_DIR/director-worker.pid"
 )
 

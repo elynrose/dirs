@@ -376,6 +376,11 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     const p = readBudgetPipelinePersisted();
     return p?.budgetProductionMedia === true;
   });
+  /** Optional; sent as ``tenant_id`` when set (overrides session workspace). */
+  const [budgetWorkspaceIdOverride, setBudgetWorkspaceIdOverride] = useState(() => {
+    const p = readBudgetPipelinePersisted();
+    return typeof p?.budgetWorkspaceIdOverride === "string" ? p.budgetWorkspaceIdOverride : "";
+  });
   const [budgetBusy, setBudgetBusy] = useState(false);
   const [budgetErr, setBudgetErr] = useState(() => {
     const p = readBudgetPipelinePersisted();
@@ -422,6 +427,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
           budgetMode,
           budgetFrameAspect,
           budgetProductionMedia,
+          budgetWorkspaceIdOverride,
           budgetLast,
           budgetErr,
           budgetRunHistory,
@@ -438,6 +444,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     budgetMode,
     budgetFrameAspect,
     budgetProductionMedia,
+    budgetWorkspaceIdOverride,
     budgetLast,
     budgetErr,
     budgetRunHistory,
@@ -671,7 +678,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
         frame_aspect_ratio: budgetFrameAspect === "9:16" ? "9:16" : "16:9",
         production_media: budgetProductionMedia,
       };
-      const tid = resolvedBudgetWorkspaceId.trim();
+      const tid = (budgetWorkspaceIdOverride.trim() || resolvedBudgetWorkspaceId.trim());
       if (tid) payload.tenant_id = tid;
       const r = await adminFetch("/v1/admin/budget-pipeline-test", {
         method: "POST",
@@ -721,6 +728,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     budgetFrameAspect,
     budgetProductionMedia,
     resolvedBudgetWorkspaceId,
+    budgetWorkspaceIdOverride,
     showToast,
   ]);
 
@@ -753,7 +761,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
         frame_aspect_ratio: budgetFrameAspect === "9:16" ? "9:16" : "16:9",
         production_media: budgetProductionMedia,
       };
-      const tid = resolvedBudgetWorkspaceId.trim();
+      const tid = (budgetWorkspaceIdOverride.trim() || resolvedBudgetWorkspaceId.trim());
       if (tid) payload.tenant_id = tid;
       const r = await adminFetch("/v1/admin/budget-pipeline-test", {
         method: "POST",
@@ -806,6 +814,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     budgetFrameAspect,
     budgetProductionMedia,
     resolvedBudgetWorkspaceId,
+    budgetWorkspaceIdOverride,
     showToast,
   ]);
 
@@ -901,7 +910,20 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
         });
         const b = await parseJson(r);
         if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
-        showToast?.("Cancel requested for that run", { type: "success" });
+        const d = b?.data;
+        const st = d?.status;
+        const pc = d?.pipeline_control_json;
+        const stopReq = pc && typeof pc === "object" && Boolean(pc.stop_requested);
+        if (st === "cancelled") {
+          showToast?.("Run cancelled", { type: "success" });
+        } else if (stopReq) {
+          showToast?.(
+            'Stop requested — status may stay "running" until the worker exits',
+            { type: "success" },
+          );
+        } else {
+          showToast?.("Cancel requested for that run", { type: "success" });
+        }
         await loadTab();
       } catch (e) {
         const msg = formatUserFacingError(e);
@@ -936,7 +958,9 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
       if (!r.ok) throw new Error(apiErrorMessage(b) || `HTTP ${r.status}`);
       const n = Number(b?.data?.stopped_count);
       showToast?.(
-        Number.isFinite(n) ? `Stop requested for ${n} run(s)` : "Cancel-all completed",
+        Number.isFinite(n)
+          ? `Stop requested for ${n} run(s) — some rows may stay running until workers exit`
+          : "Cancel-all completed",
         { type: "success" },
       );
       await loadTab();
@@ -1117,7 +1141,11 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
               <p className="subtle" style={{ margin: "0 0 12px", fontSize: "0.88rem" }}>
                 Same run as <code className="mono">scripts/budget_pipeline_test.py</code> — placeholder images; scene
                 videos off by default (timeline uses stills). Narration uses your workspace default TTS.{" "}
-                <code className="mono">full_video</code> pipeline. Requires a Celery worker.{" "}
+                <code className="mono">full_video</code> pipeline. Requires a Celery worker consuming the{" "}
+                <code className="mono">text</code>, <code className="mono">media</code>, and <code className="mono">compile</code>{" "}
+                queues (see repo <code className="mono">celery_app.py</code> — systemd and Launch scripts use{" "}
+                <code className="mono">-Q text,media,compile</code>). If agent runs stay <code className="mono">queued</code>, the
+                worker is usually not bound to those queues or Redis is unreachable.{" "}
                 <strong>Continue budget pipeline</strong> re-queues on the last project id with{" "}
                 <code className="mono">continue_from_existing</code> so completed phases are skipped.
               </p>
@@ -1194,6 +1222,23 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                     </span>
                   )}
                 </p>
+                <label className="subtle" style={{ display: "block", marginTop: 8 }}>
+                  Override workspace id (optional){" "}
+                  <input
+                    className="mono"
+                    value={budgetWorkspaceIdOverride}
+                    onChange={(e) => setBudgetWorkspaceIdOverride(e.target.value)}
+                    placeholder="00000000-0000-0000-0000-000000000001"
+                    autoComplete="off"
+                    spellCheck="false"
+                    style={{ width: "100%", marginTop: 4, fontSize: "0.85rem" }}
+                  />
+                  <span style={{ display: "block", marginTop: 4, fontSize: "0.78rem", lineHeight: 1.4 }}>
+                    When set, this is sent as <code className="mono">tenant_id</code> instead of the session workspace.
+                    Use if the default tenant is missing in the DB or you need a specific workspace for budget /
+                    production runs.
+                  </span>
+                </label>
                 <label className="subtle" style={{ display: "block", marginTop: 6 }}>
                   Project id (last budget run — updates each time you queue Run or Continue; edit or paste if needed){" "}
                   <input
@@ -1586,7 +1631,8 @@ function AdminAgentRunsTable({ rows, onCancelRun, cancelRunBusyId, onCancelAll, 
           {cancelAllBusy ? "…" : "Cancel all (filtered)"}
         </button>
         <span className="subtle" style={{ fontSize: "0.78rem", maxWidth: 520, lineHeight: 1.4 }}>
-          Sends the same stop signal as per-row Cancel. Empty filters = every queued / running / paused run on the server.
+          Sends the same stop signal as per-row Cancel. Rows may show &quot;running&quot; with stop requested until workers
+          finish. Empty filters = every queued / running / paused run on the server.
         </span>
       </div>
       <div style={{ overflowX: "auto" }}>
@@ -1604,7 +1650,7 @@ function AdminAgentRunsTable({ rows, onCancelRun, cancelRunBusyId, onCancelAll, 
           <tbody>
             {r.map((row) => {
               const rid = row.id != null ? String(row.id) : "";
-              const canCancel = agentRunStatusCancellable(row.status);
+              const stopRequested = Boolean(row.stop_requested);
               return (
                 <tr key={rid || JSON.stringify(row)}>
                   <td title={rid}>
@@ -1620,18 +1666,35 @@ function AdminAgentRunsTable({ rows, onCancelRun, cancelRunBusyId, onCancelAll, 
                       row.project_id ?? "—"
                     )}
                   </td>
-                  <td className="mono">{row.status ?? "—"}</td>
+                  <td className="mono">
+                    {row.status ?? "—"}
+                    {stopRequested ? (
+                      <span
+                        className="subtle"
+                        style={{ display: "block", fontSize: "0.75rem", marginTop: 2 }}
+                        title="Worker will set status to cancelled at the next checkpoint"
+                      >
+                        stop requested — finishing
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="mono">{row.created_at ?? "—"}</td>
                   <td>
-                    {canCancel ? (
-                      <button
-                        type="button"
-                        className="secondary"
-                        disabled={cancelRunBusyId === rid}
-                        onClick={() => void onCancelRun(rid)}
-                      >
-                        {cancelRunBusyId === rid ? "…" : "Cancel"}
-                      </button>
+                    {agentRunStatusCancellable(row.status) ? (
+                      stopRequested ? (
+                        <span className="subtle" title="Stop already sent; waiting for worker">
+                          Stopping…
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={cancelRunBusyId === rid}
+                          onClick={() => void onCancelRun(rid)}
+                        >
+                          {cancelRunBusyId === rid ? "…" : "Cancel"}
+                        </button>
+                      )
                     ) : (
                       "—"
                     )}

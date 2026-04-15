@@ -45,7 +45,7 @@ alembic upgrade head
 uvicorn director_api.main:app --reload --host 0.0.0.0 --port 8000
 
 # Worker + beat (separate terminals)
-celery -A director_api.tasks.celery_app worker -l info
+celery -A director_api.tasks.celery_app worker -Q text,media,compile -l info
 celery -A director_api.tasks.celery_app beat -l info
 ```
 

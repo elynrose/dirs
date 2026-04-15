@@ -1406,6 +1406,8 @@ def admin_budget_pipeline_test(
 
 
 def _run_out(r: AgentRun, *, tenant_name: str | None = None) -> dict[str, Any]:
+    ctrl = r.pipeline_control_json if isinstance(r.pipeline_control_json, dict) else {}
+    stop_req = bool(ctrl.get("stop_requested"))
     return {
         "id": str(r.id),
         "tenant_id": r.tenant_id,
@@ -1413,7 +1415,9 @@ def _run_out(r: AgentRun, *, tenant_name: str | None = None) -> dict[str, Any]:
         "project_id": str(r.project_id),
         "status": r.status,
         "current_step": r.current_step,
+        "stop_requested": stop_req,
         "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         "completed_at": r.completed_at.isoformat() if r.completed_at else None,
     }
 

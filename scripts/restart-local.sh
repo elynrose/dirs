@@ -61,7 +61,7 @@ start_background() {
   [[ -f "$DOTENV" ]] && . "$DOTENV"
   set +a
 
-  nohup "$VENV_CELERY" -A director_api.tasks.celery_app worker -l info \
+  nohup "$VENV_CELERY" -A director_api.tasks.celery_app worker -Q text,media,compile -l info \
     >>"$RUN_DIR/director-worker.log" 2>&1 &
   echo $! >"$RUN_DIR/director-worker.pid"
   echo "restart-local: Celery worker PID $(cat "$RUN_DIR/director-worker.pid") → $RUN_DIR/director-worker.log"

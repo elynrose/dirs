@@ -40,7 +40,7 @@ make api
 
 ```bash
 make worker
-# or: cd apps/api && celery -A director_api.tasks.celery_app worker -l info
+# or: cd apps/api && celery -A director_api.tasks.celery_app worker -Q text,media,compile -l info
 ```
 
 **Agent runs** (`POST /v1/agent-runs`) and **async jobs** need a **healthy worker** and **Redis**. If the UI sticks on a step (e.g. **outline running**):

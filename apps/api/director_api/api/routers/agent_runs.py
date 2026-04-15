@@ -53,6 +53,9 @@ def _apply_stop_to_agent_run(db: Session, r: AgentRun) -> AgentRun:
         )
         r.steps_json = ev
         flag_modified(r, "steps_json")
+    # Bumps row version so clients polling ``updated_at`` / SSE see the stop signal immediately
+    # (status may stay ``running`` until the worker hits a checkpoint).
+    r.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(r)
     log.info("agent_run_stop_requested", agent_run_id=str(r.id), status=r.status)
