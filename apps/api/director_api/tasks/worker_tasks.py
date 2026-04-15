@@ -1950,24 +1950,8 @@ def _run_agent_full_pipeline_tail(
         tail_resume_from,
         auto_scene_videos=auto_scene_videos_pre,
     )
-    if tr:
-        if not _project_has_character_rows(db, pid):
-            log.warning(
-                "oversight_tail_resume_clamped_characters",
-                project_id=str(pid),
-                reason="no_project_characters",
-            )
-            tr = "auto_characters"
-        else:
-            have_vis_pre = _scene_ids_with_succeeded_visual_media(db, [s.id for s in all_scenes])
-            missing_img_scenes = [s for s in all_scenes if s.id not in have_vis_pre]
-            if missing_img_scenes:
-                log.warning(
-                    "oversight_tail_resume_clamped_images",
-                    project_id=str(pid),
-                    missing_image_scene_count=len(missing_img_scenes),
-                )
-                tr = "auto_images"
+    hard_floor = pipeline_oversight_svc.compute_hard_tail_floor(db, pid, [s.id for s in all_scenes])
+    tr = pipeline_oversight_svc.clamp_tail_resume_to_hard_floor(tr, hard_floor)
 
     # Character bible (LLM) — image/video prompts use consistency prefixes from ProjectCharacter rows.
     # Run when oversight allows this tail slot, or whenever we still have no ProjectCharacter rows — do not

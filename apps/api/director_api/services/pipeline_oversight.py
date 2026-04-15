@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session
 from director_api.agents.phase2_llm import _chat_json_object_ex
 from director_api.services.llm_prompt_runtime import get_llm_prompt_text
 from director_api.config import Settings
-from director_api.db.models import Chapter, Project, ProjectCharacter, Scene
+from director_api.db.models import Asset, Chapter, Project, ProjectCharacter, Scene
 from director_api.services import agent_resume as agent_resume_svc
 from director_api.services.phase5_readiness import _project_structural_issues
 from director_api.services.research_service import sanitize_jsonb_text
@@ -290,6 +291,58 @@ def tail_should_run(step: str, resume_from: str | None) -> bool:
     if resume_from not in TAIL_STEPS:
         return True
     return tail_step_index(step) >= tail_step_index(resume_from)
+
+
+def scene_ids_with_succeeded_visual_media(db: Session, scene_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """Scene ids that have at least one succeeded image or video (matches auto-pipeline expectations)."""
+    if not scene_ids:
+        return set()
+    rows = db.scalars(
+        select(Asset.scene_id)
+        .where(
+            Asset.scene_id.in_(scene_ids),
+            Asset.status == "succeeded",
+            Asset.asset_type.in_(("image", "video")),
+        )
+        .distinct()
+    ).all()
+    return {sid for sid in rows if sid is not None}
+
+
+def compute_hard_tail_floor(db: Session, project_id: uuid.UUID, scene_ids: list[uuid.UUID]) -> str | None:
+    """Earliest tail step that must still run given DB facts (characters, then scene stills). LLM resume cannot skip past this."""
+    n_chars = (
+        db.scalar(select(func.count()).select_from(ProjectCharacter).where(ProjectCharacter.project_id == project_id)) or 0
+    )
+    if int(n_chars) == 0:
+        return "auto_characters"
+    if not scene_ids:
+        return None
+    have = scene_ids_with_succeeded_visual_media(db, scene_ids)
+    missing = [sid for sid in scene_ids if sid not in have]
+    if missing:
+        return "auto_images"
+    return None
+
+
+def clamp_tail_resume_to_hard_floor(tail_resume: str | None, floor: str | None) -> str | None:
+    """
+    If ``floor`` is set, the worker must not resume **after** that step while that work is still incomplete.
+    Pull ``tail_resume`` back to ``floor`` when it would otherwise skip ahead (e.g. oversight → auto_narration while images missing).
+    ``tail_resume`` None means run the full tail from the start (always satisfies the floor).
+    """
+    if floor is None:
+        return tail_resume
+    if tail_resume is None:
+        return None
+    t = _canonical_step(tail_resume)
+    f = _canonical_step(floor)
+    if not t or not f or t not in TAIL_STEPS or f not in TAIL_STEPS:
+        return tail_resume
+    if tail_step_index(t) <= tail_step_index(f):
+        return tail_resume
+    log.warning("tail_resume_clamped_to_hard_floor suggested=%s floor=%s", tail_resume, f)
+    return f
 
 
 def clamp_oversight_floor(oversight_earliest: str | None, floor: str) -> str | None:
