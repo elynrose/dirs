@@ -437,10 +437,11 @@ def admin_get_tenant(tenant_id: str, db: Session = Depends(get_db), _: None = Ad
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "tenant not found"})
     bill = db.get(TenantBilling, tenant_id)
     n_proj = int(db.scalar(select(func.count()).select_from(Project).where(Project.tenant_id == tenant_id)) or 0)
+    disp = _tenant_billing_display_by_tenant_id(db, [tenant_id]).get(tenant_id, {})
     return {
         "data": {
             **_tenant_out(t),
-            "billing": _billing_out(bill, db) if bill else None,
+            "billing": _billing_out(bill, db, display=disp) if bill else None,
             "project_count": n_proj,
         },
         "meta": {},
@@ -793,13 +794,66 @@ def admin_delete_plan(plan_id: uuid.UUID, db: Session = Depends(get_db), _: None
 # ---------------------------------------------------------------------------
 
 
-def _billing_out(b: TenantBilling, db: Session) -> dict[str, Any]:
+def _tenant_billing_display_by_tenant_id(db: Session, tenant_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Workspace name plus owner (or first member) contact for admin lists and billing payloads."""
+    ids = list({str(x).strip() for x in tenant_ids if x and str(x).strip()})
+    if not ids:
+        return {}
+    out: dict[str, dict[str, Any]] = {
+        tid: {"tenant_name": None, "owner_full_name": None, "owner_email": None} for tid in ids
+    }
+    for t in db.scalars(select(Tenant).where(Tenant.id.in_(ids))).all():
+        out[t.id]["tenant_name"] = t.name
+    own_q = (
+        select(TenantMembership.tenant_id, User.full_name, User.email)
+        .join(User, User.id == TenantMembership.user_id)
+        .where(TenantMembership.tenant_id.in_(ids))
+        .where(TenantMembership.role == "owner")
+        .order_by(TenantMembership.tenant_id, TenantMembership.created_at)
+    )
+    seen_owner: set[str] = set()
+    for row in db.execute(own_q):
+        tid = row.tenant_id
+        if tid in seen_owner:
+            continue
+        seen_owner.add(tid)
+        out[tid]["owner_full_name"] = (row.full_name or "").strip() or None
+        out[tid]["owner_email"] = row.email
+    need = [tid for tid in ids if out[tid]["owner_email"] is None]
+    if need:
+        mem_q = (
+            select(TenantMembership.tenant_id, User.full_name, User.email)
+            .join(User, User.id == TenantMembership.user_id)
+            .where(TenantMembership.tenant_id.in_(need))
+            .order_by(TenantMembership.tenant_id, TenantMembership.created_at)
+        )
+        seen_mem: set[str] = set()
+        for row in db.execute(mem_q):
+            tid = row.tenant_id
+            if tid in seen_mem:
+                continue
+            seen_mem.add(tid)
+            out[tid]["owner_full_name"] = (row.full_name or "").strip() or None
+            out[tid]["owner_email"] = row.email
+    return out
+
+
+def _billing_out(
+    b: TenantBilling,
+    db: Session,
+    *,
+    display: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    d = display if display is not None else {}
     plan_name = None
     if b.plan_id:
         pl = db.get(SubscriptionPlan, b.plan_id)
         plan_name = pl.display_name if pl else None
     return {
         "tenant_id": b.tenant_id,
+        "tenant_name": d.get("tenant_name"),
+        "owner_full_name": d.get("owner_full_name"),
+        "owner_email": d.get("owner_email"),
         "stripe_customer_id": b.stripe_customer_id,
         "stripe_subscription_id": b.stripe_subscription_id,
         "plan_id": str(b.plan_id) if b.plan_id else None,
@@ -811,10 +865,15 @@ def _billing_out(b: TenantBilling, db: Session) -> dict[str, Any]:
     }
 
 
-def _billing_placeholder(tenant_id: str) -> dict[str, Any]:
+def _billing_placeholder(tenant_id: str, db: Session) -> dict[str, Any]:
     """Shape matches `_billing_out` when no `TenantBilling` row exists yet (admin can PATCH to create)."""
+    tid = (tenant_id or "").strip()
+    disp = _tenant_billing_display_by_tenant_id(db, [tid]).get(tid, {}) if tid else {}
     return {
-        "tenant_id": tenant_id,
+        "tenant_id": tid,
+        "tenant_name": disp.get("tenant_name"),
+        "owner_full_name": disp.get("owner_full_name"),
+        "owner_email": disp.get("owner_email"),
         "stripe_customer_id": None,
         "stripe_subscription_id": None,
         "plan_id": None,
@@ -847,8 +906,13 @@ def admin_list_tenant_billing(
         rows = list(
             db.scalars(select(TenantBilling).order_by(TenantBilling.updated_at.desc()).offset(offset).limit(limit)).all()
         )
+        tids = [b.tenant_id for b in rows]
+        disp = _tenant_billing_display_by_tenant_id(db, tids)
         return {
-            "data": {"items": [_billing_out(b, db) for b in rows], "total_count": total},
+            "data": {
+                "items": [_billing_out(b, db, display=disp.get(b.tenant_id, {})) for b in rows],
+                "total_count": total,
+            },
             "meta": {},
         }
     except SQLAlchemyError as e:
@@ -943,9 +1007,10 @@ def admin_get_tenant_billing(tenant_id: str, db: Session = Depends(get_db), _: N
     if not t:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "tenant not found"})
     b = db.get(TenantBilling, tid)
+    disp = _tenant_billing_display_by_tenant_id(db, [tid]).get(tid, {})
     if not b:
-        return {"data": _billing_placeholder(tid), "meta": {"billing_row_present": False}}
-    return {"data": _billing_out(b, db), "meta": {"billing_row_present": True}}
+        return {"data": _billing_placeholder(tid, db), "meta": {"billing_row_present": False}}
+    return {"data": _billing_out(b, db, display=disp), "meta": {"billing_row_present": True}}
 
 
 @router.patch("/tenant-billing/{tenant_id}")
@@ -978,7 +1043,8 @@ def admin_patch_tenant_billing(
     db.commit()
     db.refresh(b)
     invalidate_runtime_settings_cache(tid)
-    return {"data": _billing_out(b, db), "meta": {}}
+    disp = _tenant_billing_display_by_tenant_id(db, [tid]).get(tid, {})
+    return {"data": _billing_out(b, db, display=disp), "meta": {}}
 
 
 # ---------------------------------------------------------------------------

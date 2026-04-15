@@ -179,6 +179,23 @@ function normalizeAdminList(tab, raw) {
   return d;
 }
 
+/** Admin billing: `datetime-local` value from API ISO string. */
+function billingIsoToDatetimeLocal(iso) {
+  if (!iso || typeof iso !== "string") return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Returns ISO string or null when empty / invalid. */
+function billingDatetimeLocalToIso(local) {
+  if (local == null || String(local).trim() === "") return null;
+  const d = new Date(local);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 function JsonTextArea({ value, onChange, rows = 6 }) {
   return (
     <textarea
@@ -2269,53 +2286,88 @@ function PlanEditCard({ plan, onRefresh, showToast, entitlementDefs }) {
 
 function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
   const items = Array.isArray(data?.items) ? data.items : [];
-  const [tenantId, setTenantId] = useState("");
-  const [patchJson, setPatchJson] = useState("{}");
+  const [lookupQ, setLookupQ] = useState("");
   const [loadBusy, setLoadBusy] = useState(false);
   const [searchHits, setSearchHits] = useState([]);
+  const [plans, setPlans] = useState([]);
+  const [detailTid, setDetailTid] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [billingRowPresent, setBillingRowPresent] = useState(false);
+  const [detailBusy, setDetailBusy] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [stripeCustomerId, setStripeCustomerId] = useState("");
+  const [stripeSubId, setStripeSubId] = useState("");
+  const [planId, setPlanId] = useState("");
+  const [status, setStatus] = useState("none");
+  const [periodEndLocal, setPeriodEndLocal] = useState("");
+  const [overrideEnt, setOverrideEnt] = useState({});
 
-  const patchObj = useMemo(() => {
-    try {
-      return JSON.parse(patchJson || "{}");
-    } catch {
-      return {};
-    }
-  }, [patchJson]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await adminFetch("/v1/admin/subscription-plans");
+        const body = await parseJson(r);
+        if (!cancelled && r.ok && Array.isArray(body.data?.plans)) setPlans(body.data.plans);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const setOverrideEnt = (o) => {
-    try {
-      const base = JSON.parse(patchJson || "{}");
-      if (typeof base !== "object" || base === null) throw new Error("bad");
-      base.entitlements_override_json = o;
-      setPatchJson(safeJsonStringify(base));
-    } catch {
-      setPatchJson(safeJsonStringify({ entitlements_override_json: o }));
-    }
+  const applyDetailFromApi = (row, meta) => {
+    setDetail(row);
+    setBillingRowPresent(Boolean(meta?.billing_row_present));
+    setStripeCustomerId(row?.stripe_customer_id || "");
+    setStripeSubId(row?.stripe_subscription_id || "");
+    setPlanId(row?.plan_id || "");
+    setStatus(String(row?.status || "none").trim() || "none");
+    setPeriodEndLocal(billingIsoToDatetimeLocal(row?.current_period_end));
+    const o = row?.entitlements_override_json;
+    setOverrideEnt(o && typeof o === "object" ? o : {});
+  };
+
+  const closeDetail = () => {
+    setDetailTid(null);
+    setDetail(null);
+    setBillingRowPresent(false);
   };
 
   const fetchBillingForTenant = async (tid) => {
-    const r = await adminFetch(`/v1/admin/tenant-billing/${encodeURIComponent(tid)}`);
-    const body = await parseJson(r);
-    if (!r.ok) {
-      showToast?.(apiErrorMessage(body) || "Failed", { type: "error" });
-      setPatchJson("{}");
+    setDetailBusy(true);
+    setDetailTid(tid);
+    try {
+      const r = await adminFetch(`/v1/admin/tenant-billing/${encodeURIComponent(tid)}`);
+      const body = await parseJson(r);
+      if (!r.ok) {
+        showToast?.(apiErrorMessage(body) || "Failed", { type: "error" });
+        closeDetail();
+        return false;
+      }
+      applyDetailFromApi(body.data, body.meta);
+      if (body.meta?.billing_row_present === false) {
+        showToast?.(
+          "No billing row yet — set plan, status, and optional overrides below, then Save to create the subscription.",
+          { type: "info", durationMs: 8000 },
+        );
+      } else {
+        showToast?.("Loaded workspace billing", { type: "success" });
+      }
+      return true;
+    } catch (e) {
+      showToast?.(formatUserFacingError(e), { type: "error" });
+      closeDetail();
       return false;
+    } finally {
+      setDetailBusy(false);
     }
-    setTenantId(tid);
-    setPatchJson(safeJsonStringify(body.data));
-    if (body.meta?.billing_row_present === false) {
-      showToast?.("No billing row yet — edit JSON or entitlements, then PATCH to create the subscription.", {
-        type: "info",
-        durationMs: 7000,
-      });
-    } else {
-      showToast?.("Loaded billing row", { type: "success" });
-    }
-    return true;
   };
 
   const loadOne = async () => {
-    const q = tenantId.trim();
+    const q = lookupQ.trim();
     if (!q) return;
     setLoadBusy(true);
     setSearchHits([]);
@@ -2342,48 +2394,64 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
     }
   };
 
-  const save = async () => {
-    let bodyObj = {};
+  const saveBilling = async () => {
+    if (!detailTid) return;
+    setSaveBusy(true);
     try {
-      bodyObj = JSON.parse(patchJson || "{}");
-    } catch {
-      showToast?.("Invalid JSON", { type: "error" });
-      return;
-    }
-    const r = await adminFetch(`/v1/admin/tenant-billing/${encodeURIComponent(tenantId.trim())}`, {
-      method: "PATCH",
-      body: JSON.stringify(bodyObj),
-    });
-    const body = await parseJson(r);
-    if (!r.ok) showToast?.(apiErrorMessage(body) || "Failed", { type: "error" });
-    else {
-      showToast?.("Billing updated", { type: "success" });
+      const payload = {
+        stripe_customer_id: stripeCustomerId.trim() === "" ? null : stripeCustomerId.trim(),
+        stripe_subscription_id: stripeSubId.trim() === "" ? null : stripeSubId.trim(),
+        plan_id: planId.trim() === "" ? null : planId.trim(),
+        status: status.trim() === "" ? null : status.trim(),
+        entitlements_override_json: overrideEnt,
+      };
+      const iso = billingDatetimeLocalToIso(periodEndLocal);
+      if (iso) payload.current_period_end = iso;
+
+      const r = await adminFetch(`/v1/admin/tenant-billing/${encodeURIComponent(detailTid)}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      const body = await parseJson(r);
+      if (!r.ok) {
+        showToast?.(apiErrorMessage(body) || "Failed", { type: "error" });
+        return;
+      }
+      showToast?.("Billing saved", { type: "success" });
+      applyDetailFromApi(body.data, { billing_row_present: true });
       await onRefresh();
+    } catch (e) {
+      showToast?.(formatUserFacingError(e), { type: "error" });
+    } finally {
+      setSaveBusy(false);
     }
+  };
+
+  const primaryContactLabel = (row) => {
+    const fn = row?.owner_full_name && String(row.owner_full_name).trim();
+    if (fn) return fn;
+    if (row?.owner_email) return row.owner_email;
+    return "—";
   };
 
   return (
     <>
       <div className="panel" style={{ padding: 12, marginBottom: 16 }}>
-        <strong>Tenant billing</strong>
+        <strong>Workspace billing</strong>
         <p className="subtle">
-          <strong>Load</strong> looks up by <strong>user email</strong>, <strong>user full name</strong>,{" "}
-          <strong>workspace name</strong>, <strong>workspace slug</strong>, or exact <strong>workspace id</strong>. If
-          several workspaces match, choose one in the results. Load returns the billing row if it exists; if the
-          workspace has no row yet, you get a blank template (same shape). PATCH creates the row when missing — set{" "}
-          <code>plan_id</code>, <code>status</code> (e.g. active or trialing), and/or{" "}
-          <code>entitlements_override_json</code> without Stripe.
+          <strong>Load</strong> by <strong>user email</strong>, <strong>user full name</strong>, <strong>workspace name</strong>,{" "}
+          <strong>slug</strong>, or exact <strong>workspace id</strong>. If several workspaces match, pick one in the results.
+          <strong> Save</strong> creates a billing row when missing (choose a plan and status first), or updates the existing row.
         </p>
         <input
           placeholder="email, user name, workspace name, slug, or workspace id"
-          value={tenantId}
-          onChange={(e) => setTenantId(e.target.value)}
-          className="mono"
+          value={lookupQ}
+          onChange={(e) => setLookupQ(e.target.value)}
           style={{ width: "100%", marginBottom: 8 }}
         />
         <div className="action-row" style={{ gap: 8, marginBottom: 8 }}>
           <button type="button" className="secondary" disabled={loadBusy} onClick={() => void loadOne()}>
-            {loadBusy ? "Loading…" : "Load"}
+            {loadBusy ? "Loading…" : "Load workspace"}
           </button>
         </div>
         {searchHits.length > 0 ? (
@@ -2394,9 +2462,9 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
             <table className="usage-table" style={{ fontSize: "0.82rem", width: "100%" }}>
               <thead>
                 <tr>
-                  <th>workspace</th>
-                  <th>user</th>
-                  <th>match</th>
+                  <th>Workspace</th>
+                  <th>User</th>
+                  <th>Match</th>
                   <th />
                 </tr>
               </thead>
@@ -2404,7 +2472,7 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
                 {searchHits.map((row, idx) => (
                   <tr key={`${row.tenant_id}-${row.user_id ?? "t"}-${idx}`}>
                     <td>
-                      <span className="mono">{row.tenant_name || row.tenant_id}</span>
+                      <span>{row.tenant_name || "—"}</span>
                       <div className="subtle mono" style={{ fontSize: "0.75rem" }}>
                         {row.tenant_id}
                       </div>
@@ -2446,7 +2514,7 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
                           })();
                         }}
                       >
-                        Use workspace
+                        Open
                       </button>
                     </td>
                   </tr>
@@ -2455,50 +2523,137 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
             </table>
           </div>
         ) : null}
-        <p className="subtle" style={{ marginBottom: 6 }}>
-          <strong>entitlements_override_json</strong> — same permission keys as plans; merged on top of the subscribed
-          plan for this workspace.
-        </p>
-        <EntitlementEditor
-          definitions={entitlementDefs}
-          value={patchObj.entitlements_override_json && typeof patchObj.entitlements_override_json === "object" ? patchObj.entitlements_override_json : {}}
-          onChange={setOverrideEnt}
-        />
-        <p className="subtle" style={{ margin: "12px 0 4px" }}>
-          Full PATCH body (JSON). The fields above update <code>entitlements_override_json</code> inside this object.
-        </p>
-        <JsonTextArea value={patchJson} onChange={setPatchJson} rows={8} />
-        <button type="button" style={{ marginTop: 8 }} onClick={() => void save()}>
-          PATCH
-        </button>
       </div>
+
+      {detailTid ? (
+        <div className="panel" style={{ padding: 12, marginBottom: 16 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+            <strong>
+              {detail?.tenant_name?.trim() || "Workspace"}{" "}
+              <span className="subtle" style={{ fontWeight: 400 }}>
+                (
+                <TruncId id={detailTid} />)
+              </span>
+            </strong>
+            <button type="button" className="secondary" onClick={closeDetail}>
+              Close
+            </button>
+          </div>
+          {!billingRowPresent ? (
+            <p className="subtle" style={{ marginTop: 8 }}>
+              No billing record yet for this workspace. Set <strong>Plan</strong> and <strong>Status</strong> (e.g. active), then <strong>Save billing</strong> to create it.
+            </p>
+          ) : (
+            <p className="subtle mono" style={{ marginTop: 6 }}>
+              Updated {detail?.updated_at ?? "—"}
+            </p>
+          )}
+          {detailBusy ? <p className="subtle">Loading…</p> : null}
+          {!detailBusy && detail ? (
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10, maxWidth: 560 }}>
+              <p className="subtle" style={{ margin: 0, lineHeight: 1.5 }}>
+                <strong>Primary contact:</strong> {primaryContactLabel(detail)}
+                {detail?.owner_email && detail?.owner_full_name?.trim() ? (
+                  <span className="subtle"> — {detail.owner_email}</span>
+                ) : null}
+              </p>
+              <label className="subtle">
+                Stripe customer id{" "}
+                <input value={stripeCustomerId} onChange={(e) => setStripeCustomerId(e.target.value)} className="mono" style={{ width: "100%" }} />
+              </label>
+              <label className="subtle">
+                Stripe subscription id{" "}
+                <input value={stripeSubId} onChange={(e) => setStripeSubId(e.target.value)} className="mono" style={{ width: "100%" }} />
+              </label>
+              <label className="subtle">
+                Plan{" "}
+                <select value={planId} onChange={(e) => setPlanId(e.target.value)} style={{ width: "100%" }}>
+                  <option value="">— none —</option>
+                  {plans.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.display_name || p.slug} ({p.slug})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {detail?.plan_display_name && planId ? (
+                <p className="subtle" style={{ margin: "-4px 0 0" }}>
+                  Current plan label: {detail.plan_display_name}
+                </p>
+              ) : null}
+              <label className="subtle">
+                Status{" "}
+                <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: "100%" }}>
+                  <option value="none">none</option>
+                  <option value="active">active</option>
+                  <option value="trialing">trialing</option>
+                  <option value="canceled">canceled</option>
+                  <option value="past_due">past_due</option>
+                  <option value="unpaid">unpaid</option>
+                  <option value="incomplete">incomplete</option>
+                </select>
+              </label>
+              <label className="subtle">
+                Current period end (local){" "}
+                <input
+                  type="datetime-local"
+                  value={periodEndLocal}
+                  onChange={(e) => setPeriodEndLocal(e.target.value)}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <p className="subtle" style={{ margin: 0 }}>
+                Entitlement overrides (merged on top of the workspace plan)
+              </p>
+              <EntitlementEditor definitions={entitlementDefs} value={overrideEnt} onChange={setOverrideEnt} />
+              <div className="action-row" style={{ gap: 8 }}>
+                <button type="button" disabled={saveBusy} onClick={() => void saveBilling()}>
+                  {saveBusy ? "Saving…" : "Save billing"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <p className="subtle">Total: {data.total_count ?? items.length}</p>
       {items.length === 0 ? (
         <p className="subtle" style={{ marginTop: 8 }}>
-          No tenant billing rows in the list yet. Use Load + PATCH above (search by user email / name or workspace name;
-          row is created on first PATCH if missing), or complete Stripe checkout from the Account page.
+          No tenant billing rows yet. Use <strong>Load workspace</strong> above, or complete Stripe checkout from the Account page.
         </p>
       ) : null}
       <div style={{ overflowX: "auto" }}>
         <table className="usage-table" style={{ fontSize: "0.82rem", width: "100%" }}>
           <thead>
             <tr>
-              <th>tenant_id</th>
-              <th>status</th>
-              <th>plan_id</th>
-              <th>stripe_subscription_id</th>
-              <th>current_period_end</th>
+              <th>Primary contact</th>
+              <th>Workspace</th>
+              <th>Status</th>
+              <th>Plan</th>
+              <th>Period end</th>
               <th />
             </tr>
           </thead>
           <tbody>
             {items.map((row) => (
               <tr key={row.tenant_id}>
-                <td className="mono">{row.tenant_id}</td>
+                <td title={row.tenant_id}>
+                  {primaryContactLabel(row)}
+                  {row.owner_email && row.owner_full_name?.trim() ? (
+                    <div className="subtle" style={{ fontSize: "0.75rem" }}>
+                      {row.owner_email}
+                    </div>
+                  ) : null}
+                </td>
+                <td>
+                  {row.tenant_name || "—"}
+                  <div className="subtle mono" style={{ fontSize: "0.75rem" }}>
+                    <TruncId id={row.tenant_id} />
+                  </div>
+                </td>
                 <td>{row.status ?? "—"}</td>
-                <td className="mono">{row.plan_id ?? "—"}</td>
-                <td className="mono">{row.stripe_subscription_id ?? "—"}</td>
-                <td className="mono">{row.current_period_end ?? "—"}</td>
+                <td>{row.plan_display_name || row.plan_id || "—"}</td>
+                <td className="mono">{row.current_period_end ? String(row.current_period_end).slice(0, 16) : "—"}</td>
                 <td>
                   <button
                     type="button"
@@ -2515,7 +2670,7 @@ function AdminBillingTable({ data, onRefresh, showToast, entitlementDefs }) {
                       })();
                     }}
                   >
-                    Load
+                    Detail
                   </button>
                 </td>
               </tr>
