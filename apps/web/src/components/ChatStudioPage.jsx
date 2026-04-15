@@ -83,8 +83,18 @@ function isAgentRunTerminalStatus(st) {
 
 /**
  * Hands-off-only Studio page: project list + setup guide chat + chat-style progress for autonomous runs.
+ *
+ * @param {string} [studioProjectId]  Main Studio rail’s open project — kept in sync when switching Editor ↔ Chat.
+ * @param {(id: string) => void} [onStudioProjectOpen]  When the user picks a production here (or one is created), notify App so ``projectId`` matches everywhere.
  */
-export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProjects }) {
+export function ChatStudioPage({
+  appConfig,
+  stylePresets,
+  projects,
+  onReloadProjects,
+  studioProjectId = "",
+  onStudioProjectOpen,
+}) {
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [title, setTitle] = useState("");
   const [topic, setTopic] = useState("");
@@ -508,8 +518,19 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
   ]);
 
   const restoredSelectionRef = useRef(false);
+  /** Prefer the main Studio ``projectId``; otherwise one-shot restore from Chat’s last-saved id. */
   useEffect(() => {
-    if (restoredSelectionRef.current || !Array.isArray(projects) || projects.length === 0) return;
+    if (!Array.isArray(projects) || projects.length === 0) return;
+    const sid = String(studioProjectId || "").trim();
+    const studioOk = Boolean(sid && /^[0-9a-f-]{36}$/i.test(sid) && projects.some((p) => String(p.id) === sid));
+
+    if (studioOk) {
+      if (sid !== selectedProjectId) void loadProjectIntoComposer(sid);
+      restoredSelectionRef.current = true;
+      return;
+    }
+
+    if (restoredSelectionRef.current) return;
     let last = "";
     try {
       last = localStorage.getItem(CHAT_STUDIO_LAST_PROJECT_KEY) || "";
@@ -521,7 +542,7 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
     if (!projects.some((p) => String(p.id) === pid)) return;
     restoredSelectionRef.current = true;
     void loadProjectIntoComposer(pid);
-  }, [projects, loadProjectIntoComposer]);
+  }, [projects, studioProjectId, selectedProjectId, loadProjectIntoComposer]);
 
   useEffect(() => {
     const el = setupThreadRef.current;
@@ -801,12 +822,13 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
       const proj = res.data?.project;
       if (proj?.id) {
         const pid = String(proj.id);
-        setSelectedProjectId(pid);
         try {
           localStorage.setItem(storageKeyForProject(pid), String(ar?.id || ""));
         } catch {
           /* ignore */
         }
+        await loadProjectIntoComposer(pid);
+        onStudioProjectOpen?.(pid);
         if (pendingCharacterDrafts.length > 0) {
           await postCharacterDrafts(pid, pendingCharacterDrafts);
           setPendingCharacterDrafts([]);
@@ -898,7 +920,11 @@ export function ChatStudioPage({ appConfig, stylePresets, projects, onReloadProj
               <button
                 type="button"
                 className={`chat-studio__project-row${selectedProjectId === p.id ? " is-active" : ""}`}
-                onClick={() => void loadProjectIntoComposer(String(p.id))}
+                onClick={() => {
+                  const id = String(p.id || "").trim();
+                  void loadProjectIntoComposer(id);
+                  if (id) onStudioProjectOpen?.(id);
+                }}
               >
                 <span className="chat-studio__project-title">{p.title || "Untitled"}</span>
                 <span className="subtle chat-studio__project-meta">{p.workflow_phase || p.status}</span>

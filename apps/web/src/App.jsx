@@ -5337,6 +5337,13 @@ export default function App() {
 
   openProjectRef.current = openProject;
 
+  /** Keep main Studio ``projectId`` in sync when the user picks a production on the Chat rail. */
+  const onChatStudioProjectOpen = useCallback((id) => {
+    const clean = sanitizeStudioUuid(id);
+    if (!clean || clean === String(projectId || "").trim()) return;
+    void openProjectRef.current(clean);
+  }, [projectId]);
+
   /** Restore open project from `director_ui_session` only after auth bootstrap (avoids 401 / "missing credentials" vs project load). */
   useEffect(() => {
     if (!authBootstrap.done) return;
@@ -5818,6 +5825,8 @@ export default function App() {
           stylePresets={stylePresets}
           projects={projects}
           onReloadProjects={() => void loadProjects()}
+          studioProjectId={projectId}
+          onStudioProjectOpen={onChatStudioProjectOpen}
         />
       ) : activePage === "account" ? (
         <StudioAccountPage
