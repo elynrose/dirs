@@ -335,6 +335,32 @@ export function InspectorPipelinePanel({ p }) {
                     </select>
                   </label>
                 ) : null}
+                {p.pipelineMode === "auto" ? (
+                  <p
+                    className="subtle brief-auto-through-hint"
+                    style={{ marginTop: 8, marginBottom: 0, fontSize: "0.78rem", lineHeight: 1.45 }}
+                  >
+                    {allowFullThrough ? (
+                      p.autoThrough === "full_video" ? (
+                        <>
+                          After scenes and the one-time story vs research check, the worker continues with character bible, scene media, narration,
+                          timeline, and exports.
+                        </>
+                      ) : (
+                        <>
+                          <strong>Run completes here</strong> after the one-time story vs research step (no automatic character bible, images, or
+                          cuts). To go all the way in one run, choose <strong>Through final video</strong> above, or queue <strong>Automate</strong>{" "}
+                          again later with that target.
+                        </>
+                      )
+                    ) : (
+                      <>
+                        This workspace runs automation <strong>through story vs research only</strong> (scene planning plus the one-time consistency
+                        check). Full automation through final video requires the appropriate plan — open <strong>Account</strong> to review access.
+                      </>
+                    )}
+                  </p>
+                ) : null}
                 {p.pipelineMode === "unattended" ? (
                   <p className="subtle brief-hands-off-hint">
                     Hands-off always targets <strong>final video</strong> (same as Auto → full video), and relaxes the research dossier source gate so

@@ -3983,7 +3983,9 @@ export default function App() {
           ? "Agent run queued — stops after chapter scripts are written; reload chapters when it finishes."
           : pipelineMode === "unattended"
             ? "Hands-off run queued — worker will attempt research through final video (relaxed research gate; check logs if sources are thin)."
-            : "Agent run queued — polling status…",
+            : autoThrough === "critique"
+              ? "Agent run queued — by default Auto stops after the one-time story vs research check (no media tail). Switch Auto target to “Through final video” for one-pass character bible → images → narration → cuts, or Automate again later."
+              : "Agent run queued — runs through final video after scenes and story check; polling status…",
       );
     } catch (e) {
       setError(formatUserFacingError(e));
@@ -4026,7 +4028,11 @@ export default function App() {
         setRun(ar);
       }
       loadPipelineStatus(projectId);
-      setMessage("Auto pipeline resumed. See Control / Inspector → Run activity for exact stage actions.");
+      setMessage(
+        pipelineMode === "auto" && autoThrough === "critique"
+          ? "Auto pipeline resumed (critique target — completes after story vs research unless you switch Auto target to final video). See Run activity for stages."
+          : "Auto pipeline resumed. See Control / Inspector → Run activity for exact stage actions.",
+      );
     } catch (e) {
       setError(formatUserFacingError(e));
     } finally {

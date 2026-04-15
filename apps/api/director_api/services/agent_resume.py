@@ -189,15 +189,21 @@ def parse_pipeline_options(raw: Any) -> tuple[bool, str, bool]:
     Returns (continue_from_existing, through, unattended).
 
     ``unattended`` relaxes the strict research gate so a run can continue without a human
-    fixing dossier/source counts (logged as warnings). Use with ``through: full_video`` for
-    end-to-end automation.
+    fixing dossier/source counts (logged as warnings). Hands-off / unattended runs are always
+    intended to reach **final video**; if ``through`` is missing or wrongly set to ``critique``,
+    we coerce to ``full_video`` (``chapters`` is preserved when explicitly requested).
     """
     if not isinstance(raw, dict):
         return False, "critique", False
     cont = bool(raw.get("continue_from_existing"))
-    through = str(raw.get("through") or "critique").strip().lower()
+    unattended = bool(raw.get("unattended"))
+    # Unattended defaults to full depth; critique-only default applies to attended Auto runs.
+    default_through = "full_video" if unattended else "critique"
+    through = str(raw.get("through") or default_through).strip().lower()
     # chapters = stop after chapter scripts (manual “new project + run”); critique / full_video continue automation.
     if through not in ("critique", "full_video", "chapters"):
-        through = "critique"
-    unattended = bool(raw.get("unattended"))
+        through = default_through
+    # Stale clients or merged options sometimes send unattended + critique; that stops after story review.
+    if unattended and through == "critique":
+        through = "full_video"
     return cont, through, unattended

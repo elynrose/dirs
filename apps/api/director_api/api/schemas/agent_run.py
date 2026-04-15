@@ -19,6 +19,8 @@ class AgentRunCreate(BaseModel):
     # (worker runs a one-time story-vs-research LLM check after scenes on first pass, then never repeats);
     # "full_video" runs character bible, scene images, TTS, timeline, rough+final cut after scenes (story check once per project as above).
     # unattended: true relaxes the strict research source gate (warn-only) so a run can finish without human dossier fixes.
+    # Server-side parsing treats unattended as full depth: missing ``through`` defaults to full_video, and ``through: critique``
+    # is coerced to full_video so hands-off runs do not stop after story vs research.
     # force_replan_scenes: replan every scripted chapter even if workflow_phase already has scenes_planned.
     # auto_generate_scene_videos: when true and the run reaches the full-video tail, generate scene videos for scenes missing one
     # (overrides workspace default for this run if set).
