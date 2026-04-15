@@ -207,3 +207,20 @@ def parse_pipeline_options(raw: Any) -> tuple[bool, str, bool]:
     if unattended and through == "critique":
         through = "full_video"
     return cont, through, unattended
+
+
+def normalize_pipeline_options_for_persist(raw: dict[str, Any]) -> dict[str, Any]:
+    """Copy ``raw`` with canonical ``through`` / ``continue_from_existing`` / ``unattended`` for DB storage.
+
+    Ensures stored JSON matches what :func:`parse_pipeline_options` will apply in workers (so API responses
+    and retries show the effective depth, not a stale ``through: critique`` with ``unattended: true``).
+    """
+
+    base = dict(raw) if isinstance(raw, dict) else {}
+    cont, through, unattended = parse_pipeline_options(base)
+    return {
+        **base,
+        "continue_from_existing": cont,
+        "through": through,
+        "unattended": unattended,
+    }

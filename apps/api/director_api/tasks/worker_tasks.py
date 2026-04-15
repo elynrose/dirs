@@ -1970,12 +1970,12 @@ def _run_agent_full_pipeline_tail(
                 tr = "auto_images"
 
     # Character bible (LLM) — image/video prompts use consistency prefixes from ProjectCharacter rows.
-    # Run when the tail says so, or when images will run but the bible is still empty (resume from "auto_images"
-    # skips the normal auto_characters tail slot — we still need rows before scene_generate_image).
-    will_run_images = pipeline_oversight_svc.tail_should_run_with_force("auto_images", tr, fs)
+    # Run when oversight allows this tail slot, or whenever we still have no ProjectCharacter rows — do not
+    # require ``tail_should_run(auto_images)``: LLM oversight can suggest resuming at auto_narration while image
+    # work is still pending, which previously skipped bible generation entirely.
     char_tail_ok = pipeline_oversight_svc.tail_should_run_with_force("auto_characters", tr, fs)
     need_character_gen = force_regen_characters or not _project_has_character_rows(db, pid)
-    if char_tail_ok or (need_character_gen and will_run_images):
+    if char_tail_ok or need_character_gen:
         run = db.get(AgentRun, agent_run_uuid)
         if need_character_gen:
             if run:

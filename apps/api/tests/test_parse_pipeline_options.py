@@ -1,6 +1,6 @@
 """Regression: hands-off (unattended) must not default to critique depth."""
 
-from director_api.services.agent_resume import parse_pipeline_options
+from director_api.services.agent_resume import normalize_pipeline_options_for_persist, parse_pipeline_options
 
 
 def test_unattended_missing_through_is_full_video():
@@ -29,3 +29,9 @@ def test_attended_default_critique():
     _, through, unattended = parse_pipeline_options({"continue_from_existing": True})
     assert unattended is False
     assert through == "critique"
+
+
+def test_normalize_persist_writes_effective_through():
+    out = normalize_pipeline_options_for_persist({"unattended": True, "through": "critique"})
+    assert out["through"] == "full_video"
+    assert out["unattended"] is True

@@ -9,6 +9,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from director_api.db.models import AgentRun, Project
+from director_api.services.agent_resume import normalize_pipeline_options_for_persist
 
 log = structlog.get_logger(__name__)
 
@@ -35,6 +36,7 @@ def enqueue_continue_agent_run(db: Session, *, old_run_id: uuid.UUID) -> tuple[b
     po["continue_from_existing"] = True
     if "through" not in po or not str(po.get("through") or "").strip():
         po["through"] = "full_video"
+    po = normalize_pipeline_options_for_persist(po)
 
     new_id = uuid.uuid4()
     run = AgentRun(

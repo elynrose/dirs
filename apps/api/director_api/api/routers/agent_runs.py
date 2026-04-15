@@ -20,6 +20,7 @@ from director_api.config import Settings, get_settings
 from director_api.db.models import AgentRun, Project
 from director_api.db.session import get_db
 from director_api.tasks.worker_tasks import run_agent_run
+from director_api.services.agent_resume import normalize_pipeline_options_for_persist
 from director_api.services.tenant_entitlements import assert_agent_run_pipeline_allowed, assert_can_create_project
 from director_api.validation.brief import validate_documentary_brief
 
@@ -164,6 +165,7 @@ def create_agent_run(
     elif body.project_id is not None and "continue_from_existing" not in po:
         # Existing project: default to resuming (skip completed phases) unless the client sets false explicitly.
         po["continue_from_existing"] = True
+    po = normalize_pipeline_options_for_persist(po)
     assert_agent_run_pipeline_allowed(
         po, db=db, tenant_id=settings.default_tenant_id, auth_enabled=auth_on
     )
