@@ -16,3 +16,7 @@ class AppSettingsOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     platform_credential_keys_inherited: list[str] = Field(default_factory=list)
+    credential_keys_present: dict[str, bool] = Field(
+        default_factory=dict,
+        description="True when a non-empty secret is stored for that key (values are omitted from config).",
+    )

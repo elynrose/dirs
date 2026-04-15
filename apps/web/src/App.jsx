@@ -896,6 +896,35 @@ export default function App() {
   /** Optional secret keys filled from platform workspace (GET /v1/settings); UI explains instead of showing values. */
   const [platformCredentialKeysInherited, setPlatformCredentialKeysInherited] = useState([]);
   const credKeyInherited = (key) => platformCredentialKeysInherited.includes(key);
+  const [credentialKeysPresent, setCredentialKeysPresent] = useState({});
+  const credKeyStoredOnServer = (key) =>
+    Boolean(credentialKeysPresent && typeof credentialKeysPresent === "object" && credentialKeysPresent[key]);
+  const credKeyHidden = (key) => credKeyInherited(key) || credKeyStoredOnServer(key);
+  const credKeyNote = (key) => {
+    const inh = credKeyInherited(key);
+    const st = credKeyStoredOnServer(key);
+    if (!inh && !st) return null;
+    const text = inh
+      ? "Using your administrator's key (not displayed). Leave blank to keep it, or paste your own to override."
+      : "A key is saved for this workspace (not displayed). Leave blank to keep it, or paste a new key to replace.";
+    return (
+      <p className="subtle" style={{ marginTop: -4 }}>
+        {text}
+      </p>
+    );
+  };
+  const credKeyNoteXaiGrok = () => {
+    if (!credKeyHidden("grok_api_key") && !credKeyHidden("xai_api_key")) return null;
+    const inh = credKeyInherited("grok_api_key") || credKeyInherited("xai_api_key");
+    const text = inh
+      ? "Using your administrator's key for xAI / Grok (not displayed). Leave blank to keep it, or paste your own to override."
+      : "A workspace API key is saved (not displayed). Leave blank to keep it, or paste a new key to replace.";
+    return (
+      <p className="subtle" style={{ marginTop: -4 }}>
+        {text}
+      </p>
+    );
+  };
   const [settingsBusy, setSettingsBusy] = useState(false);
   /** LLM system prompts (per user / workspace) */
   const [llmPrompts, setLlmPrompts] = useState([]);
@@ -2496,6 +2525,11 @@ export default function App() {
           ? body.data.platform_credential_keys_inherited
           : [],
       );
+      setCredentialKeysPresent(
+        body.data?.credential_keys_present && typeof body.data.credential_keys_present === "object"
+          ? body.data.credential_keys_present
+          : {},
+      );
     } catch (e) {
       const net =
         e instanceof TypeError || String(e).toLowerCase().includes("fetch") || String(e).includes("NetworkError");
@@ -3365,6 +3399,11 @@ export default function App() {
           ? body.data.platform_credential_keys_inherited
           : [],
       );
+      setCredentialKeysPresent(
+        body.data?.credential_keys_present && typeof body.data.credential_keys_present === "object"
+          ? body.data.credential_keys_present
+          : {},
+      );
       setSettingsLoadError("");
       setMessage("Settings saved.");
     } catch (e) {
@@ -3391,6 +3430,11 @@ export default function App() {
         Array.isArray(body.data?.platform_credential_keys_inherited)
           ? body.data.platform_credential_keys_inherited
           : [],
+      );
+      setCredentialKeysPresent(
+        body.data?.credential_keys_present && typeof body.data.credential_keys_present === "object"
+          ? body.data.credential_keys_present
+          : {},
       );
       setSettingsLoadError("");
     } catch (e) {
@@ -7184,11 +7228,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                       </pre>
                     </details>
                     <label htmlFor="cfg-telegram-token">Bot token</label>
-                    {credKeyInherited("telegram_bot_token") ? (
-                      <p className="subtle" style={{ marginTop: -4 }}>
-                        Using your administrator&apos;s token (not displayed). Leave blank to keep it, or paste your own to override.
-                      </p>
-                    ) : null}
+                    {credKeyNote("telegram_bot_token")}
                     <input
                       id="cfg-telegram-token"
                       type="password"
@@ -7211,11 +7251,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                     <label htmlFor="cfg-telegram-webhook-secret" style={{ marginTop: 12 }}>
                       Webhook secret (must match Telegram <code>secret_token</code>)
                     </label>
-                    {credKeyInherited("telegram_webhook_secret") ? (
-                      <p className="subtle" style={{ marginTop: -4 }}>
-                        Using your administrator&apos;s secret (not displayed). Leave blank to keep it, or paste your own to override.
-                      </p>
-                    ) : null}
+                    {credKeyNote("telegram_webhook_secret")}
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "stretch", marginBottom: 6 }}>
                       <input
                         id="cfg-telegram-webhook-secret"
@@ -7320,11 +7356,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                     <label htmlFor="cfg-youtube-client-secret" style={{ marginTop: 12 }}>
                       YouTube OAuth client secret
                     </label>
-                    {credKeyInherited("youtube_client_secret") ? (
-                      <p className="subtle" style={{ marginTop: -4 }}>
-                        Using your administrator&apos;s secret (not displayed). Leave blank to keep it, or paste your own to override.
-                      </p>
-                    ) : null}
+                    {credKeyNote("youtube_client_secret")}
                     <input
                       id="cfg-youtube-client-secret"
                       type="password"
@@ -7470,11 +7502,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
               chat only when <strong>OpenAI SDK — text chat backend</strong> is set to OpenAI cloud / Azure.
             </p>
             <label htmlFor="cfg-openai">OPENAI_API_KEY</label>
-            {credKeyInherited("openai_api_key") ? (
-              <p className="subtle" style={{ marginTop: -4 }}>
-                Using your administrator&apos;s key (not displayed). Leave blank to keep it, or paste your own to override.
-              </p>
-            ) : null}
+            {credKeyNote("openai_api_key")}
             <input
               id="cfg-openai"
               value={appConfig.openai_api_key || ""}
@@ -7551,11 +7579,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                     <label htmlFor="cfg-lm-studio-key" style={{ marginTop: 12 }}>
                       LM_STUDIO_API_KEY (optional)
                     </label>
-                    {credKeyInherited("lm_studio_api_key") ? (
-                      <p className="subtle" style={{ marginTop: -4 }}>
-                        Using your administrator&apos;s key (not displayed). Leave blank to keep it, or paste your own to override.
-                      </p>
-                    ) : null}
+                    {credKeyNote("lm_studio_api_key")}
                     <input
                       id="cfg-lm-studio-key"
                       type="password"
@@ -7602,11 +7626,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                   </summary>
                   <div className="settings-section-body">
             <label htmlFor="cfg-openrouter-key">OPENROUTER_API_KEY</label>
-            {credKeyInherited("openrouter_api_key") ? (
-              <p className="subtle" style={{ marginTop: -4 }}>
-                Using your administrator&apos;s key (not displayed). Leave blank to keep it, or paste your own to override.
-              </p>
-            ) : null}
+            {credKeyNote("openrouter_api_key")}
             <input
               id="cfg-openrouter-key"
               value={appConfig.openrouter_api_key || ""}
@@ -7631,11 +7651,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
               Used when speech provider is ElevenLabs. Voices are loaded from your account (saved API key on the server).
             </p>
             <label htmlFor="cfg-elevenlabs-key">ELEVENLABS_API_KEY</label>
-            {credKeyInherited("elevenlabs_api_key") ? (
-              <p className="subtle" style={{ marginTop: -4 }}>
-                Using your administrator&apos;s key (not displayed). Leave blank to keep it, or paste your own to override.
-              </p>
-            ) : null}
+            {credKeyNote("elevenlabs_api_key")}
             <input
               id="cfg-elevenlabs-key"
               type="password"
@@ -7690,11 +7706,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                   <div className="settings-section-body">
             <p className="subtle">Use either key name; both are kept in sync for compatibility.</p>
             <label htmlFor="cfg-grok-key">GROK_API_KEY / XAI_API_KEY</label>
-            {credKeyInherited("grok_api_key") || credKeyInherited("xai_api_key") ? (
-              <p className="subtle" style={{ marginTop: -4 }}>
-                Using your administrator&apos;s key (not displayed). Leave blank to keep it, or paste your own to override.
-              </p>
-            ) : null}
+            {credKeyNoteXaiGrok()}
             <input
               id="cfg-grok-key"
               value={appConfig.grok_api_key || appConfig.xai_api_key || ""}
@@ -7736,11 +7748,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
               . Text uses Gemini; images use Imagen; video uses Veo (availability varies by account/region).
             </p>
             <label htmlFor="cfg-gemini-key">GEMINI_API_KEY</label>
-            {credKeyInherited("gemini_api_key") ? (
-              <p className="subtle" style={{ marginTop: -4 }}>
-                Using your administrator&apos;s key (not displayed). Leave blank to keep it, or paste your own to override.
-              </p>
-            ) : null}
+            {credKeyNote("gemini_api_key")}
             <input
               id="cfg-gemini-key"
               type="password"
@@ -7813,11 +7821,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
             </p>
             {falCatalogNote ? <p className="subtle">{falCatalogNote}</p> : null}
             <label htmlFor="cfg-fal">FAL_KEY</label>
-            {credKeyInherited("fal_key") ? (
-              <p className="subtle" style={{ marginTop: -4 }}>
-                Using your administrator&apos;s key (not displayed). Leave blank to keep it, or paste your own to override.
-              </p>
-            ) : null}
+            {credKeyNote("fal_key")}
             <input
               id="cfg-fal"
               value={appConfig.fal_key || ""}
@@ -8143,11 +8147,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                   </summary>
                   <div className="settings-section-body">
             <label htmlFor="cfg-tavily">TAVILY_API_KEY</label>
-            {credKeyInherited("tavily_api_key") ? (
-              <p className="subtle" style={{ marginTop: -4 }}>
-                Using your administrator&apos;s key (not displayed). Leave blank to keep it, or paste your own to override.
-              </p>
-            ) : null}
+            {credKeyNote("tavily_api_key")}
             <input
               id="cfg-tavily"
               value={appConfig.tavily_api_key || ""}

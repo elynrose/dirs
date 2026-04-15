@@ -29,7 +29,9 @@ from director_api.services.chatterbox_voice_ref import (
 from director_api.services.runtime_settings import (
     get_or_create_app_settings,
     invalidate_runtime_settings_cache,
+    merge_app_settings_config_patch,
     platform_inherited_credential_keys_for_settings_response,
+    redact_settings_config_for_api,
     resolve_runtime_settings,
     sanitize_overrides,
 )
@@ -70,14 +72,16 @@ def get_settings_row(
         saved_config=saved,
         base_settings=base_env,
     )
+    client_cfg, cred_present = redact_settings_config_for_api(saved)
     return {
         "data": AppSettingsOut(
             id=row.id,
             tenant_id=row.tenant_id,
-            config=saved,
+            config=client_cfg,
             created_at=row.created_at,
             updated_at=row.updated_at,
             platform_credential_keys_inherited=inherited,
+            credential_keys_present=cred_present,
         ).model_dump(mode="json"),
         "meta": meta,
     }
@@ -93,8 +97,9 @@ def patch_settings_row(
 ) -> dict:
     row = get_or_create_app_settings(db, settings.default_tenant_id)
     prior = sanitize_overrides(row.config_json)
-    patch = sanitize_overrides(body.config)
-    row.config_json = {**prior, **patch}
+    patch_raw = body.config if isinstance(body.config, dict) else {}
+    merged = merge_app_settings_config_patch(prior, patch_raw)
+    row.config_json = sanitize_overrides(merged)
     db.commit()
     db.refresh(row)
     invalidate_runtime_settings_cache(settings.default_tenant_id)
@@ -107,14 +112,16 @@ def patch_settings_row(
         saved_config=saved,
         base_settings=base_env,
     )
+    client_cfg, cred_present = redact_settings_config_for_api(saved)
     return {
         "data": AppSettingsOut(
             id=row.id,
             tenant_id=row.tenant_id,
-            config=saved,
+            config=client_cfg,
             created_at=row.created_at,
             updated_at=row.updated_at,
             platform_credential_keys_inherited=inherited,
+            credential_keys_present=cred_present,
         ).model_dump(mode="json"),
         "meta": meta,
     }

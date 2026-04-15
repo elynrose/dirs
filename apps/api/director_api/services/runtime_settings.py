@@ -11,6 +11,10 @@ from sqlalchemy.orm import Session
 from director_api.config import Settings
 from director_api.db.models import AppSetting, TenantMembership, User
 from director_api.services.scene_timeline_duration import DEFAULT_SCENE_VO_TAIL_PADDING_SEC
+from director_api.services.tenant_entitlements import (
+    ENTITLEMENT_PLATFORM_API_CREDENTIALS,
+    get_effective_entitlements,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -301,28 +305,45 @@ PLATFORM_CREDENTIAL_SETTING_KEYS = frozenset(
 )
 
 
-def resolve_effective_user_id_for_platform_credentials(
-    db: Session, tenant_id: str, explicit_user_id: int | None
-) -> int | None:
-    """Returns a user id when platform API key inheritance applies for this workspace."""
+def _platform_credentials_source_configured(base: Settings, tenant_id: str) -> bool:
+    src_tid = (getattr(base, "director_platform_credentials_source_tenant_id", None) or "").strip()
+    return bool(src_tid and src_tid != (tenant_id or "").strip())
+
+
+def _user_flag_allows_platform_credentials(db: Session, tenant_id: str, explicit_user_id: int | None) -> bool:
+    """Per-user admin flag, or exactly one flagged member when ``explicit_user_id`` is None (worker)."""
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return False
     if explicit_user_id is not None:
         u = db.get(User, explicit_user_id)
-        if u and getattr(u, "use_platform_api_credentials", False):
-            return explicit_user_id
-        return None
+        return bool(u and getattr(u, "use_platform_api_credentials", False))
     rows = list(
         db.scalars(
             select(User.id)
             .join(TenantMembership, TenantMembership.user_id == User.id)
             .where(
-                TenantMembership.tenant_id == tenant_id,
+                TenantMembership.tenant_id == tid,
                 User.use_platform_api_credentials.is_(True),
             )
         ).all()
     )
-    if len(rows) == 1:
-        return int(rows[0])
-    return None
+    return len(rows) == 1
+
+
+def tenant_may_inherit_platform_api_credentials(
+    db: Session, base: Settings, tenant_id: str, explicit_user_id: int | None
+) -> bool:
+    """Whether optional API keys may be merged from the platform source tenant for this request."""
+    tid = (tenant_id or "").strip()
+    if not tid or not _platform_credentials_source_configured(base, tid):
+        return False
+    if not bool(getattr(base, "director_auth_enabled", False)):
+        return _user_flag_allows_platform_credentials(db, tid, explicit_user_id)
+    ent = get_effective_entitlements(db, tid, auth_enabled=True)
+    if bool(ent.get(ENTITLEMENT_PLATFORM_API_CREDENTIALS, False)):
+        return True
+    return _user_flag_allows_platform_credentials(db, tid, explicit_user_id)
 
 
 def _merge_platform_credentials(
@@ -330,9 +351,9 @@ def _merge_platform_credentials(
     base: Settings,
     merged: Settings,
     tenant_id: str,
-    effective_user_id: int | None,
+    apply_platform_merge: bool,
 ) -> Settings:
-    if effective_user_id is None:
+    if not apply_platform_merge:
         return merged
     src_tid = (getattr(base, "director_platform_credentials_source_tenant_id", None) or "").strip()
     if not src_tid or src_tid == tenant_id:
@@ -378,10 +399,7 @@ def platform_inherited_credential_keys_for_settings_response(
     base_settings: Settings,
 ) -> list[str]:
     """Secret keys supplied via platform tenant but not stored on this workspace (Studio hides inputs)."""
-    if user_id is None:
-        return []
-    u = db.get(User, user_id)
-    if not u or not getattr(u, "use_platform_api_credentials", False):
+    if not tenant_may_inherit_platform_api_credentials(db, base_settings, tenant_id, user_id):
         return []
     src_tid = (getattr(base_settings, "director_platform_credentials_source_tenant_id", None) or "").strip()
     if not src_tid or src_tid == tenant_id:
@@ -403,6 +421,50 @@ def platform_inherited_credential_keys_for_settings_response(
     return out
 
 
+def redact_settings_config_for_api(saved: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool]]:
+    """Strip credential values from a settings dict for JSON responses; presence map for UI labels."""
+    presence: dict[str, bool] = {}
+    out = dict(saved)
+    for sk in PLATFORM_CREDENTIAL_SETTING_KEYS:
+        if sk not in out:
+            continue
+        v = out.pop(sk, None)
+        if v is None:
+            continue
+        if isinstance(v, str) and not str(v).strip():
+            continue
+        presence[sk] = True
+    return out, presence
+
+
+def merge_app_settings_config_patch(prior: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Merge client patch into prior DB config. Secret keys: empty string does not wipe prior; ``None`` clears."""
+    out = dict(prior)
+    if not isinstance(patch, dict):
+        return out
+    for k, v in patch.items():
+        if k in PLATFORM_CREDENTIAL_SETTING_KEYS:
+            if v is None:
+                out.pop(k, None)
+                continue
+            if isinstance(v, str) and not str(v).strip():
+                prev = prior.get(k)
+                prev_nonempty = prev is not None and (
+                    not isinstance(prev, str) or bool(str(prev).strip())
+                )
+                if prev_nonempty:
+                    continue
+                out.pop(k, None)
+                continue
+            out[k] = v
+            continue
+        if v is None:
+            out.pop(k, None)
+        else:
+            out[k] = v
+    return out
+
+
 def resolve_runtime_settings(
     db: Session, base: Settings, tenant_id: str | None = None, user_id: int | None = None
 ) -> Settings:
@@ -413,16 +475,16 @@ def resolve_runtime_settings(
     has ``default_tenant_id`` set to the active tenant so existing code paths
     that filter on ``settings.default_tenant_id`` stay correct.
 
-    When ``user_id`` is set and the user has ``use_platform_api_credentials``, optional API keys
+    When the workspace (plan entitlement) or the user has ``use_platform_api_credentials``, optional API keys
     missing on this tenant are filled from ``director_platform_credentials_source_tenant_id`` (env).
-    Background workers with no user id use a single flagged member per workspace when unambiguous.
+    With auth on, plan entitlement ``platform_api_credentials`` allows merge even when ``user_id`` is None.
 
     Results are cached briefly (``runtime_settings_cache_ttl_sec`` on ``Settings``) to avoid
     repeated merges on hot paths; invalidate via ``invalidate_runtime_settings_cache``.
     """
     tid = (tenant_id or base.default_tenant_id or "").strip() or base.default_tenant_id
-    effective_uid = resolve_effective_user_id_for_platform_credentials(db, tid, user_id)
-    cache_key = f"{tid}\x1f{effective_uid if effective_uid is not None else '-'}"
+    apply_pc = tenant_may_inherit_platform_api_credentials(db, base, tid, user_id)
+    cache_key = f"{tid}\x1f{user_id if user_id is not None else 'none'}\x1f{int(apply_pc)}"
     ttl = float(getattr(base, "runtime_settings_cache_ttl_sec", 15.0) or 0.0)
     now = time.monotonic()
     if ttl > 0.0:
@@ -444,7 +506,7 @@ def resolve_runtime_settings(
                 error=str(e),
             )
             merged = base
-    merged = _merge_platform_credentials(db, base, merged, tid, effective_uid)
+    merged = _merge_platform_credentials(db, base, merged, tid, apply_pc)
     if merged.default_tenant_id != tid:
         merged = merged.model_copy(update={"default_tenant_id": tid})
     if ttl > 0.0:

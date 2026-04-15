@@ -23,6 +23,9 @@ ENTITLEMENT_SUBTITLES = "subtitles_enabled"
 # Rolling-window credit budget; null = unlimited. Requires ``credits_enforce`` true to block jobs.
 ENTITLEMENT_MONTHLY_CREDITS = "monthly_credits"
 ENTITLEMENT_CREDITS_ENFORCE = "credits_enforce"
+# When true, workspace may use optional API keys merged from ``DIRECTOR_PLATFORM_CREDENTIALS_SOURCE_TENANT_ID``
+# (see ``runtime_settings.tenant_may_inherit_platform_api_credentials``).
+ENTITLEMENT_PLATFORM_API_CREDENTIALS = "platform_api_credentials"
 
 _LEGACY_UNBOUND: dict[str, Any] = {
     ENTITLEMENT_CHAT: True,
@@ -33,6 +36,7 @@ _LEGACY_UNBOUND: dict[str, Any] = {
     ENTITLEMENT_SUBTITLES: True,
     ENTITLEMENT_MONTHLY_CREDITS: None,
     ENTITLEMENT_CREDITS_ENFORCE: False,
+    ENTITLEMENT_PLATFORM_API_CREDENTIALS: True,
 }
 
 # Workspaces without an active paid subscription (auth mode only).
@@ -45,6 +49,7 @@ _FREE_DEFAULTS: dict[str, Any] = {
     ENTITLEMENT_SUBTITLES: False,
     ENTITLEMENT_MONTHLY_CREDITS: None,
     ENTITLEMENT_CREDITS_ENFORCE: False,
+    ENTITLEMENT_PLATFORM_API_CREDENTIALS: False,
 }
 
 _ACTIVE_SUB_STATUSES = frozenset({"active", "trialing"})
@@ -109,6 +114,15 @@ def entitlement_definitions_public() -> list[dict[str, Any]]:
             "description": (
                 "When enabled and a monthly credits cap is set, new jobs are blocked if the workspace "
                 "has reached the rolling 30-day credit total."
+            ),
+        },
+        {
+            "key": ENTITLEMENT_PLATFORM_API_CREDENTIALS,
+            "label": "Platform API credentials",
+            "type": "boolean",
+            "description": (
+                "When enabled, optional API keys from the deployment source workspace apply for this "
+                "workspace when keys are not saved locally (requires DIRECTOR_PLATFORM_CREDENTIALS_SOURCE_TENANT_ID)."
             ),
         },
     ]
