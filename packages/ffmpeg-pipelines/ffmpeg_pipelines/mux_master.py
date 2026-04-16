@@ -36,7 +36,11 @@ def mux_video_with_narration_and_music(
     - If ``narration_audio_path`` is set and exists, it is trimmed/padded to video duration.
     - Otherwise a stereo silence track is generated for the video duration.
     - If ``music_audio_path`` is set and exists, it is looped, trimmed to video duration,
-      attenuated, and **amix**'d under narration.
+      attenuated, and **amix**'d under narration. ``amix`` uses ``normalize=0`` so the
+      ``music_volume`` / ``narration_volume`` linear gains are not rebalanced by FFmpeg
+      (the filter's default ``normalize=1`` would scale inputs and break the intended blend).
+    - After the mix, a fixed **0.5** linear gain prevents summing two hot sources from clipping
+      before **loudnorm**; relative levels from the sliders are unchanged.
     - Output audio is **loudnorm** toward -16 LUFS integrated (single-pass ``linear=true``).
     """
     video_path = video_path.resolve()
@@ -127,8 +131,9 @@ def mux_video_with_narration_and_music(
             music_f = (
                 f"[{music_idx}:a]aformat=sample_fmts=fltp:channel_layouts=stereo:sample_rates=48000,"
                 f"atrim=0:{dstr},asetpts=PTS-STARTPTS,volume={mv}[mus];"
-                f"[narr][mus]amix=inputs=2:duration=first:dropout_transition=2[amx];"
-                f"[amx]loudnorm=I=-16:TP=-1.5:LRA=11:linear=true:print_format=summary[ao]"
+                f"[narr][mus]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[amx];"
+                f"[amx]volume=0.5[amh];"
+                f"[amh]loudnorm=I=-16:TP=-1.5:LRA=11:linear=true:print_format=summary[ao]"
             )
             filter_complex = narr_f + ";" + music_f
         else:
