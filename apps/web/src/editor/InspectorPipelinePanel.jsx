@@ -452,13 +452,7 @@ export function InspectorPipelinePanel({ p }) {
                     );
                   })()}
                 </div>
-                {!p.projectId && (p.pipelineMode === "auto" || p.pipelineMode === "unattended") ? (
-                  <p className="subtle brief-automate-hint-no-project" style={{ marginTop: 10, marginBottom: 0, fontSize: "0.74rem", lineHeight: 1.45 }}>
-                    <strong>Automate</strong> only continues a project you already opened from the list. For a <strong>new</strong> project in Auto or
-                    Hands-off, press <strong>Start</strong> — it uses the same mode and brief above.
-                  </p>
-                ) : null}
-                {(p.pipelineMode === "auto" || p.pipelineMode === "unattended") && p.projectId ? (
+                {(p.pipelineMode === "auto" || p.pipelineMode === "unattended") ? (
                   <div
                     className="brief-automate-options-row brief-automate-options-row--media"
                     role="group"
@@ -466,7 +460,7 @@ export function InspectorPipelinePanel({ p }) {
                   >
                     <label
                       className="subtle brief-automate-option"
-                      title="When on, Automate replans every scripted chapter and replaces existing scene cards. Leave off to keep chapters you planned manually."
+                      title="When on, Start (new project) and Automate send force replan: every scripted chapter is re-planned when the scene step runs. Leave off to keep scene cards you edited manually."
                     >
                       <input
                         type="checkbox"
@@ -528,6 +522,13 @@ export function InspectorPipelinePanel({ p }) {
                       />
                     </label>
                   </div>
+                ) : null}
+                {!p.projectId && (p.pipelineMode === "auto" || p.pipelineMode === "unattended") ? (
+                  <p className="subtle brief-automate-hint-no-project" style={{ marginTop: 10, marginBottom: 0, fontSize: "0.74rem", lineHeight: 1.45 }}>
+                    <strong>Automate</strong> only continues a project you already opened from the list. For a <strong>new</strong> project, press{" "}
+                    <strong>Start</strong> — it uses the same mode, brief, and <strong>scene options</strong> above. <strong>Stills / clips</strong>{" "}
+                    choices are saved to workspace Settings.
+                  </p>
                 ) : null}
                 {p.agentRunId && p.run && typeof p.friendlyAgentRunStatus === "function" ? (
                   <p className="subtle brief-automation-run-status" style={{ marginTop: 12, marginBottom: 0 }}>

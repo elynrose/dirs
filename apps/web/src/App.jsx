@@ -4008,15 +4008,15 @@ export default function App() {
                 unattended: true,
                 narration_granularity: "scene",
                 ...sceneAutomationMediaPipelineOptions(appConfig),
+                ...(forceReplanScenesOnContinue ? { force_replan_scenes: true } : {}),
               }
             : {
+                // Auto (new project): same scene-media + replan prefs as Automate on an existing project,
+                // so workspace toggles apply even when Auto target is "critique" first (stored on the run for later tail).
                 through: autoThrough,
-                ...(autoThrough === "full_video"
-                  ? {
-                      ...sceneAutomationMediaPipelineOptions(appConfig),
-                      narration_granularity: "scene",
-                    }
-                  : {}),
+                narration_granularity: "scene",
+                ...sceneAutomationMediaPipelineOptions(appConfig),
+                ...(forceReplanScenesOnContinue ? { force_replan_scenes: true } : {}),
               };
       const r = await api("/v1/agent-runs", {
         method: "POST",
