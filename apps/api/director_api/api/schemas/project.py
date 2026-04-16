@@ -82,6 +82,9 @@ class ProjectOut(BaseModel):
     frame_aspect_ratio: str = "16:9"
     created_at: datetime
     updated_at: datetime
+    # Populated on GET /v1/projects list when an automation run is active (queued / running / paused).
+    active_agent_run_id: UUID | None = None
+    active_agent_run_status: str | None = None
 
     @field_validator("research_min_sources", mode="before")
     @classmethod

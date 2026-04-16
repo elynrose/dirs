@@ -141,9 +141,28 @@ function projectsPollSnapshotFromRows(rows) {
         title: String(p?.title ?? ""),
         status: String(p?.status ?? ""),
         workflow_phase: String(p?.workflow_phase ?? ""),
+        ar: String(p?.active_agent_run_id ?? ""),
+        ars: String(p?.active_agent_run_status ?? ""),
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
   );
+}
+
+/** Same payload as Inspector → Automate, for POST /v1/agent-runs with ``project_id`` (list row or open project). */
+function buildContinuePipelineOptions(pipelineMode, autoThrough, appConfig, forceReplanScenesOnContinue) {
+  return {
+    continue_from_existing: true,
+    through: pipelineMode === "unattended" ? "full_video" : autoThrough,
+    rerun_web_research: false,
+    ...(pipelineMode === "unattended" ? { unattended: true } : {}),
+    ...(forceReplanScenesOnContinue ? { force_replan_scenes: true } : {}),
+    ...(pipelineMode === "unattended" || (pipelineMode === "auto" && autoThrough === "full_video")
+      ? {
+          ...sceneAutomationMediaPipelineOptions(appConfig),
+          narration_granularity: "scene",
+        }
+      : {}),
+  };
 }
 
 /** When the field is typed manually and not in catalog, infer from endpoint id. */
@@ -4089,19 +4108,12 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({
           project_id: projectId,
-          pipeline_options: {
-            continue_from_existing: true,
-            through: pipelineMode === "unattended" ? "full_video" : autoThrough,
-            rerun_web_research: false,
-            ...(pipelineMode === "unattended" ? { unattended: true } : {}),
-            ...(forceReplanScenesOnContinue ? { force_replan_scenes: true } : {}),
-            ...(pipelineMode === "unattended" || (pipelineMode === "auto" && autoThrough === "full_video")
-              ? {
-                  ...sceneAutomationMediaPipelineOptions(appConfig),
-                  narration_granularity: "scene",
-                }
-              : {}),
-          },
+          pipeline_options: buildContinuePipelineOptions(
+            pipelineMode,
+            autoThrough,
+            appConfig,
+            forceReplanScenesOnContinue,
+          ),
         }),
       });
       const body = await parseJson(r);
@@ -4296,6 +4308,90 @@ export default function App() {
       setBusy(false);
     }
   };
+
+  const stopProjectAgentFromList = useCallback(
+    async (pid, runId, e) => {
+      e?.preventDefault?.();
+      e?.stopPropagation?.();
+      if (!runId) return;
+      setBusy(true);
+      setError("");
+      try {
+        const r = await api(`/v1/agent-runs/${encodeURIComponent(runId)}/control`, {
+          method: "POST",
+          body: JSON.stringify({ action: "stop" }),
+        });
+        const body = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(body));
+        if (String(agentRunId) === String(runId) && body.data) {
+          setRun(body.data);
+        }
+        await loadProjects({ silent: false });
+        if (String(projectId) === String(pid)) {
+          void loadPipelineStatus(pid);
+        }
+        setMessage("Stop requested — the worker stops after the current pipeline step.");
+      } catch (err) {
+        setError(formatUserFacingError(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [agentRunId, loadProjects, loadPipelineStatus, projectId],
+  );
+
+  const startProjectAgentFromList = useCallback(
+    async (pid, e) => {
+      e?.preventDefault?.();
+      e?.stopPropagation?.();
+      if (pipelineMode !== "auto" && pipelineMode !== "unattended") {
+        setMessage("Switch Pipeline & agent to Auto or Hands-off to queue automation from the project list.");
+        return;
+      }
+      setBusy(true);
+      setError("");
+      setMessage("");
+      try {
+        const r = await api("/v1/agent-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            project_id: pid,
+            pipeline_options: buildContinuePipelineOptions(
+              pipelineMode,
+              autoThrough,
+              appConfig,
+              forceReplanScenesOnContinue,
+            ),
+          }),
+        });
+        const body = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(body));
+        const ar = body.data?.agent_run;
+        if (ar?.id && String(projectId) === String(pid)) {
+          setAgentRunId(ar.id);
+          setRun(ar);
+        }
+        await loadProjects({ silent: false });
+        if (String(projectId) === String(pid)) {
+          void loadPipelineStatus(pid);
+        }
+        setMessage("Automation queued for this project.");
+      } catch (err) {
+        setError(formatUserFacingError(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [
+      pipelineMode,
+      autoThrough,
+      appConfig,
+      forceReplanScenesOnContinue,
+      projectId,
+      loadProjects,
+      loadPipelineStatus,
+    ],
+  );
 
   const postScenesGenerate = async () => {
     if (!chapterId) return;
@@ -8926,7 +9022,12 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                       </button>
                     </div>
                     <div className="projects-list">
-                      {projects.map((p) => (
+                      {projects.map((p) => {
+                        const activeAr =
+                          p.active_agent_run_id &&
+                          ["running", "queued", "paused"].includes(String(p.active_agent_run_status || ""));
+                        const canListStart = pipelineMode === "auto" || pipelineMode === "unattended";
+                        return (
                         <div key={p.id} className="project-row-card">
                           <button
                             type="button"
@@ -8938,17 +9039,48 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                               {p.status} · {p.workflow_phase}
                             </small>
                           </button>
-                          <button
-                            type="button"
-                            className="project-row-delete"
-                            onClick={() => deleteProject(p.id)}
-                            title="Delete project"
-                            aria-label="Delete project"
+                          <div
+                            className="project-row-actions"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
                           >
-                            <i className="fa-solid fa-trash-can" aria-hidden="true" />
-                          </button>
+                            {activeAr ? (
+                              <button
+                                type="button"
+                                className="project-row-icon-btn project-row-automation project-row-automation--stop"
+                                disabled={busy}
+                                title="Stop automation for this project"
+                                aria-label="Stop automation for this project"
+                                onClick={(e) => void stopProjectAgentFromList(p.id, p.active_agent_run_id, e)}
+                              >
+                                <i className="fa-solid fa-stop" aria-hidden="true" />
+                              </button>
+                            ) : canListStart ? (
+                              <button
+                                type="button"
+                                className="project-row-icon-btn project-row-automation project-row-automation--start"
+                                disabled={busy}
+                                title="Queue Automate for this project (same options as Pipeline → Automate)"
+                                aria-label="Start automation for this project"
+                                onClick={(e) => void startProjectAgentFromList(p.id, e)}
+                              >
+                                <i className="fa-solid fa-play" aria-hidden="true" />
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="project-row-icon-btn project-row-delete"
+                              onClick={() => deleteProject(p.id)}
+                              title="Delete project"
+                              aria-label="Delete project"
+                            >
+                              <i className="fa-solid fa-trash-can" aria-hidden="true" />
+                            </button>
+                          </div>
                         </div>
-                      ))}
+                        );
+                      })}
                       {projects.length === 0 ? (
                         <div className="subtle" style={{ padding: "16px 8px", textAlign: "center", lineHeight: 1.6 }}>
                           <div style={{ fontSize: "1.5rem", marginBottom: 6 }}>🎬</div>

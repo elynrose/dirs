@@ -137,7 +137,33 @@ def list_projects(
             .limit(n)
         ).all()
     )
-    data = [ProjectOut.model_validate(p).model_dump(mode="json") for p in rows]
+    project_ids = [p.id for p in rows]
+    active_by_project: dict[uuid.UUID, AgentRun] = {}
+    if project_ids:
+        ar_rows = list(
+            db.scalars(
+                select(AgentRun)
+                .where(
+                    AgentRun.tenant_id == tenant,
+                    AgentRun.project_id.in_(project_ids),
+                    AgentRun.status.in_(("running", "queued", "paused")),
+                )
+                .order_by(desc(AgentRun.created_at))
+            ).all()
+        )
+        for ar in ar_rows:
+            if ar.project_id not in active_by_project:
+                active_by_project[ar.project_id] = ar
+
+    data: list[dict[str, Any]] = []
+    for p in rows:
+        po = ProjectOut.model_validate(p)
+        active = active_by_project.get(p.id)
+        if active:
+            po = po.model_copy(
+                update={"active_agent_run_id": active.id, "active_agent_run_status": active.status}
+            )
+        data.append(po.model_dump(mode="json"))
     return {
         "data": {
             "projects": data,
