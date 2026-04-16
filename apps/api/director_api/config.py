@@ -427,6 +427,9 @@ class Settings(BaseSettings):
     agent_run_min_scene_videos: int = Field(default=1, ge=1, le=10)
     # When false (default), automated scene video failures after retries do not abort the agent run — narration and timeline continue.
     agent_run_abort_on_auto_video_failure: bool = False
+    # Studio → Background music & final mix: default slider values (persisted via PATCH /v1/settings).
+    studio_default_mix_music_volume: float | None = Field(default=None, ge=0.0, le=1.0)
+    studio_default_mix_narration_volume: float | None = Field(default=None, ge=0.0, le=4.0)
     openai_agents_parallel: bool = True
     agent_oversight_llm_enabled: bool = True
 

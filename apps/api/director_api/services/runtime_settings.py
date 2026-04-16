@@ -189,6 +189,18 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
                 clean.pop(_mk, None)
     if "agent_run_abort_on_auto_video_failure" in clean:
         clean["agent_run_abort_on_auto_video_failure"] = bool(clean["agent_run_abort_on_auto_video_failure"])
+    if "studio_default_mix_music_volume" in clean:
+        try:
+            fv = float(clean["studio_default_mix_music_volume"])
+            clean["studio_default_mix_music_volume"] = max(0.0, min(1.0, fv))
+        except (TypeError, ValueError):
+            clean.pop("studio_default_mix_music_volume", None)
+    if "studio_default_mix_narration_volume" in clean:
+        try:
+            fv = float(clean["studio_default_mix_narration_volume"])
+            clean["studio_default_mix_narration_volume"] = max(0.0, min(4.0, fv))
+        except (TypeError, ValueError):
+            clean.pop("studio_default_mix_narration_volume", None)
     if "comfyui_video_use_scene_image" in clean:
         clean["comfyui_video_use_scene_image"] = bool(clean["comfyui_video_use_scene_image"])
     if "comfyui_api_flavor" in clean:

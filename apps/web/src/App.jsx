@@ -165,6 +165,28 @@ function buildContinuePipelineOptions(pipelineMode, autoThrough, appConfig, forc
   };
 }
 
+const LS_STUDIO_MIX_MUSIC = "director_studio_default_mix_music_volume";
+const LS_STUDIO_MIX_NARR = "director_studio_default_mix_narration_volume";
+
+function readStoredDefaultMixVolumes() {
+  try {
+    const mm = localStorage.getItem(LS_STUDIO_MIX_MUSIC);
+    const mn = localStorage.getItem(LS_STUDIO_MIX_NARR);
+    return {
+      mm:
+        mm != null && mm !== ""
+          ? Math.max(0, Math.min(1, Number.parseFloat(mm)))
+          : null,
+      mn:
+        mn != null && mn !== ""
+          ? Math.max(0, Math.min(4, Number.parseFloat(mn)))
+          : null,
+    };
+  } catch {
+    return { mm: null, mn: null };
+  }
+}
+
 /** When the field is typed manually and not in catalog, infer from endpoint id. */
 function falVideoKindFromEndpointId(endpointId) {
   const s = String(endpointId || "").trim();
@@ -1083,6 +1105,10 @@ export default function App() {
   const [projects, setProjects] = useState([]);
   const lastProjectsPollSnapshotRef = useRef("");
   const [appConfig, setAppConfig] = useState({});
+  const appConfigRef = useRef(appConfig);
+  useEffect(() => {
+    appConfigRef.current = appConfig;
+  }, [appConfig]);
   /** Optional secret keys filled from platform workspace (GET /v1/settings); UI explains instead of showing values. */
   const [platformCredentialKeysInherited, setPlatformCredentialKeysInherited] = useState([]);
   const credKeyInherited = (key) => platformCredentialKeysInherited.includes(key);
@@ -1195,8 +1221,13 @@ export default function App() {
   const [approveAllMediaBusy, setApproveAllMediaBusy] = useState(false);
   const [timelineVersionId, setTimelineVersionId] = useState(() => UI_BOOT.timelineVersionId);
   const [musicBeds, setMusicBeds] = useState([]);
-  const [mixMusicVol, setMixMusicVol] = useState(0.28);
-  const [mixNarrVol, setMixNarrVol] = useState(1);
+  const _mixVolInit = readStoredDefaultMixVolumes();
+  const [mixMusicVol, setMixMusicVol] = useState(
+    typeof _mixVolInit.mm === "number" && !Number.isNaN(_mixVolInit.mm) ? _mixVolInit.mm : 0.28,
+  );
+  const [mixNarrVol, setMixNarrVol] = useState(
+    typeof _mixVolInit.mn === "number" && !Number.isNaN(_mixVolInit.mn) ? _mixVolInit.mn : 1,
+  );
   const [narrMixMode, setNarrMixMode] = useState("scene_timeline");
   const [musicBedPick, setMusicBedPick] = useState("");
   /** Rough-cut: dissolve between consecutive stills (timeline ``clip_crossfade_sec``). */
@@ -1205,6 +1236,7 @@ export default function App() {
   const [burnSubtitlesOnFinalCut, setBurnSubtitlesOnFinalCut] = useState(false);
   const [musicUploadLicense, setMusicUploadLicense] = useState("");
   const musicFileInputRef = useRef(null);
+  const mixVolPersistTimerRef = useRef(null);
   const sceneClipFileInputRef = useRef(null);
   const [sceneClipUploadKind, setSceneClipUploadKind] = useState("auto");
   const [busy, setBusy] = useState(false);
@@ -2214,6 +2246,41 @@ export default function App() {
     }
   }, [gatedProjectId]);
 
+  /** When timeline_json omits mix levels, use workspace defaults then localStorage (same as slider persistence). */
+  const resolveStudioMixFallbacks = useCallback(() => {
+    let fbMm = 0.28;
+    let fbMn = 1;
+    const mm = appConfig.studio_default_mix_music_volume;
+    const mn = appConfig.studio_default_mix_narration_volume;
+    if (typeof mm === "number" && !Number.isNaN(mm)) {
+      fbMm = Math.max(0, Math.min(1, mm));
+    } else {
+      try {
+        const ls = localStorage.getItem(LS_STUDIO_MIX_MUSIC);
+        if (ls != null && ls !== "") {
+          const v = Number.parseFloat(ls);
+          if (!Number.isNaN(v)) fbMm = Math.max(0, Math.min(1, v));
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (typeof mn === "number" && !Number.isNaN(mn)) {
+      fbMn = Math.max(0, Math.min(4, mn));
+    } else {
+      try {
+        const ls = localStorage.getItem(LS_STUDIO_MIX_NARR);
+        if (ls != null && ls !== "") {
+          const v = Number.parseFloat(ls);
+          if (!Number.isNaN(v)) fbMn = Math.max(0, Math.min(4, v));
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return { fbMm, fbMn };
+  }, [appConfig.studio_default_mix_music_volume, appConfig.studio_default_mix_narration_volume]);
+
   const loadTimelineMixFields = useCallback(async () => {
     const tid = String(timelineVersionId || "").trim();
     if (!tid) return;
@@ -2223,11 +2290,12 @@ export default function App() {
       if (!r.ok) return;
       const tj = b.data?.timeline_json;
       if (!tj || typeof tj !== "object") return;
+      const { fbMm, fbMn } = resolveStudioMixFallbacks();
       setMixMusicVol(
-        typeof tj.mix_music_volume === "number" ? tj.mix_music_volume : 0.28,
+        typeof tj.mix_music_volume === "number" ? tj.mix_music_volume : fbMm,
       );
       setMixNarrVol(
-        typeof tj.mix_narration_volume === "number" ? tj.mix_narration_volume : 1,
+        typeof tj.mix_narration_volume === "number" ? tj.mix_narration_volume : fbMn,
       );
       setNarrMixMode("scene_timeline");
       setMusicBedPick(tj.music_bed_id ? String(tj.music_bed_id) : "");
@@ -2239,7 +2307,7 @@ export default function App() {
     } catch {
       /* ignore */
     }
-  }, [timelineVersionId]);
+  }, [timelineVersionId, resolveStudioMixFallbacks]);
 
   /** Persists music bed + mix fields from current UI state to ``timeline_json`` (no busy / toast). */
   const patchTimelineMixToServer = useCallback(
@@ -3762,6 +3830,69 @@ export default function App() {
       setSettingsBusy(false);
     }
   };
+
+  const schedulePersistStudioMixDefaults = useCallback((musicVol, narrVol) => {
+    const mVol = Math.max(0, Math.min(1, Number(musicVol) || 0));
+    const nVol = Math.max(0, Math.min(4, Number(narrVol) || 1));
+    try {
+      localStorage.setItem(LS_STUDIO_MIX_MUSIC, String(mVol));
+      localStorage.setItem(LS_STUDIO_MIX_NARR, String(nVol));
+    } catch {
+      /* ignore */
+    }
+    if (mixVolPersistTimerRef.current) {
+      clearTimeout(mixVolPersistTimerRef.current);
+    }
+    mixVolPersistTimerRef.current = setTimeout(async () => {
+      mixVolPersistTimerRef.current = null;
+      const base = appConfigRef.current;
+      const next = {
+        ...base,
+        studio_default_mix_music_volume: mVol,
+        studio_default_mix_narration_volume: nVol,
+      };
+      try {
+        const r = await api("/v1/settings", { method: "PATCH", body: JSON.stringify({ config: next }) });
+        const body = await parseJson(r);
+        if (r.ok) {
+          setAppConfig(body.data?.config || next);
+        }
+      } catch {
+        /* offline or transient — values kept in localStorage */
+      }
+    }, 500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (mixVolPersistTimerRef.current) {
+        clearTimeout(mixVolPersistTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const mm = appConfig.studio_default_mix_music_volume;
+    const mn = appConfig.studio_default_mix_narration_volume;
+    if (typeof mm === "number" && !Number.isNaN(mm)) {
+      const v = Math.max(0, Math.min(1, mm));
+      setMixMusicVol(v);
+      try {
+        localStorage.setItem(LS_STUDIO_MIX_MUSIC, String(v));
+      } catch {
+        /* ignore */
+      }
+    }
+    if (typeof mn === "number" && !Number.isNaN(mn)) {
+      const v = Math.max(0, Math.min(4, mn));
+      setMixNarrVol(v);
+      try {
+        localStorage.setItem(LS_STUDIO_MIX_NARR, String(v));
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [appConfig.studio_default_mix_music_volume, appConfig.studio_default_mix_narration_volume]);
 
   useEffect(() => {
     setBurnSubtitlesOnFinalCut(Boolean(appConfig.burn_subtitles_in_final_cut_default));
@@ -9137,6 +9268,9 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                     <p className="subtle" style={{ marginTop: 6, fontSize: "0.72rem", lineHeight: 1.45 }}>
                       <strong>Scene timeline</strong> narration: each scene&rsquo;s VO is aligned to its clip in the final cut.
                     </p>
+                    <p className="subtle" style={{ marginTop: 6, fontSize: "0.72rem", lineHeight: 1.45 }}>
+                      Default music and narration levels are saved for this workspace (and this browser) and used when a timeline has no mix values yet.
+                    </p>
                     <div style={{ marginTop: 8 }}>
                       <label htmlFor="mmv">Music volume (0–1)</label>
                       <input
@@ -9146,7 +9280,11 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         max={1}
                         step={0.02}
                         value={mixMusicVol}
-                        onChange={(e) => setMixMusicVol(Number(e.target.value))}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setMixMusicVol(v);
+                          schedulePersistStudioMixDefaults(v, mixNarrVol);
+                        }}
                       />
                       <span className="subtle" style={{ marginLeft: 8 }}>
                         {mixMusicVol.toFixed(2)}
@@ -9161,7 +9299,11 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         max={4}
                         step={0.05}
                         value={mixNarrVol}
-                        onChange={(e) => setMixNarrVol(Number(e.target.value))}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setMixNarrVol(v);
+                          schedulePersistStudioMixDefaults(mixMusicVol, v);
+                        }}
                       />
                       <span className="subtle" style={{ marginLeft: 8 }}>
                         {mixNarrVol.toFixed(2)}
