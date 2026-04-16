@@ -1246,13 +1246,15 @@ export default function App() {
   const phase5BundledPidRef = useRef("");
   /** Previous `pipeline-status.latest_timeline_version_id` for this project — used to follow a new latest timeline without clobbering manual picks. */
   const lastPolledLatestTimelineRef = useRef(null);
+  /** While an agent run is running/queued, throttle chapter/scene/critic/asset reloads (see ``refreshRun``). */
+  const lastAgentRunHeavySyncRef = useRef(0);
   const jobPollIntervalMs = Math.max(
     500,
     Math.min(120_000, Number(appConfig.studio_job_poll_interval_ms) || 800),
   );
-  /** Background refresh for the project list (Project & story → Projects). */
+  /** Background refresh for the project list (Project & story → Projects). Keep ≥8s to avoid constant full-list GETs. */
   const projectsListPollMs = useMemo(
-    () => Math.min(15_000, Math.max(2_500, jobPollIntervalMs * 3)),
+    () => Math.min(20_000, Math.max(8_000, jobPollIntervalMs * 4)),
     [jobPollIntervalMs],
   );
   const { job: charactersJob } = usePollJob(
@@ -3348,6 +3350,10 @@ export default function App() {
     lastPolledLatestTimelineRef.current = null;
   }, [projectId]);
 
+  useEffect(() => {
+    lastAgentRunHeavySyncRef.current = 0;
+  }, [agentRunId, chapterId, expandedScene]);
+
   const refreshRun = useCallback(async () => {
     if (!studioReady || !agentRunId) return;
     const r = await api(`/v1/agent-runs/${agentRunId}`);
@@ -3360,13 +3366,23 @@ export default function App() {
       setProjectId(runProjectId);
     }
     const pid = (runProjectId || String(projectId || "").trim()) || "";
-    if (pid) loadProjectCriticReports(pid);
 
     const st = data?.status;
     const runHot = st === "running" || st === "queued";
+    const terminal = ["succeeded", "cancelled", "failed", "blocked"].includes(st);
 
-    /* While the worker is active, keep chapters/scenes/assets/narration in sync (no refresh needed). */
-    if (runHot && pid) {
+    /* Hot run: lightweight agent-run poll every tick; heavy project/scene sync only every ~12s (SSE covers many live updates). */
+    const AGENT_RUN_HEAVY_MS = 12_000;
+    const now = Date.now();
+    const needHeavyHot =
+      runHot &&
+      pid &&
+      (lastAgentRunHeavySyncRef.current === 0 ||
+        now - lastAgentRunHeavySyncRef.current >= AGENT_RUN_HEAVY_MS);
+
+    if (needHeavyHot) {
+      lastAgentRunHeavySyncRef.current = now;
+      loadProjectCriticReports(pid);
       loadChapters(pid);
       if (chapterId) {
         loadScenes(chapterId);
@@ -3380,9 +3396,9 @@ export default function App() {
       }
     }
 
-    const terminal = ["succeeded", "cancelled", "failed", "blocked"].includes(st);
     if (terminal && pid) {
       loadPipelineStatus(pid);
+      loadProjectCriticReports(pid);
       loadChapters(pid);
       if (chapterId) {
         loadScenes(chapterId);
@@ -3500,9 +3516,10 @@ export default function App() {
       return undefined;
     }
     loadPipelineStatus(gatedProjectId);
-    const tick = setInterval(() => loadPipelineStatus(gatedProjectId), 2500);
+    const ms = sseConnected ? 5000 : 2500;
+    const tick = setInterval(() => loadPipelineStatus(gatedProjectId), ms);
     return () => clearInterval(tick);
-  }, [gatedProjectId, loadPipelineStatus]);
+  }, [gatedProjectId, loadPipelineStatus, sseConnected]);
 
   useEffect(() => {
     if (!studioReady) return undefined;
@@ -3734,7 +3751,7 @@ export default function App() {
   useEffect(() => {
     if (!studioReady || !agentRunId) return undefined;
     refreshRun();
-    const id = setInterval(refreshRun, 1500);
+    const id = setInterval(refreshRun, 3500);
     return () => clearInterval(id);
   }, [studioReady, agentRunId, refreshRun]);
 
