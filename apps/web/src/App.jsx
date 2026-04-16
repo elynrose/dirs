@@ -148,6 +148,70 @@ function projectsPollSnapshotFromRows(rows) {
   );
 }
 
+/** Skip ``setRun`` when GET /v1/agent-runs/{id} payload is unchanged (3.5s poll otherwise re-renders the whole app). */
+function agentRunPollSnapshot(data) {
+  if (!data || typeof data !== "object") return "";
+  const steps = Array.isArray(data.steps_json) ? data.steps_json : [];
+  const tail = steps.length ? steps[steps.length - 1] : null;
+  const ctrl = data.pipeline_control_json;
+  const stopReq = ctrl && typeof ctrl === "object" ? Boolean(ctrl.stop_requested) : false;
+  return JSON.stringify({
+    id: String(data.id ?? ""),
+    st: String(data.status ?? ""),
+    step: String(data.current_step ?? ""),
+    ua: String(data.updated_at ?? ""),
+    err: String(data.error_message ?? ""),
+    bc: String(data.block_code ?? ""),
+    slen: steps.length,
+    tail:
+      tail && typeof tail === "object"
+        ? {
+            step: String(tail.step ?? ""),
+            status: String(tail.status ?? ""),
+            at: String(tail.at ?? tail.ts ?? ""),
+          }
+        : null,
+    sr: stopReq,
+  });
+}
+
+function activeJobsPollSnapshot(jobs) {
+  if (!Array.isArray(jobs)) return "[]";
+  return JSON.stringify(
+    [...jobs]
+      .map((j) => ({
+        id: String(j?.id ?? ""),
+        t: String(j?.type ?? ""),
+        st: String(j?.status ?? ""),
+        pct: j?.progress_pct,
+        ua: String(j?.updated_at ?? ""),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  );
+}
+
+function pipelineStatusPollSnapshot(d) {
+  if (!d || typeof d !== "object") return "";
+  const steps = Array.isArray(d.steps) ? d.steps : [];
+  const issues = Array.isArray(d.phase5_issues) ? d.phase5_issues : [];
+  return JSON.stringify({
+    wf: String(d.workflow_phase ?? ""),
+    pr: d.phase_rank,
+    cc: d.chapter_count,
+    sc: d.scene_count,
+    p5: Boolean(d.phase5_ready),
+    p5n: issues.length,
+    p5h: issues
+      .slice(0, 12)
+      .map((x) => (x && typeof x === "object" ? String(x.code ?? x.type ?? x.id ?? "") : ""))
+      .join("|"),
+    lid: String(d.latest_timeline_version_id ?? ""),
+    st: steps
+      .map((s) => `${String(s?.id ?? "")}:${String(s?.status ?? "")}:${String(s?.detail ?? "")}`)
+      .join(";"),
+  });
+}
+
 /** Same payload as Inspector → Automate, for POST /v1/agent-runs with ``project_id`` (list row or open project). */
 function buildContinuePipelineOptions(pipelineMode, autoThrough, appConfig, forceReplanScenesOnContinue) {
   return {
@@ -1302,6 +1366,10 @@ export default function App() {
   const lastPolledLatestTimelineRef = useRef(null);
   /** While an agent run is running/queued, throttle chapter/scene/critic/asset reloads (see ``refreshRun``). */
   const lastAgentRunHeavySyncRef = useRef(0);
+  /** Fingerprint of last applied agent-run poll — skip ``setRun`` when identical. */
+  const lastAgentRunPollSnapshotRef = useRef("");
+  const lastActiveJobsPollSnapshotRef = useRef("");
+  const lastPipelineStatusPollSnapshotRef = useRef("");
   const jobPollIntervalMs = Math.max(
     500,
     Math.min(120_000, Number(appConfig.studio_job_poll_interval_ms) || 800),
@@ -2127,7 +2195,12 @@ export default function App() {
         return;
       }
       setActiveJobsLoadErr("");
-      setActiveProjectJobs(body.data?.jobs || []);
+      const jobs = body.data?.jobs || [];
+      const js = activeJobsPollSnapshot(jobs);
+      if (js !== lastActiveJobsPollSnapshotRef.current) {
+        lastActiveJobsPollSnapshotRef.current = js;
+        setActiveProjectJobs(jobs);
+      }
     } catch (e) {
       setActiveJobsLoadErr(formatUserFacingError(e));
     }
@@ -2197,6 +2270,7 @@ export default function App() {
 
   useEffect(() => {
     if (!gatedProjectId) {
+      lastActiveJobsPollSnapshotRef.current = "";
       setActiveProjectJobs([]);
       return undefined;
     }
@@ -3420,8 +3494,13 @@ export default function App() {
         const r = await api(`/v1/projects/${pid}/pipeline-status`);
         const body = await parseJson(r);
         if (r.ok && body.data) {
-          setPipelineStatus(body.data);
-          const lid = body.data.latest_timeline_version_id;
+          const d = body.data;
+          const ps = pipelineStatusPollSnapshot(d);
+          if (ps !== lastPipelineStatusPollSnapshotRef.current) {
+            lastPipelineStatusPollSnapshotRef.current = ps;
+            setPipelineStatus(d);
+          }
+          const lid = d.latest_timeline_version_id;
           if (lid) {
             const prevLatest = lastPolledLatestTimelineRef.current;
             lastPolledLatestTimelineRef.current = lid;
@@ -3435,9 +3514,9 @@ export default function App() {
             });
           }
           // Full GET phase5-readiness (includes export_attention_timeline_assets). Throttle: same handler runs on a 2.5s poll.
-          const ps = String(pid);
-          if (ps !== phase5BundledPidRef.current) {
-            phase5BundledPidRef.current = ps;
+          const pidS = String(pid);
+          if (pidS !== phase5BundledPidRef.current) {
+            phase5BundledPidRef.current = pidS;
             lastPhase5BundledRefreshRef.current = 0;
           }
           const now = Date.now();
@@ -3459,6 +3538,7 @@ export default function App() {
 
   useEffect(() => {
     lastAgentRunHeavySyncRef.current = 0;
+    lastAgentRunPollSnapshotRef.current = "";
   }, [agentRunId, chapterId, expandedScene]);
 
   const refreshRun = useCallback(async () => {
@@ -3467,7 +3547,11 @@ export default function App() {
     const body = await parseJson(r);
     if (!r.ok) return;
     const data = body.data;
-    setRun(data);
+    const runSnap = agentRunPollSnapshot(data);
+    if (runSnap !== lastAgentRunPollSnapshotRef.current) {
+      lastAgentRunPollSnapshotRef.current = runSnap;
+      setRun(data);
+    }
     const runProjectId = data?.project_id != null ? String(data.project_id) : "";
     if (runProjectId && !String(projectId || "").trim()) {
       setProjectId(runProjectId);
@@ -3619,6 +3703,7 @@ export default function App() {
 
   useEffect(() => {
     if (!gatedProjectId) {
+      lastPipelineStatusPollSnapshotRef.current = "";
       setPipelineStatus(null);
       return undefined;
     }
