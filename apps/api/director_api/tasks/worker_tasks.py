@@ -2539,7 +2539,51 @@ def _run_agent_full_pipeline_tail(
         approved_only = [a for a in imgs if a.approved_at is not None]
         use_imgs = approved_only if approved_only else imgs
         if not use_imgs:
-            raise ValueError(f"AUTO_TIMELINE_MISSING_IMAGE_{sc.id}")
+            # Budget smoke: placeholder stills + optional local_ffmpeg (no cloud video). Tail resume can
+            # skip auto_images while a scene still has no still; local_ffmpeg needs a source image anyway.
+            proj_tl = proj_for_timeline or db.get(Project, pid)
+            want_placeholder_heal = bool(
+                proj_tl
+                and str(getattr(proj_tl, "preferred_image_provider", "") or "").strip().lower() == "placeholder"
+            ) or bool(getattr(settings, "director_placeholder_media", False))
+            if want_placeholder_heal:
+                j_heal = _synthetic_job(
+                    tenant_id=tenant_id,
+                    project_id=pid,
+                    jtype="scene_generate_image",
+                    payload={
+                        "scene_id": str(sc.id),
+                        "tenant_id": tenant_id,
+                        "generation_tier": "preview",
+                        "agent_run_id": str(agent_run_uuid),
+                    },
+                )
+                try:
+                    heal_out = _phase3_image_generate(db, j_heal)
+                    if isinstance(heal_out, dict) and heal_out.get("ok") is True:
+                        _auto_pipeline_approve_scene_image(db, sc)
+                    db.commit()
+                    imgs = list(
+                        db.scalars(
+                            select(Asset)
+                            .where(
+                                Asset.scene_id == sc.id,
+                                Asset.asset_type == "image",
+                                Asset.status == "succeeded",
+                            )
+                            .order_by(Asset.timeline_sequence.asc(), Asset.created_at.asc())
+                        ).all()
+                    )
+                    approved_only = [a for a in imgs if a.approved_at is not None]
+                    use_imgs = approved_only if approved_only else imgs
+                except Exception as exc:
+                    log.warning(
+                        "auto_timeline_placeholder_heal_failed",
+                        scene_id=str(sc.id),
+                        error=str(exc)[:500],
+                    )
+            if not use_imgs:
+                raise ValueError(f"AUTO_TIMELINE_MISSING_IMAGE_{sc.id}")
         scene_dur = effective_scene_visual_budget_sec(
             db,
             scene=sc,
