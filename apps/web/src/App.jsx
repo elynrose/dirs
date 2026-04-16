@@ -2047,6 +2047,8 @@ export default function App() {
   const [batchImageRangeTo, setBatchImageRangeTo] = useState("");
   /** When narration has ``[bracket]`` hints, optionally run the text API to merge them into one still prompt (image jobs only). */
   const [refineBracketImageWithLlm, setRefineBracketImageWithLlm] = useState(false);
+  /** Skip ProjectCharacter consistency prefix on image/video jobs (generate, retry, batch images). */
+  const [excludeCharacterBibleFromPrompts, setExcludeCharacterBibleFromPrompts] = useState(false);
 
   useEffect(() => {
     setBatchImageRangeFrom("");
@@ -4675,6 +4677,12 @@ export default function App() {
         const vp = String(appConfig.active_video_provider || "fal").trim().toLowerCase();
         if (vp) extra.video_provider = vp;
       }
+      if (
+        excludeCharacterBibleFromPrompts &&
+        (path === "generate-image" || path === "retry" || path === "generate-video")
+      ) {
+        extra.exclude_character_bible = true;
+      }
       const body = await apiPostIdempotent(api, `/v1/scenes/${sceneId}/${path}`, extra, idem);
       const jid = body.job?.id;
       if (jid) {
@@ -4779,6 +4787,7 @@ export default function App() {
         const p = String(appConfig.active_image_provider || "fal").trim().toLowerCase();
         if (p) extra.image_provider = p;
         if (refineBracketImageWithLlm) extra.refine_bracket_visual_with_llm = true;
+        if (excludeCharacterBibleFromPrompts) extra.exclude_character_bible = true;
         const body = await apiPostIdempotent(api, `/v1/scenes/${sid}/generate-image`, extra, idem);
         const jid = body.job?.id;
         if (jid) {
@@ -10091,6 +10100,14 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           onChange={(e) => setRefineBracketImageWithLlm(e.target.checked)}
                         />
                         Refine <code>[bracket]</code> hints with LLM (optional; uses your configured text API)
+                      </label>
+                      <label className="subtle" style={{ display: "flex", gap: 8, alignItems: "center", margin: "4px 0 4px", fontSize: "0.8rem", cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={excludeCharacterBibleFromPrompts}
+                          onChange={(e) => setExcludeCharacterBibleFromPrompts(e.target.checked)}
+                        />
+                        Exclude character bible from image/video prompts (this session; Image, Video, Retry, batch)
                       </label>
                       <p className="subtle" style={{ margin: "0 0 8px", fontSize: "0.76rem", lineHeight: 1.45 }}>
                         In narration, wrap key visuals in square brackets — e.g.{" "}

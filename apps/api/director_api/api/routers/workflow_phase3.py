@@ -203,6 +203,7 @@ def _enqueue_scene_image_job(
             "refine_bracket_visual_with_llm": bool(body.refine_bracket_visual_with_llm),
             "image_provider": body.image_provider,
             "fal_image_model": body.fal_image_model,
+            "exclude_character_bible": bool(body.exclude_character_bible),
         },
         project_id=ch.project_id,
     )
@@ -688,6 +689,7 @@ def scene_generate_video(
             "video_provider": eff.video_provider,
             "fal_video_model": eff.fal_video_model,
             "video_prompt_override": eff.video_prompt_override,
+            "exclude_character_bible": bool(eff.exclude_character_bible),
         },
         project_id=ch.project_id,
     )

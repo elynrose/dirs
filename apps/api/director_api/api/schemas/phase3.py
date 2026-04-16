@@ -60,6 +60,10 @@ class SceneImageGenBody(BaseModel):
         max_length=256,
         description="When the resolved image provider is fal, call this endpoint_id (e.g. fal-ai/flux/dev).",
     )
+    exclude_character_bible: bool = Field(
+        default=False,
+        description="When true, do not prepend ProjectCharacter consistency text to the image prompt for this job.",
+    )
 
 
 class PromptEnhanceImageBody(BaseModel):
@@ -115,6 +119,10 @@ class SceneVideoGenBody(BaseModel):
         default=None,
         max_length=256,
         description="When the resolved video provider is fal, call this endpoint_id.",
+    )
+    exclude_character_bible: bool = Field(
+        default=False,
+        description="When true, do not prepend ProjectCharacter consistency text to the video text prompt for this job (fal / Comfy).",
     )
 
 

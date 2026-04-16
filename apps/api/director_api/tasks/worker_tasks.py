@@ -3932,10 +3932,11 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             "used_bracket_hints": used_brackets,
         }
 
-    prefix = character_consistency_prefix(db, project.id, max_chars=2000)
-    if prefix and not prompt_already_has_character_prefix(prompt, prefix):
-        room = max(400, 4000 - len(prefix) - 3)
-        prompt = f"{prefix}\n\n{str(prompt)[:room]}"
+    if not bool(payload.get("exclude_character_bible")):
+        prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+        if prefix and not prompt_already_has_character_prefix(prompt, prefix):
+            room = max(400, 4000 - len(prefix) - 3)
+            prompt = f"{prefix}\n\n{str(prompt)[:room]}"
 
     vis_style = effective_visual_style(project.visual_style, settings)
     if vis_style:
@@ -4281,10 +4282,11 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
 
     if selected_video_provider in ("fal", "comfyui_wan"):
         prompt = base_video_text_prompt
-        vprefix = character_consistency_prefix(db, project.id, max_chars=2000)
-        if vprefix and not prompt_already_has_character_prefix(prompt, vprefix):
-            room = max(400, 3000 - len(vprefix) - 3)
-            prompt = f"{vprefix}\n\n{str(prompt)[:room]}"
+        if not bool(payload.get("exclude_character_bible")):
+            vprefix = character_consistency_prefix(db, project.id, max_chars=2000)
+            if vprefix and not prompt_already_has_character_prefix(prompt, vprefix):
+                room = max(400, 3000 - len(vprefix) - 3)
+                prompt = f"{vprefix}\n\n{str(prompt)[:room]}"
         vis_style = effective_visual_style(project.visual_style, settings)
         if vis_style:
             room_vs = max(0, 4000 - len(prompt) - 24)
