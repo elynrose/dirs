@@ -55,6 +55,7 @@ import {
   agentRunMinSceneImages,
   agentRunMinSceneVideos,
   sceneAutomationMediaPipelineOptions,
+  pipelineSpeedPatchForOptions,
   briefPreferredMediaProvidersFromAppConfig,
 } from "./lib/constants.js";
 import { usePollJob } from "./hooks/usePollJob.js";
@@ -224,6 +225,7 @@ function buildContinuePipelineOptions(pipelineMode, autoThrough, appConfig, forc
       ? {
           ...sceneAutomationMediaPipelineOptions(appConfig),
           narration_granularity: "scene",
+          ...pipelineSpeedPatchForOptions(appConfig),
         }
       : {}),
   };
@@ -2465,7 +2467,9 @@ export default function App() {
     const roughPath = `/v1/projects/${projectId}/rough-cut`;
     const finalPath = `/v1/projects/${projectId}/final-cut`;
     const pollOpts = {
-      intervalMs: jobPollIntervalMs,
+      intervalMs: sseConnected
+        ? Math.min(60_000, Math.max(2_000, jobPollIntervalMs * 4))
+        : jobPollIntervalMs,
       timeoutMs: 120 * 60 * 1000,
     };
     setBusy(true);
@@ -2509,6 +2513,7 @@ export default function App() {
     pipelineMode,
     idem,
     jobPollIntervalMs,
+    sseConnected,
     patchTimelineMixToServer,
     loadActiveProjectJobs,
     burnSubtitlesOnFinalCut,
@@ -4011,11 +4016,18 @@ export default function App() {
   useEffect(() => {
     if (!studioReady || !agentRunId) return undefined;
     refreshRun();
-    const id = setInterval(refreshRun, 3500);
+    const intervalMs = sseConnected ? 9_000 : 3_500;
+    const id = setInterval(refreshRun, intervalMs);
     return () => clearInterval(id);
-  }, [studioReady, agentRunId, refreshRun]);
+  }, [studioReady, agentRunId, refreshRun, sseConnected]);
 
-  const { job: mediaJob } = usePollJob(mediaJobId, mediaPoll && studioReady, jobPollIntervalMs);
+  /** When project SSE is live, ``jobs_update`` / ``agent_run_update`` reduce the need to hammer ``GET /v1/jobs/{id}`` for media. */
+  const effectiveMediaJobPollMs = useMemo(() => {
+    if (!sseConnected) return jobPollIntervalMs;
+    return Math.min(60_000, Math.max(2_000, jobPollIntervalMs * 4));
+  }, [sseConnected, jobPollIntervalMs]);
+
+  const { job: mediaJob } = usePollJob(mediaJobId, mediaPoll && studioReady, effectiveMediaJobPollMs);
 
   useEffect(() => {
     if (!mediaJob) return;
@@ -4285,6 +4297,7 @@ export default function App() {
                 unattended: true,
                 narration_granularity: "scene",
                 ...sceneAutomationMediaPipelineOptions(appConfig),
+                ...pipelineSpeedPatchForOptions(appConfig),
                 ...(forceReplanScenesOnContinue ? { force_replan_scenes: true } : {}),
               }
             : {
@@ -4293,6 +4306,7 @@ export default function App() {
                 through: autoThrough,
                 narration_granularity: "scene",
                 ...sceneAutomationMediaPipelineOptions(appConfig),
+                ...(autoThrough === "full_video" ? pipelineSpeedPatchForOptions(appConfig) : {}),
                 ...(forceReplanScenesOnContinue ? { force_replan_scenes: true } : {}),
               };
       const r = await api("/v1/agent-runs", {
@@ -4424,6 +4438,7 @@ export default function App() {
               ? {
                   ...sceneAutomationMediaPipelineOptions(appConfig),
                   narration_granularity: "scene",
+                  ...pipelineSpeedPatchForOptions(appConfig),
                 }
               : {}),
           },
@@ -4500,6 +4515,7 @@ export default function App() {
                 ? {
                     ...sceneAutomationMediaPipelineOptions(appConfig),
                     narration_granularity: "scene",
+                    ...pipelineSpeedPatchForOptions(appConfig),
                   }
                 : {}),
             },
@@ -4721,7 +4737,7 @@ export default function App() {
       tick();
     });
 
-  /** Enqueue one image job per scene in the current chapter, spacing by Settings → Studio (default 15s, not provider generation time). */
+  /** Enqueue one image job per scene in the current chapter, spacing by Settings → Studio (default 5s, not provider generation time). */
   const startBatchChapterImages = async () => {
     if (!chapterId || scenes.length === 0) return;
     batchImagesCancelRef.current = false;
@@ -4981,15 +4997,8 @@ export default function App() {
 
       onGenerateImage: useCallback(() => {
         if (!expandedScene || !projectId || busy) return;
-        void api(`/v1/scenes/${encodeURIComponent(expandedScene)}/generate-image`, {
-          method: "POST",
-          body: JSON.stringify({ project_id: projectId }),
-        }).then(async (r) => {
-          const body = await parseJson(r);
-          if (!r.ok) setError(apiErrorMessage(body) || "image generation failed");
-          else void loadActiveProjectJobs();
-        });
-      }, [expandedScene, projectId, busy, loadActiveProjectJobs]),
+        void postImage(expandedScene, "generate-image", {});
+      }, [expandedScene, projectId, busy, postImage]),
 
       onSaveNarration: useCallback(() => {
         if (sceneNarrationDirty) void saveSceneNarrationDraft();
@@ -7617,6 +7626,23 @@ export default function App() {
                   style={{ marginLeft: 8, width: "3.5rem" }}
                 />
               </label>
+              <label htmlFor="cfg-auto-images-concurrency" style={{ textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
+                Parallel stills (1–8 scenes at once)
+                <input
+                  id="cfg-auto-images-concurrency"
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={Math.min(8, Math.max(1, Number(appConfig.agent_run_auto_images_max_concurrency ?? 1)))}
+                  disabled={!agentRunAutoGenerateSceneImages(appConfig)}
+                  title="Full-video automation tail only. 1 = sequential (safest). 2+ runs multiple scene image jobs at once; respect your image provider rate limits. PostgreSQL is recommended — SQLite can hit lock contention under parallel writes."
+                  onChange={(e) => {
+                    const n = Math.min(8, Math.max(1, Number.parseInt(e.target.value, 10) || 1));
+                    setAppConfig((p) => ({ ...p, agent_run_auto_images_max_concurrency: n }));
+                  }}
+                  style={{ marginLeft: 8, width: "3.5rem" }}
+                />
+              </label>
               <label htmlFor="cfg-min-scene-videos" style={{ textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
                 Min clips per scene (1–10)
                 <input
@@ -7634,6 +7660,10 @@ export default function App() {
                 />
               </label>
             </div>
+            <p className="subtle" style={{ marginTop: 6, fontSize: "0.74rem", lineHeight: 1.45 }}>
+              <strong>Parallel stills</strong> speeds up the automation tail when your image API allows concurrent requests. Keep at <strong>1</strong> on SQLite or if you see database lock errors; use{" "}
+              <strong>PostgreSQL</strong> for multi-write concurrency.
+            </p>
             <label htmlFor="cfg-auto-scene-videos" style={{ marginTop: 14, textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
               <input
                 id="cfg-auto-scene-videos"
@@ -7649,6 +7679,23 @@ export default function App() {
             <p className="subtle" style={{ marginTop: -6 }}>
               Defaults match new projects: stills and clips on, minimum one each per scene. Turn off either type if you only want images or only motion clips.
             </p>
+            <label htmlFor="cfg-pipeline-speed" style={{ marginTop: 14, display: "block", textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
+              Full-video automation preset
+            </label>
+            <p className="subtle" style={{ marginTop: -4 }}>
+              <strong>Standard</strong> uses the toggles and min counts above. <strong>Demo (fast)</strong> sends a server preset: one still per scene, no auto scene
+              videos (shorter runs for testers). <strong>Production (heavy)</strong> requests two stills and two clips per scene when those types are enabled.
+            </p>
+            <select
+              id="cfg-pipeline-speed"
+              value={String(appConfig.agent_run_pipeline_speed || "standard")}
+              onChange={(e) => setAppConfig((p) => ({ ...p, agent_run_pipeline_speed: e.target.value }))}
+              style={{ marginTop: 6, maxWidth: 360 }}
+            >
+              <option value="standard">Standard (workspace min stills / clips)</option>
+              <option value="demo_fast">Demo (fast) — one still, no auto scene videos</option>
+              <option value="production_heavy">Production (heavy) — two stills, two clips</option>
+            </select>
             <label htmlFor="cfg-abort-on-auto-video-failure" style={{ marginTop: 12, textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
               <input
                 id="cfg-abort-on-auto-video-failure"
@@ -7814,7 +7861,9 @@ export default function App() {
               Job status poll interval (milliseconds)
             </label>
             <p className="subtle" style={{ marginTop: -4 }}>
-              How often the UI refreshes media and character job status.
+              How often the UI refreshes media and character job status. When the project <strong>SSE</strong> stream is connected,
+              media job polling uses a slower effective interval (up to 4× this value, capped at 60s) so updates from the stream are not
+              duplicated by constant HTTP polling — helpful on high-latency links.
             </p>
             <input
               id="cfg-studio-job-poll-ms"

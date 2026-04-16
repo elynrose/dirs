@@ -59,5 +59,16 @@ export default defineConfig(({ mode }) => {
       "Cache-Control": "no-store",
     },
   },
+  // Production `dist`: hashed filenames under `/assets` (Vite default). At the reverse proxy or CDN,
+  // serve `index.html` with short cache / `no-cache` and `/assets/*` with long `max-age` + `immutable`.
+  build: {
+    rollupOptions: {
+      output: {
+        entryFileNames: "assets/[name]-[hash].js",
+        chunkFileNames: "assets/[name]-[hash].js",
+        assetFileNames: "assets/[name]-[hash][extname]",
+      },
+    },
+  },
 };
 });

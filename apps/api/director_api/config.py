@@ -425,6 +425,16 @@ class Settings(BaseSettings):
     agent_run_auto_generate_scene_images: bool = True
     agent_run_min_scene_images: int = Field(default=1, ge=1, le=10)
     agent_run_min_scene_videos: int = Field(default=1, ge=1, le=10)
+    # Automation tail: generate scene stills for up to N scenes at once (separate DB sessions per thread). 1 = sequential.
+    agent_run_auto_images_max_concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        validation_alias=AliasChoices(
+            "agent_run_auto_images_max_concurrency",
+            "AGENT_RUN_AUTO_IMAGES_MAX_CONCURRENCY",
+        ),
+    )
     # When false (default), automated scene video failures after retries do not abort the agent run — narration and timeline continue.
     agent_run_abort_on_auto_video_failure: bool = False
     # Studio → Background music & final mix: default slider values (persisted via PATCH /v1/settings).

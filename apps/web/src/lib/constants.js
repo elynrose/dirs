@@ -300,6 +300,7 @@ export const EVENT_META_LABELS = {
   chapters_planned: "Chapters planned",
   chapters_skipped_short_script: "Skipped (short script)",
   scene_total: "Scenes",
+  auto_images_max_concurrency: "Parallel stills",
   reason: "Note",
   timeline_version: "Timeline",
 };
@@ -334,6 +335,13 @@ export function agentRunMinSceneVideos(cfg) {
   return _clampAutomationMinPerScene(cfg?.agent_run_min_scene_videos);
 }
 
+/** Automation tail: max scenes generating stills at once (1–8). Default 1 = sequential. */
+export function agentRunAutoImagesMaxConcurrency(cfg) {
+  const v = Number(cfg?.agent_run_auto_images_max_concurrency ?? 1);
+  if (!Number.isFinite(v)) return 1;
+  return Math.max(1, Math.min(8, Math.floor(v)));
+}
+
 /** Sent on full-video / unattended agent runs — worker uses these for the scene media tail. */
 export function sceneAutomationMediaPipelineOptions(cfg) {
   return {
@@ -341,7 +349,18 @@ export function sceneAutomationMediaPipelineOptions(cfg) {
     auto_generate_scene_videos: agentRunAutoGenerateSceneVideos(cfg),
     min_scene_images: agentRunMinSceneImages(cfg),
     min_scene_videos: agentRunMinSceneVideos(cfg),
+    auto_images_max_concurrency: agentRunAutoImagesMaxConcurrency(cfg),
   };
+}
+
+/**
+ * Optional workspace `agent_run_pipeline_speed`: merged server-side into explicit min_scene_* / auto_generate_*.
+ * Returns a patch for `pipeline_options` (empty object when standard / unset).
+ */
+export function pipelineSpeedPatchForOptions(cfg) {
+  const v = String(cfg?.agent_run_pipeline_speed ?? "standard").trim().toLowerCase();
+  if (v === "demo_fast" || v === "production_heavy") return { pipeline_speed: v };
+  return {};
 }
 
 /**

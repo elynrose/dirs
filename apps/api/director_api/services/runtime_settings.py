@@ -187,6 +187,12 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
                 clean[_mk] = max(1, min(10, mv))
             except (TypeError, ValueError):
                 clean.pop(_mk, None)
+    if "agent_run_auto_images_max_concurrency" in clean:
+        try:
+            mc = int(clean["agent_run_auto_images_max_concurrency"])
+            clean["agent_run_auto_images_max_concurrency"] = max(1, min(8, mc))
+        except (TypeError, ValueError):
+            clean.pop("agent_run_auto_images_max_concurrency", None)
     if "agent_run_abort_on_auto_video_failure" in clean:
         clean["agent_run_abort_on_auto_video_failure"] = bool(clean["agent_run_abort_on_auto_video_failure"])
     if "studio_default_mix_music_volume" in clean:

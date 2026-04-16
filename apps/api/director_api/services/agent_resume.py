@@ -209,6 +209,45 @@ def parse_pipeline_options(raw: Any) -> tuple[bool, str, bool]:
     return cont, through, unattended
 
 
+def apply_pipeline_speed_for_persist(raw: dict[str, Any]) -> dict[str, Any]:
+    """Expand ``pipeline_speed`` into concrete tail options before persistence.
+
+    User-provided keys (except ``pipeline_speed``) override preset defaults.
+
+    - ``demo_fast``: one still per scene, no auto scene videos (faster remote demos).
+    - ``production_heavy``: two stills and two clips per scene when generation flags allow.
+
+    Strips ``pipeline_speed`` from the result and sets ``_applied_pipeline_speed`` when a known
+    preset was applied (for worker metrics logs).
+    """
+
+    if not isinstance(raw, dict):
+        return {}
+    ps = str(raw.get("pipeline_speed") or "").strip().lower()
+    if not ps or ps == "standard":
+        return dict(raw)
+    if ps not in ("demo_fast", "production_heavy"):
+        return dict(raw)
+    user = {k: v for k, v in raw.items() if k != "pipeline_speed"}
+    if ps == "demo_fast":
+        defaults: dict[str, Any] = {
+            "auto_generate_scene_images": True,
+            "auto_generate_scene_videos": False,
+            "min_scene_images": 1,
+            "min_scene_videos": 1,
+        }
+    else:
+        defaults = {
+            "auto_generate_scene_images": True,
+            "auto_generate_scene_videos": True,
+            "min_scene_images": 2,
+            "min_scene_videos": 2,
+        }
+    merged = {**defaults, **user}
+    merged["_applied_pipeline_speed"] = ps
+    return merged
+
+
 def normalize_pipeline_options_for_persist(raw: dict[str, Any]) -> dict[str, Any]:
     """Copy ``raw`` with canonical ``through`` / ``continue_from_existing`` / ``unattended`` for DB storage.
 
@@ -216,7 +255,7 @@ def normalize_pipeline_options_for_persist(raw: dict[str, Any]) -> dict[str, Any
     and retries show the effective depth, not a stale ``through: critique`` with ``unattended: true``).
     """
 
-    base = dict(raw) if isinstance(raw, dict) else {}
+    base = apply_pipeline_speed_for_persist(dict(raw) if isinstance(raw, dict) else {})
     cont, through, unattended = parse_pipeline_options(base)
     return {
         **base,

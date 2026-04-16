@@ -495,6 +495,20 @@ export function InspectorPipelinePanel({ p }) {
                         }}
                       />
                     </label>
+                    <label className="subtle brief-automate-option brief-automate-option--num" title="Full-video tail: up to N scene still jobs at once (separate DB sessions). Use 1 on SQLite or if you see locks; PostgreSQL for concurrency. Respect image provider rate limits.">
+                      <span className="brief-automate-option__num-label">Parallel</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={8}
+                        value={Math.min(8, Math.max(1, Number(p.appConfig?.agent_run_auto_images_max_concurrency ?? 1)))}
+                        disabled={Boolean(p.settingsBusy || p.busy) || !agentRunAutoGenerateSceneImages(p.appConfig)}
+                        onChange={(e) => {
+                          const n = Math.min(8, Math.max(1, Number.parseInt(e.target.value, 10) || 1));
+                          void p.patchWorkspaceConfig({ agent_run_auto_images_max_concurrency: n });
+                        }}
+                      />
+                    </label>
                     <label
                       className="subtle brief-automate-option"
                       title="When enabled, full-video automation also generates scene video clips (video provider). Saved to Settings."
@@ -520,6 +534,19 @@ export function InspectorPipelinePanel({ p }) {
                           void p.patchWorkspaceConfig({ agent_run_min_scene_videos: n });
                         }}
                       />
+                    </label>
+                    <label className="subtle brief-automate-option" title="Merged server-side for full-video tails: demo skips auto scene videos; heavy raises minimums.">
+                      <span className="brief-automate-option__num-label">Speed preset</span>
+                      <select
+                        value={String(p.appConfig?.agent_run_pipeline_speed || "standard")}
+                        disabled={Boolean(p.settingsBusy || p.busy)}
+                        onChange={(e) => void p.patchWorkspaceConfig({ agent_run_pipeline_speed: e.target.value })}
+                        style={{ marginLeft: 6, maxWidth: 200 }}
+                      >
+                        <option value="standard">Standard</option>
+                        <option value="demo_fast">Demo (fast)</option>
+                        <option value="production_heavy">Production (heavy)</option>
+                      </select>
                     </label>
                   </div>
                 ) : null}

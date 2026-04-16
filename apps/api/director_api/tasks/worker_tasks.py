@@ -25,7 +25,9 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1905,6 +1907,8 @@ def _ensure_scene_plans_for_scripted_chapters_missing_scenes(
         db.scalars(select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.order_index)).all()
     )
     ensured = 0
+    scene_plan_char_prefix: str | None = None
+    scene_plan_char_bible: str | None = None
     for ch in chapters:
         if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
             return False
@@ -1915,8 +1919,18 @@ def _ensure_scene_plans_for_scripted_chapters_missing_scenes(
         n_sc = db.scalar(select(func.count()).select_from(Scene).where(Scene.chapter_id == ch.id)) or 0
         if int(n_sc) > 0:
             continue
+        if scene_plan_char_prefix is None:
+            scene_plan_char_prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+            scene_plan_char_bible = character_bible_for_llm_context(db, project.id, max_chars=6000)
         try:
-            _phase3_scenes_plan_for_chapter(db, ch, project, settings)
+            _phase3_scenes_plan_for_chapter(
+                db,
+                ch,
+                project,
+                settings,
+                cached_character_consistency_prefix=scene_plan_char_prefix,
+                cached_character_bible_for_llm=scene_plan_char_bible,
+            )
             ensured += 1
             db.commit()
         except Exception as e:  # noqa: BLE001
@@ -1989,6 +2003,19 @@ def _run_agent_full_pipeline_tail(
         run_opts_pre.get("min_scene_videos", getattr(settings, "agent_run_min_scene_videos", 1))
     )
 
+    def _clamp_auto_images_concurrency(n: Any) -> int:
+        try:
+            return max(1, min(8, int(n)))
+        except (TypeError, ValueError):
+            return 1
+
+    auto_images_max_concurrency = _clamp_auto_images_concurrency(
+        run_opts_pre.get(
+            "auto_images_max_concurrency",
+            getattr(settings, "agent_run_auto_images_max_concurrency", 1),
+        )
+    )
+
     tr = pipeline_oversight_svc.normalize_tail_resume(
         tail_resume_from,
         auto_scene_videos=auto_scene_videos_pre,
@@ -2004,6 +2031,21 @@ def _run_agent_full_pipeline_tail(
         min_scene_videos=min_scene_videos,
     )
     tr = pipeline_oversight_svc.clamp_tail_resume_to_hard_floor(tr, hard_floor)
+
+    tail_wall_t0 = time.perf_counter()
+    log.info(
+        "agent_full_video_tail_timing",
+        phase="start",
+        agent_run_id=str(agent_run_uuid),
+        project_id=str(pid),
+        scene_count=len(all_scenes),
+        min_scene_images=min_scene_images,
+        min_scene_videos=min_scene_videos,
+        auto_generate_scene_images=auto_scene_images_pre,
+        auto_generate_scene_videos=auto_scene_videos_pre,
+        applied_pipeline_speed=run_opts_pre.get("_applied_pipeline_speed"),
+        tail_resume=str(tr) if tr is not None else None,
+    )
 
     # Character bible (LLM) — image/video prompts use consistency prefixes from ProjectCharacter rows.
     # Run when oversight allows this tail slot, or whenever we still have no ProjectCharacter rows — do not
@@ -2048,6 +2090,9 @@ def _run_agent_full_pipeline_tail(
     if not project:
         raise ValueError("project missing after character bible step")
 
+    # One read per tail pass — reused for every automation scene_generate_image (sequential + parallel threads).
+    automation_tail_character_prefix = character_consistency_prefix(db, pid, max_chars=2000)
+
     # Initial pass + several retries so flaky providers are less likely to leave scenes without images.
     _AUTO_SCENE_MEDIA_MAX_PASSES = 5
 
@@ -2065,6 +2110,7 @@ def _run_agent_full_pipeline_tail(
                     "tenant_id": tenant_id,
                     "generation_tier": "preview",
                     "agent_run_id": str(agent_run_uuid),
+                    "_automation_character_prefix": automation_tail_character_prefix,
                 },
             )
             try:
@@ -2085,46 +2131,189 @@ def _run_agent_full_pipeline_tail(
                     ast.approved_at = datetime.now(timezone.utc)
             return "ok"
 
-        failed_ids: list[uuid.UUID] = []
-        for sc in target_scenes:
+        def _parallel_gen_scene_still(scene_id: uuid.UUID) -> str:
+            """One still in an isolated session (thread-safe). Returns ok | fail | stop."""
+            with SessionLocal() as tdb:
+                if _agent_run_checkpoint(tdb, agent_run_uuid) == "stop":
+                    return "stop"
+                j_img = _synthetic_job(
+                    tenant_id=tenant_id,
+                    project_id=pid,
+                    jtype="scene_generate_image",
+                    payload={
+                        "scene_id": str(scene_id),
+                        "tenant_id": tenant_id,
+                        "generation_tier": "preview",
+                        "agent_run_id": str(agent_run_uuid),
+                        "_automation_character_prefix": automation_tail_character_prefix,
+                    },
+                )
+                try:
+                    out = _phase3_image_generate(tdb, j_img)
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "auto_pipeline_image_scene_exception",
+                        scene_id=str(scene_id),
+                        error=str(e)[:800],
+                    )
+                    try:
+                        tdb.rollback()
+                    except Exception:
+                        pass
+                    return "fail"
+                if isinstance(out, dict) and out.get("stopped"):
+                    return "stop"
+                aid_s = out.get("asset_id")
+                if aid_s:
+                    ast = tdb.get(Asset, uuid.UUID(str(aid_s)))
+                    if ast and ast.status == "succeeded" and ast.approved_at is None:
+                        ast.approved_at = datetime.now(timezone.utc)
+                try:
+                    tdb.commit()
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "auto_pipeline_image_thread_commit_failed",
+                        scene_id=str(scene_id),
+                        error=str(e)[:400],
+                    )
+                    try:
+                        tdb.rollback()
+                    except Exception:
+                        pass
+                    return "fail"
+                return "ok"
+
+        img_conc = int(auto_images_max_concurrency)
+        if img_conc <= 1:
+            failed_ids: list[uuid.UUID] = []
+            for sc in target_scenes:
+                if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                    return None
+                scene_failed = False
+                while _scene_succeeded_image_count(db, sc.id) < min_scene_images:
+                    if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                        return None
+                    g = _gen_one_image(sc)
+                    if g == "stop":
+                        return None
+                    if g == "fail":
+                        failed_ids.append(sc.id)
+                        scene_failed = True
+                        break
+                    db.commit()
+                if scene_failed:
+                    continue
+                if force_regen_images:
+                    if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                        return None
+                    g = _gen_one_image(sc)
+                    if g == "stop":
+                        return None
+                    if g == "fail":
+                        failed_ids.append(sc.id)
+                        db.commit()
+                        continue
+                    db.commit()
+                _auto_pipeline_approve_scene_image(db, sc)
+                if _scene_succeeded_image_count(db, sc.id) < min_scene_images:
+                    failed_ids.append(sc.id)
+                db.commit()
+            return failed_ids
+
+        failed_ids_p: list[uuid.UUID] = []
+        failed_set: set[uuid.UUID] = set()
+
+        while True:
             if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
                 return None
-            scene_failed = False
-            while _scene_succeeded_image_count(db, sc.id) < min_scene_images:
+            unders = [
+                sc
+                for sc in target_scenes
+                if sc.id not in failed_set and _scene_succeeded_image_count(db, sc.id) < min_scene_images
+            ]
+            if not unders:
+                break
+            chunk = unders[:img_conc]
+            log.info(
+                "auto_pipeline_images_parallel_round",
+                project_id=str(pid),
+                concurrency=len(chunk),
+                scene_ids=[str(sc.id) for sc in chunk],
+            )
+            with ThreadPoolExecutor(max_workers=min(img_conc, len(chunk))) as pool:
+                futures = {pool.submit(_parallel_gen_scene_still, sc.id): sc for sc in chunk}
+                for fut in as_completed(futures):
+                    sc = futures[fut]
+                    try:
+                        g = fut.result()
+                    except Exception as e:  # noqa: BLE001
+                        log.warning(
+                            "auto_pipeline_image_parallel_future",
+                            scene_id=str(sc.id),
+                            error=str(e)[:500],
+                        )
+                        g = "fail"
+                    if g == "stop":
+                        return None
+                    if g == "fail":
+                        failed_set.add(sc.id)
+                        failed_ids_p.append(sc.id)
+            db.expire_all()
+
+        if force_regen_images:
+            regen = [sc for sc in target_scenes if sc.id not in failed_set]
+            for i in range(0, len(regen), img_conc):
                 if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
                     return None
-                g = _gen_one_image(sc)
-                if g == "stop":
-                    return None
-                if g == "fail":
-                    failed_ids.append(sc.id)
-                    scene_failed = True
-                    break
-                db.commit()
-            if scene_failed:
+                batch = regen[i : i + img_conc]
+                log.info(
+                    "auto_pipeline_images_parallel_force_regen",
+                    project_id=str(pid),
+                    batch=len(batch),
+                    scene_ids=[str(s.id) for s in batch],
+                )
+                with ThreadPoolExecutor(max_workers=min(img_conc, len(batch))) as pool:
+                    futures = {pool.submit(_parallel_gen_scene_still, sc.id): sc for sc in batch}
+                    for fut in as_completed(futures):
+                        sc = futures[fut]
+                        try:
+                            g = fut.result()
+                        except Exception as e:  # noqa: BLE001
+                            log.warning(
+                                "auto_pipeline_image_parallel_force_regen_future",
+                                scene_id=str(sc.id),
+                                error=str(e)[:500],
+                            )
+                            g = "fail"
+                        if g == "stop":
+                            return None
+                        if g == "fail":
+                            failed_set.add(sc.id)
+                            failed_ids_p.append(sc.id)
+                db.expire_all()
+
+        for sc in target_scenes:
+            if sc.id in failed_set:
                 continue
-            if force_regen_images:
-                if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
-                    return None
-                g = _gen_one_image(sc)
-                if g == "stop":
-                    return None
-                if g == "fail":
-                    failed_ids.append(sc.id)
-                    db.commit()
-                    continue
-                db.commit()
             _auto_pipeline_approve_scene_image(db, sc)
             if _scene_succeeded_image_count(db, sc.id) < min_scene_images:
-                failed_ids.append(sc.id)
+                failed_ids_p.append(sc.id)
             db.commit()
-        return failed_ids
+        return failed_ids_p
 
     if pipeline_oversight_svc.tail_should_run_with_force("auto_images", tr, fs) and auto_scene_images_pre:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
             run.current_step = "auto_images"
-            _append_event(run, "auto_images", "running", scene_total=len(all_scenes))
+            _append_event(
+                run,
+                "auto_images",
+                "running",
+                scene_total=len(all_scenes),
+                min_stills_per_scene=min_scene_images,
+                media_retry_passes_cap=_AUTO_SCENE_MEDIA_MAX_PASSES,
+                auto_images_max_concurrency=auto_images_max_concurrency,
+            )
         db.commit()
         img_failed = _auto_image_pass(all_scenes)
         if img_failed is None:
@@ -2182,7 +2371,14 @@ def _run_agent_full_pipeline_tail(
         run = db.get(AgentRun, agent_run_uuid)
         if run:
             run.current_step = "auto_videos"
-            _append_event(run, "auto_videos", "running", scene_total=len(all_scenes))
+            _append_event(
+                run,
+                "auto_videos",
+                "running",
+                scene_total=len(all_scenes),
+                min_clips_per_scene=min_scene_videos,
+                media_retry_passes_cap=_AUTO_SCENE_MEDIA_MAX_PASSES,
+            )
         db.commit()
         had_video_at_start = {sc.id for sc in all_scenes if _scene_has_succeeded_video(db, sc.id)}
 
@@ -2332,11 +2528,6 @@ def _run_agent_full_pipeline_tail(
         db.commit()
 
     if pipeline_oversight_svc.tail_should_run_with_force("auto_narration", tr, fs):
-        run = db.get(AgentRun, agent_run_uuid)
-        if run:
-            run.current_step = "auto_narration"
-            _append_event(run, "auto_narration", "running")
-        db.commit()
         all_scenes_narr = _ordered_scenes_for_project(db, pid)
         narr_scene_targets: list[Scene] = []
         for sc in all_scenes_narr:
@@ -2347,6 +2538,17 @@ def _run_agent_full_pipeline_tail(
             if _scene_has_scene_narration_audio(db, sc.id) and not force_regen_narration:
                 continue
             narr_scene_targets.append(sc)
+
+        run = db.get(AgentRun, agent_run_uuid)
+        if run:
+            run.current_step = "auto_narration"
+            _append_event(
+                run,
+                "auto_narration",
+                "running",
+                scene_narration_targets=len(narr_scene_targets),
+            )
+        db.commit()
 
         def _auto_scene_narration_pass(target_scenes: list[Scene]) -> list[uuid.UUID] | None:
             failed_s: list[uuid.UUID] = []
@@ -2556,6 +2758,7 @@ def _run_agent_full_pipeline_tail(
                         "tenant_id": tenant_id,
                         "generation_tier": "preview",
                         "agent_run_id": str(agent_run_uuid),
+                        "_automation_character_prefix": automation_tail_character_prefix,
                     },
                 )
                 try:
@@ -2720,6 +2923,14 @@ def _run_agent_full_pipeline_tail(
     if run:
         _append_event(run, "auto_final_cut", "succeeded", timeline_version_id=str(tv_id))
         db.commit()
+    log.info(
+        "agent_full_video_tail_timing",
+        phase="complete",
+        agent_run_id=str(agent_run_uuid),
+        project_id=str(pid),
+        elapsed_sec=round(time.perf_counter() - tail_wall_t0, 3),
+        scene_count=len(all_scenes),
+    )
     return True
 
 
@@ -3317,30 +3528,40 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                                 continue
                             plan_queue.append(ch)
 
-                        for plan_i, ch in enumerate(plan_queue):
-                            if halt():
-                                return
-                            run = db.get(AgentRun, aid)
-                            if run:
-                                _append_event(
-                                    run,
-                                    "scenes",
-                                    "progress",
-                                    chapter_index=int(plan_i + 1),
-                                    chapters_total=int(len(plan_queue)),
-                                    chapter_title=sanitize_jsonb_text(str(ch.title or ""), 240),
+                        if plan_queue:
+                            scene_plan_char_prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+                            scene_plan_char_bible = character_bible_for_llm_context(db, project.id, max_chars=6000)
+                            for plan_i, ch in enumerate(plan_queue):
+                                if halt():
+                                    return
+                                run = db.get(AgentRun, aid)
+                                if run:
+                                    _append_event(
+                                        run,
+                                        "scenes",
+                                        "progress",
+                                        chapter_index=int(plan_i + 1),
+                                        chapters_total=int(len(plan_queue)),
+                                        chapter_title=sanitize_jsonb_text(str(ch.title or ""), 240),
+                                    )
+                                    db.commit()
+                                log.info(
+                                    "agent_run_scenes_chapter_start",
+                                    agent_run_id=str(aid),
+                                    project_id=str(project.id),
+                                    chapter_id=str(ch.id),
+                                    chapter_plan_index=int(plan_i + 1),
+                                    chapters_to_plan=int(len(plan_queue)),
                                 )
-                                db.commit()
-                            log.info(
-                                "agent_run_scenes_chapter_start",
-                                agent_run_id=str(aid),
-                                project_id=str(project.id),
-                                chapter_id=str(ch.id),
-                                chapter_plan_index=int(plan_i + 1),
-                                chapters_to_plan=int(len(plan_queue)),
-                            )
-                            _phase3_scenes_plan_for_chapter(db, ch, project, settings)
-                            planned += 1
+                                _phase3_scenes_plan_for_chapter(
+                                    db,
+                                    ch,
+                                    project,
+                                    settings,
+                                    cached_character_consistency_prefix=scene_plan_char_prefix,
+                                    cached_character_bible_for_llm=scene_plan_char_bible,
+                                )
+                                planned += 1
                         db.commit()
                         run = db.get(AgentRun, aid)
                         if run:
@@ -3614,7 +3835,15 @@ def _record_usage(
     )
 
 
-def _phase3_scenes_plan_for_chapter(db, chapter: Chapter, project: Project, settings: Any) -> None:
+def _phase3_scenes_plan_for_chapter(
+    db,
+    chapter: Chapter,
+    project: Project,
+    settings: Any,
+    *,
+    cached_character_consistency_prefix: str | None = None,
+    cached_character_bible_for_llm: str | None = None,
+) -> None:
     """Agentic scene planning (same as scene_generate job body)."""
     if not phase3_svc.chapter_eligible_for_scene_planning(chapter):
         raise ValueError(
@@ -3622,7 +3851,10 @@ def _phase3_scenes_plan_for_chapter(db, chapter: Chapter, project: Project, sett
         )
 
     vis_prompt = effective_visual_style(project.visual_style, settings)
-    char_prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+    if cached_character_consistency_prefix is None:
+        char_prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+    else:
+        char_prefix = cached_character_consistency_prefix
     try:
         min_sc = max(0, min(48, int(getattr(settings, "scene_plan_target_scenes_per_chapter", 0) or 0)))
     except (TypeError, ValueError):
@@ -3644,7 +3876,10 @@ def _phase3_scenes_plan_for_chapter(db, chapter: Chapter, project: Project, sett
     batch = seed_batch
     refined = None
     llm_u: list[dict[str, Any]] = []
-    char_ctx = character_bible_for_llm_context(db, project.id, max_chars=6000)
+    if cached_character_bible_for_llm is None:
+        char_ctx = character_bible_for_llm_context(db, project.id, max_chars=6000)
+    else:
+        char_ctx = cached_character_bible_for_llm
     plan_hints = phase3_svc.scene_plan_refine_context(chapter, settings)
     if not bool(getattr(settings, "agent_run_fast", False)):
         refined = phase3_llm.refine_scene_plan_batch(
@@ -3933,7 +4168,10 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         }
 
     if not bool(payload.get("exclude_character_bible")):
-        prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+        if "_automation_character_prefix" in payload:
+            prefix = str(payload.get("_automation_character_prefix") or "")[:2000]
+        else:
+            prefix = character_consistency_prefix(db, project.id, max_chars=2000)
         if prefix and not prompt_already_has_character_prefix(prompt, prefix):
             room = max(400, 4000 - len(prefix) - 3)
             prompt = f"{prefix}\n\n{str(prompt)[:room]}"

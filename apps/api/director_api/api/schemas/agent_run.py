@@ -34,6 +34,10 @@ class AgentRunCreate(BaseModel):
     # With through: full_video, timeline + rough + final cut still run after the media tail (not individually skippable yet).
     # rerun_web_research: optional bool. False = skip the Tavily/web research step when a dossier already exists (overrides oversight for that
     # step unless "research" is in force_pipeline_steps). True = always execute research. Omitted = default skip rules + oversight only.
+    # auto_images_max_concurrency (inside pipeline_options): optional 1–8; automation tail may generate scene stills for
+    # up to this many scenes concurrently (separate DB sessions). Omitted → workspace/env default (usually 1).
+    # pipeline_speed (inside pipeline_options): optional "standard" | "demo_fast" | "production_heavy". Server expands to
+    # min_scene_images / min_scene_videos / auto_generate_scene_* before persist; explicit client keys win over preset defaults.
     pipeline_options: dict[str, Any] | None = None
 
     @model_validator(mode="after")
