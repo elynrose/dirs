@@ -918,6 +918,8 @@ function activeStudioJobsMatchEffKey(activeProjectJobs, effKey) {
 function stallThresholdMs(effKey, runStatus) {
   if (runStatus === "queued") return 120_000;
   if (effKey === "chapters" || effKey === "scenes") return 600_000;
+  // Rough/final cut: ffmpeg may run a long time without touching the agent run row.
+  if (effKey === "auto_rough_cut" || effKey === "auto_final_cut") return 1_800_000;
   return 180_000;
 }
 
@@ -983,11 +985,11 @@ const AGENT_STEP_STALL_COPY = {
   },
   auto_rough_cut: {
     title: "Rough cut (render / ffmpeg)",
-    body: "Rendering can take a long time for long programs. Very long stalls may indicate a stuck encoder or disk issue — see worker logs.",
+    body: "Rendering can take a long time for long programs; a single ffmpeg pass may run many minutes without updating the automation run. Very long stalls may still indicate a stuck encoder or disk issue — see worker logs.",
   },
   auto_final_cut: {
     title: "Final cut / mux",
-    body: "Final mux combines narration, music, and mix. External tools or I/O problems can delay completion.",
+    body: "Final mux combines narration, music, and mix. ffmpeg may run a long time (especially for long timelines) before the run record updates again. If it never completes, check worker logs for I/O or encoder errors.",
   },
   working: {
     title: "Worker between checkpoints",
