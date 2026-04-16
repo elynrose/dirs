@@ -1239,6 +1239,7 @@ export default function App() {
   const [musicUploadLicense, setMusicUploadLicense] = useState("");
   const musicFileInputRef = useRef(null);
   const mixVolPersistTimerRef = useRef(null);
+  const mixTimelineVolPersistTimerRef = useRef(null);
   const sceneClipFileInputRef = useRef(null);
   const [sceneClipUploadKind, setSceneClipUploadKind] = useState("auto");
   const [busy, setBusy] = useState(false);
@@ -2351,6 +2352,23 @@ export default function App() {
     },
     [projectId, timelineVersionId, mixMusicVol, mixNarrVol, narrMixMode, musicBedPick, clipCrossfadeSec],
   );
+
+  const patchTimelineMixToServerRef = useRef(patchTimelineMixToServer);
+  patchTimelineMixToServerRef.current = patchTimelineMixToServer;
+
+  /** Debounced PATCH of current mix to ``timeline_json`` when sliders move (same as Save mix to timeline). */
+  const scheduleDebouncedTimelineMixSave = useCallback(() => {
+    if (!String(projectId || "").trim()) return;
+    const tid = String(timelineVersionId || "").trim();
+    if (!tid) return;
+    if (mixTimelineVolPersistTimerRef.current) {
+      clearTimeout(mixTimelineVolPersistTimerRef.current);
+    }
+    mixTimelineVolPersistTimerRef.current = setTimeout(() => {
+      mixTimelineVolPersistTimerRef.current = null;
+      void patchTimelineMixToServerRef.current();
+    }, 500);
+  }, [projectId, timelineVersionId]);
 
   /** Same sequence as ``scripts/run_rough_cut.py`` + ``run_final_cut.py``: rough-cut → wait → save mix → final-cut → wait. */
   const queueRoughThenFinalCompile = useCallback(async () => {
@@ -3869,6 +3887,9 @@ export default function App() {
     return () => {
       if (mixVolPersistTimerRef.current) {
         clearTimeout(mixVolPersistTimerRef.current);
+      }
+      if (mixTimelineVolPersistTimerRef.current) {
+        clearTimeout(mixTimelineVolPersistTimerRef.current);
       }
     };
   }, []);
@@ -9271,7 +9292,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                       <strong>Scene timeline</strong> narration: each scene&rsquo;s VO is aligned to its clip in the final cut.
                     </p>
                     <p className="subtle" style={{ marginTop: 6, fontSize: "0.72rem", lineHeight: 1.45 }}>
-                      Default music and narration levels are saved for this workspace (and this browser) and used when a timeline has no mix values yet.
+                      Moving the sliders auto-saves workspace defaults and, when a <strong>Timeline version ID</strong> is set, patches the open timeline after a short pause (same as <strong>Save mix to timeline</strong>).
                     </p>
                     <div style={{ marginTop: 8 }}>
                       <label htmlFor="mmv">Music volume (0–1)</label>
@@ -9286,6 +9307,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           const v = Number(e.target.value);
                           setMixMusicVol(v);
                           schedulePersistStudioMixDefaults(v, mixNarrVol);
+                          scheduleDebouncedTimelineMixSave();
                         }}
                       />
                       <span className="subtle" style={{ marginLeft: 8 }}>
@@ -9305,6 +9327,7 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           const v = Number(e.target.value);
                           setMixNarrVol(v);
                           schedulePersistStudioMixDefaults(mixMusicVol, v);
+                          scheduleDebouncedTimelineMixSave();
                         }}
                       />
                       <span className="subtle" style={{ marginLeft: 8 }}>
