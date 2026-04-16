@@ -187,6 +187,8 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
                 clean[_mk] = max(1, min(10, mv))
             except (TypeError, ValueError):
                 clean.pop(_mk, None)
+    if "agent_run_abort_on_auto_video_failure" in clean:
+        clean["agent_run_abort_on_auto_video_failure"] = bool(clean["agent_run_abort_on_auto_video_failure"])
     if "comfyui_video_use_scene_image" in clean:
         clean["comfyui_video_use_scene_image"] = bool(clean["comfyui_video_use_scene_image"])
     if "comfyui_api_flavor" in clean:

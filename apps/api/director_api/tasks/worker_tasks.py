@@ -2274,7 +2274,12 @@ def _run_agent_full_pipeline_tail(
             if vid_failed is None:
                 return False
             vpass += 1
-        if vid_failed:
+        abort_on_vid = run_opts_pre.get("abort_on_auto_video_failure")
+        if abort_on_vid is None:
+            strict_video_fail = bool(getattr(settings, "agent_run_abort_on_auto_video_failure", False))
+        else:
+            strict_video_fail = bool(abort_on_vid)
+        if vid_failed and strict_video_fail:
             raise ValueError(
                 "AUTO_VIDEO_FAILED_SCENES_AFTER_RETRY: "
                 + ",".join(str(x) for x in vid_failed[:32])
@@ -2285,13 +2290,34 @@ def _run_agent_full_pipeline_tail(
         )
         run = db.get(AgentRun, agent_run_uuid)
         if run:
-            _append_event(
-                run,
-                "auto_videos",
-                "succeeded",
-                generated=video_generated,
-                skipped_existing=video_skipped,
-            )
+            if vid_failed:
+                log.warning(
+                    "auto_pipeline_videos_incomplete_continuing",
+                    project_id=str(pid),
+                    failed_count=len(vid_failed),
+                    failed_scene_ids=[str(x) for x in vid_failed[:32]],
+                )
+                _append_event(
+                    run,
+                    "auto_videos",
+                    "partial_failed",
+                    generated=video_generated,
+                    skipped_existing=video_skipped,
+                    failed_scene_count=len(vid_failed),
+                    failed_scene_ids=[str(x) for x in vid_failed[:64]],
+                    note=(
+                        "Some scenes still lack enough succeeded video assets after retries; continuing to narration and timeline. "
+                        "Re-generate failed clips in Studio, or set agent_run_abort_on_auto_video_failure (or pipeline_options.abort_on_auto_video_failure) to stop the run on this condition."
+                    ),
+                )
+            else:
+                _append_event(
+                    run,
+                    "auto_videos",
+                    "succeeded",
+                    generated=video_generated,
+                    skipped_existing=video_skipped,
+                )
             db.commit()
     else:
         run = db.get(AgentRun, agent_run_uuid)

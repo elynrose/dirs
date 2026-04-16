@@ -7288,6 +7288,18 @@ export default function App() {
             <p className="subtle" style={{ marginTop: -6 }}>
               Defaults match new projects: stills and clips on, minimum one each per scene. Turn off either type if you only want images or only motion clips.
             </p>
+            <label htmlFor="cfg-abort-on-auto-video-failure" style={{ marginTop: 12, textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
+              <input
+                id="cfg-abort-on-auto-video-failure"
+                type="checkbox"
+                checked={Boolean(appConfig.agent_run_abort_on_auto_video_failure)}
+                onChange={(e) =>
+                  setAppConfig((p) => ({ ...p, agent_run_abort_on_auto_video_failure: e.target.checked }))
+                }
+                style={{ width: "auto", marginRight: 8 }}
+              />
+              Abort the whole agent run when automated scene video generation still fails after retries (default off: continue to narration and exports)
+            </label>
             <label htmlFor="cfg-scene-repair-rounds" style={{ marginTop: 14 }}>
               Auto pipeline: scene critic repair cycles
             </label>
