@@ -197,6 +197,13 @@ def usage_summary_for_tenant(
     )
     total_credits_f = float(total_credits or 0.0)
 
+    all_cost_usd = db.scalar(
+        select(func.coalesce(func.sum(func.coalesce(UsageRecord.cost_estimate, 0.0)), 0.0))
+        .where(UsageRecord.tenant_id == tenant_id)
+        .where(UsageRecord.created_at >= since)
+    )
+    all_cost_usd_f = float(all_cost_usd or 0.0)
+
     # JSONB text extraction
     model_expr = func.coalesce(UsageRecord.meta_json["model"].astext, "unknown")
     provider_expr = func.coalesce(UsageRecord.meta_json["provider"].astext, "unknown")
@@ -270,6 +277,7 @@ def usage_summary_for_tenant(
             "completion_tokens": tot_ct,
             "total_tokens": tot_pt + tot_ct,
             "estimated_cost_usd": round(tot_cost, 6),
+            "estimated_cost_usd_including_media": round(all_cost_usd_f, 6),
             "llm_calls": tot_calls,
             "director_credits": round(total_credits_f, 4),
             "llm_credits": round(tot_llm_credits, 4),

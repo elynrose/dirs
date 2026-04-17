@@ -86,8 +86,9 @@ from director_api.services import phase4 as phase4_svc
 from director_api.services import agent_resume as agent_resume_svc
 from director_api.services import pipeline_oversight as pipeline_oversight_svc
 from director_api.services.phase5_readiness import (
+    Phase5GateError,
     compute_phase5_readiness,
-    format_phase5_readiness_failure,
+    raise_phase5_gate,
     get_timeline_asset_for_project,
 )
 from director_api.services.scene_timeline_duration import (
@@ -2890,7 +2891,7 @@ def _run_agent_full_pipeline_tail(
         allow_unapproved_media=allow_unapproved_media,
     )
     if not readiness.get("ready"):
-        raise ValueError(format_phase5_readiness_failure(readiness, label="AUTO_ROUGH_NOT_READY"))
+        raise_phase5_gate(readiness, label="AUTO_ROUGH_NOT_READY")
 
     if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
         return False
@@ -3847,6 +3848,12 @@ def _record_usage(
         units=units,
         meta=m,
     )
+    ce = float(cost_estimate or 0.0)
+    ut_low = str(unit_type or "").strip().lower()
+    if ce <= 0.0 and cr > 0.0 and ut_low != "tokens":
+        from director_api.services.usage_credits import CREDITS_PER_USD
+
+        ce = float(cr) / CREDITS_PER_USD
     db.add(
         UsageRecord(
             id=uuid.uuid4(),
@@ -3858,7 +3865,7 @@ def _record_usage(
             service_type=service_type,
             units=float(units),
             unit_type=unit_type,
-            cost_estimate=float(cost_estimate),
+            cost_estimate=ce,
             credits=cr,
             meta_json=m,
         )
@@ -6212,7 +6219,7 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         allow_unapproved_media=allow_unapproved,
     )
     if not readiness.get("ready"):
-        raise ValueError(format_phase5_readiness_failure(readiness))
+        raise_phase5_gate(readiness)
 
     base_video = fine_p if path_is_readable_file(fine_p) else rough_p
     if not path_is_readable_file(base_video):
@@ -6552,7 +6559,7 @@ def _rough_cut(
         allow_unapproved_media=allow_unapproved,
     )
     if not readiness.get("ready"):
-        raise ValueError(format_phase5_readiness_failure(readiness))
+        raise_phase5_gate(readiness)
 
     tj = tv.timeline_json if isinstance(tv.timeline_json, dict) else {}
     clip_xf = _timeline_clip_crossfade_sec(tj)
@@ -6786,7 +6793,7 @@ def _fine_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         allow_unapproved_media=allow_unapproved,
     )
     if not readiness.get("ready"):
-        raise ValueError(format_phase5_readiness_failure(readiness))
+        raise_phase5_gate(readiness)
 
     tj = tv.timeline_json if isinstance(tv.timeline_json, dict) else {}
     validate_timeline_document(tj)
@@ -6928,6 +6935,22 @@ def run_phase5_job(self, job_id: str) -> None:
             except SoftTimeLimitExceeded:
                 db.rollback()
                 raise
+            except Phase5GateError as e:
+                db.rollback()
+                job = db.get(Job, jid)
+                if job:
+                    job.status = "failed"
+                    job.error_message = str(e)[:8000]
+                    job.result = {"ok": False, "type": job.type, "phase5_gate": e.payload}
+                    job.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                log.warning(
+                    "phase5_job_gate_failed",
+                    job_id=job_id,
+                    job_type=jtype,
+                    gate_code=e.payload.get("code"),
+                    issue_count=len(e.payload.get("issues") or []),
+                )
             except Exception as e:  # noqa: BLE001
                 db.rollback()
                 job = db.get(Job, jid)

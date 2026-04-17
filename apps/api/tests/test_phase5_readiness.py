@@ -6,11 +6,16 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import pytest
+
 from director_api.services.phase5_readiness import (
+    Phase5GateError,
+    build_phase5_gate_payload,
     compute_phase5_readiness,
     format_phase5_readiness_failure,
     get_timeline_asset_for_project,
     parse_assets_layout_project_scene,
+    raise_phase5_gate,
     timeline_visual_asset_issue_codes,
     _project_structural_issues,
 )
@@ -54,6 +59,29 @@ def test_format_phase5_readiness_failure_lists_issues():
     assert "PHASE5_NOT_READY" in msg
     assert "missing_approved_scene_image" in msg
     assert "scene_count" in msg
+
+
+def test_raise_phase5_gate_structured_payload():
+    r = {
+        "ready": False,
+        "primary_metric": "missing_approved_scene_image",
+        "issues": [{"code": "missing_approved_scene_image", "detail": {"scene_count": 2}}],
+    }
+    with pytest.raises(Phase5GateError) as exc_info:
+        raise_phase5_gate(r, label="PHASE5_NOT_READY")
+    err = exc_info.value
+    assert err.payload["code"] == "PHASE5_NOT_READY"
+    assert err.payload["issues"][0]["code"] == "missing_approved_scene_image"
+    assert "PHASE5_NOT_READY" in str(err)
+
+
+def test_build_phase5_gate_payload_truncates_issues():
+    r = {
+        "primary_metric": "x",
+        "issues": [{"code": f"c{i}"} for i in range(100)],
+    }
+    p = build_phase5_gate_payload(r, label="PHASE5_NOT_READY")
+    assert len(p["issues"]) == 64
 
 
 def test_structural_issues_scene_narration_required():

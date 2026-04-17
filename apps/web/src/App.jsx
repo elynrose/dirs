@@ -681,17 +681,7 @@ function friendlyReadinessIssue(iss) {
 }
 
 /** Rough/final/export job errors: if set, show approval gate dialog instead of raw log text. */
-function parsePhase5GateModalPayload(errorMessage) {
-  const t = String(errorMessage || "");
-  if (!/\bPHASE5_NOT_READY\b/.test(t) && !/\bAUTO_ROUGH_NOT_READY\b/.test(t)) {
-    return null;
-  }
-  const codes = new Set();
-  const re = /[•\u2022\-]\s*([a-z0-9_]+)\s*:/gi;
-  let m;
-  while ((m = re.exec(t)) !== null) {
-    codes.add(m[1]);
-  }
+function parsePhase5GateModalPayload(errorMessage, jobResult) {
   const knownCodes = [
     "missing_approved_scene_image",
     "missing_succeeded_scene_image",
@@ -704,6 +694,46 @@ function parsePhase5GateModalPayload(errorMessage) {
     "timeline_empty_clips",
     "invalid_timeline_json",
   ];
+  const gate =
+    jobResult && typeof jobResult === "object" && jobResult.phase5_gate && typeof jobResult.phase5_gate === "object"
+      ? jobResult.phase5_gate
+      : null;
+  if (gate) {
+    const label = String(gate.code || "");
+    if (label !== "PHASE5_NOT_READY" && label !== "AUTO_ROUGH_NOT_READY") {
+      return null;
+    }
+    const codes = new Set();
+    const issues = Array.isArray(gate.issues) ? gate.issues : [];
+    for (const it of issues) {
+      if (it && typeof it.code === "string" && it.code) codes.add(it.code);
+    }
+    const approvalRelated = ["missing_approved_scene_image", "timeline_asset_not_approved"];
+    const offerBulkApprove = approvalRelated.some((c) => codes.has(c));
+    const summaryBullets = [];
+    for (const code of knownCodes) {
+      if (codes.has(code)) summaryBullets.push(friendlyReadinessIssue({ code }));
+    }
+    for (const c of codes) {
+      if (knownCodes.includes(c)) continue;
+      if (c === "export_preflight_missing_context") continue;
+      summaryBullets.push(friendlyReadinessIssue({ code: c, message: c.replace(/_/g, " ") }));
+    }
+    return {
+      offerBulkApprove,
+      summaryBullets: summaryBullets.slice(0, 12),
+    };
+  }
+  const t = String(errorMessage || "");
+  if (!/\bPHASE5_NOT_READY\b/.test(t) && !/\bAUTO_ROUGH_NOT_READY\b/.test(t)) {
+    return null;
+  }
+  const codes = new Set();
+  const re = /[•\u2022\-]\s*([a-z0-9_]+)\s*:/gi;
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    codes.add(m[1]);
+  }
   for (const c of knownCodes) {
     if (t.includes(c)) codes.add(c);
   }
@@ -4167,8 +4197,8 @@ export default function App() {
                         ? "Export bundle"
                         : "Job";
       const gatePayload =
-        mediaJob.status === "failed" && mediaJob.error_message
-          ? parsePhase5GateModalPayload(mediaJob.error_message)
+        mediaJob.status === "failed" && (mediaJob.error_message || mediaJob.result)
+          ? parsePhase5GateModalPayload(mediaJob.error_message, mediaJob.result)
           : null;
       const showExportGateModal = Boolean(
         gatePayload && EXPORT_COMPILE_JOB_TYPES.has(mediaJob.type) && mediaJob.status === "failed",
@@ -6716,9 +6746,24 @@ export default function App() {
                       currency: "USD",
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 4,
-                    }).format(Number(usageSummary.totals?.estimated_cost_usd ?? 0))}
+                    }).format(
+                      Number(
+                        usageSummary.totals?.estimated_cost_usd_including_media ??
+                          usageSummary.totals?.estimated_cost_usd ??
+                          0,
+                      ),
+                    )}
                   </strong>
-                  <span className="subtle">{usageSummary.totals?.llm_calls ?? 0} LLM calls recorded</span>
+                  <span className="subtle">
+                    {usageSummary.totals?.llm_calls ?? 0} LLM calls · LLM token subtotal{" "}
+                    {new Intl.NumberFormat("en-US", {
+                      style: "currency",
+                      currency: "USD",
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 4,
+                    }).format(Number(usageSummary.totals?.estimated_cost_usd ?? 0))}
+                    ; headline adds media/TTS (credits ÷ 1000 as nominal USD).
+                  </span>
                 </div>
                 <div className="usage-total-card">
                   <span className="usage-total-label">Directely credits</span>

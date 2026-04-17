@@ -187,6 +187,39 @@ def format_phase5_readiness_failure(readiness: dict[str, Any], *, label: str = "
     return "\n".join(lines)
 
 
+class Phase5GateError(ValueError):
+    """Readiness/export gate failure with structured ``payload`` for ``job.result`` and APIs."""
+
+    def __init__(self, message: str, payload: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.payload = payload
+
+
+def build_phase5_gate_payload(readiness: dict[str, Any], *, label: str) -> dict[str, Any]:
+    """JSON-serializable gate payload (issue codes + optional details)."""
+    raw = readiness.get("issues") or []
+    issues_out: list[dict[str, Any]] = []
+    for it in raw[:64]:
+        if not isinstance(it, dict):
+            continue
+        code = str(it.get("code") or "unknown")
+        detail = it.get("detail")
+        issues_out.append({"code": code, "detail": detail})
+    return {
+        "code": label,
+        "primary_metric": readiness.get("primary_metric"),
+        "ready": readiness.get("ready"),
+        "issues": issues_out,
+    }
+
+
+def raise_phase5_gate(readiness: dict[str, Any], *, label: str = "PHASE5_NOT_READY") -> None:
+    """Raise :class:`Phase5GateError` with human ``str`` and structured ``payload``."""
+    msg = format_phase5_readiness_failure(readiness, label=label)
+    payload = build_phase5_gate_payload(readiness, label=label)
+    raise Phase5GateError(msg, payload)
+
+
 def scene_image_video_counts(db: Session, project_id: UUID) -> tuple[int, int, int, int]:
     """scenes_total, scenes_with_image, scenes_with_video, scenes_with_approved_image."""
     scenes = list(
