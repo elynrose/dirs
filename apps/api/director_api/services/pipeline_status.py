@@ -1,4 +1,11 @@
-"""Aggregated pipeline progress for studio UI (manual vs auto)."""
+"""Aggregated pipeline progress for studio UI (manual vs auto).
+
+Each step includes ``label`` (title shown in the inspector) and ``detail`` (secondary line):
+
+- Counts use ``{done}/{total} · {unit}`` (e.g. ``7/12 · images``) or ``{n} · {plural_unit}``.
+- Readiness without a numeric breakdown uses words like ``Complete`` / ``Pending``, or filenames when an export exists.
+- Use ``—`` when there is nothing useful to show yet.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +27,23 @@ from director_api.db.models import (
 from director_api.services.agent_resume import workflow_phase_rank
 from director_api.services.phase5_readiness import compute_phase5_readiness, scene_image_video_counts, scenes_spoken_narration_coverage
 from ffmpeg_pipelines.paths import path_is_readable_file
+
+# Detail line convention for Studio: ``—`` when nothing to report; counts use ``{done}/{total} · {unit}``;
+# single counts use ``{n} · {unit}`` (plural unit word).
+_EM = "—"
+
+
+def _detail_frac(done: int, total: int, unit: str) -> str:
+    if int(total) <= 0:
+        return _EM
+    return f"{int(done)}/{int(total)} · {unit}"
+
+
+def _detail_count(n: int, unit_singular: str, unit_plural: str | None = None) -> str:
+    if int(n) <= 0:
+        return _EM
+    u = unit_singular if int(n) == 1 else (unit_plural or f"{unit_singular}s")
+    return f"{int(n)} · {u}"
 
 
 def _story_research_review_done(db: Session, project_id: UUID) -> bool:
@@ -95,50 +119,77 @@ def compute_pipeline_status(
     characters_done = int(char_n) > 0
     critique_blocked = p.workflow_phase == "critique_review"
 
+    chapters_detail = _detail_count(int(chapters_n), "chapter", "chapters")
+    scenes_detail = _detail_count(scenes_tot, "scene", "scenes")
+    research_detail = _detail_count(int(dossier_n), "dossier", "dossiers")
+    story_detail = "Complete" if story_research_done else "Pending"
+    char_detail = _detail_count(int(char_n), "character", "characters")
+    images_detail = _detail_frac(scenes_img, scenes_tot, "images")
+    videos_detail = _detail_frac(scenes_vid, scenes_tot, "videos")
+    narr_detail = _detail_frac(narr_ok, narr_need, "narration") if int(narr_need) > 0 else _EM
+    timeline_detail = f"{str(tv_id)[:8]}…" if tv_id else _EM
+    rough_detail = "rough_cut.mp4" if rough_ok else _EM
+    final_detail = "final_cut.mp4" if final_ok else _EM
+
     steps: list[dict[str, Any]] = [
-        {"id": "director", "label": "Directely pack", "status": st(director_done)},
-        {"id": "research", "label": "Research & dossier", "status": st(research_done, critique_blocked)},
-        {"id": "outline", "label": "Chapter outline", "status": st(outline_done)},
-        {"id": "chapters", "label": "Chapter scripts", "status": st(chapters_done)},
-        {"id": "scenes", "label": "Scene planning", "status": st(scenes_done)},
+        {"id": "director", "label": "Directely pack", "status": st(director_done), "detail": _EM},
+        {
+            "id": "research",
+            "label": "Research & dossier",
+            "status": st(research_done, critique_blocked),
+            "detail": research_detail,
+        },
+        {"id": "outline", "label": "Chapter outline", "status": st(outline_done), "detail": _EM},
+        {"id": "chapters", "label": "Chapter scripts", "status": st(chapters_done), "detail": chapters_detail},
+        {"id": "scenes", "label": "Scene planning", "status": st(scenes_done), "detail": scenes_detail},
         {
             "id": "story_research_review",
             "label": "Story vs research",
             "status": st(story_research_done),
-            "detail": "—",
+            "detail": story_detail,
         },
         {
             "id": "characters",
             "label": "Character bible",
             "status": st(characters_done),
-            "detail": f"{int(char_n)} character(s)" if int(char_n) else "—",
+            "detail": char_detail,
         },
         {
             "id": "images",
             "label": "Scene images",
             "status": "done" if scenes_tot > 0 and scenes_img >= scenes_tot else "pending",
-            "detail": f"{scenes_img}/{scenes_tot} with image",
+            "detail": images_detail,
         },
         {
             "id": "video_clips",
             "label": "Scene videos (optional)",
             "status": "done" if scenes_tot > 0 and scenes_vid >= scenes_tot else "pending",
-            "detail": f"{scenes_vid}/{scenes_tot} with video",
+            "detail": videos_detail,
         },
         {
             "id": "narration",
             "label": "Scene narration (TTS)",
             "status": "done" if narr_need > 0 and narr_ok >= narr_need else "pending",
-            "detail": f"{narr_ok}/{narr_need} scenes",
+            "detail": narr_detail,
         },
         {
             "id": "timeline",
             "label": "Timeline version",
             "status": "done" if latest_tv else "pending",
-            "detail": tv_id or "—",
+            "detail": timeline_detail,
         },
-        {"id": "rough_cut", "label": "Rough cut MP4", "status": "done" if rough_ok else "pending"},
-        {"id": "final_cut", "label": "Final cut (narration mux)", "status": "done" if final_ok else "pending"},
+        {
+            "id": "rough_cut",
+            "label": "Rough cut",
+            "status": "done" if rough_ok else "pending",
+            "detail": rough_detail,
+        },
+        {
+            "id": "final_cut",
+            "label": "Final mix",
+            "status": "done" if final_ok else "pending",
+            "detail": final_detail,
+        },
     ]
 
     return {

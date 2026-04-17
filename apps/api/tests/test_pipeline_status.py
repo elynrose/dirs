@@ -76,4 +76,4 @@ def test_compute_pipeline_status_characters_done_when_rows_exist(
     out = compute_pipeline_status(db, project_id=pid, tenant_id=tenant, storage_root=None)
     char_step = next(s for s in out["steps"] if s["id"] == "characters")
     assert char_step["status"] == "done"
-    assert char_step["detail"] == "3 character(s)"
+    assert char_step["detail"] == "3 · characters"

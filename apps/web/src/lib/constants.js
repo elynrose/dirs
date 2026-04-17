@@ -158,28 +158,28 @@ export const VISUAL_STYLE_PRESET_FALLBACK = [
 // Pipeline step maps (shared between inspector panel + banner)
 // ---------------------------------------------------------------------------
 
-/** Short labels for pipeline steps in the inspector list. */
+/** Short labels for pipeline steps in the inspector list (aligned with GET /v1/.../pipeline-status step titles). */
 export const RUN_STEP_LABEL = {
   queued: "Queued",
   rerun: "Re-run from phase",
-  director: "Directely",
-  research: "Research",
-  outline: "Outline",
-  scripts: "Scripts",
-  chapters: "Scripts",
-  scenes: "Scenes",
+  director: "Directely pack",
+  research: "Research & dossier",
+  outline: "Chapter outline",
+  scripts: "Chapter scripts",
+  chapters: "Chapter scripts",
+  scenes: "Scene planning",
   story_research_review: "Story vs research",
   scene_critique: "Scene reviews (legacy)",
   scene_critic_repair: "Scene fixes (legacy)",
   chapter_critique: "Chapter reviews (legacy)",
   chapter_critic_repair: "Chapter fixes (legacy)",
   auto_characters: "Character bible",
-  auto_images: "Images",
-  auto_narration: "Narration",
-  auto_videos: "Videos",
-  auto_timeline: "Timeline build",
-  auto_rough_cut: "Rough cut (auto)",
-  auto_final_cut: "Final mix (auto)",
+  auto_images: "Scene images",
+  auto_narration: "Scene narration (TTS)",
+  auto_videos: "Scene videos (optional)",
+  auto_timeline: "Timeline version",
+  auto_rough_cut: "Rough cut",
+  auto_final_cut: "Final mix",
   rough_cut: "Rough cut",
   subtitles: "Subtitles",
   final_cut: "Final mix",
@@ -212,15 +212,18 @@ export const AGENT_PROGRESS_ORDER = {
 /** Worker `pipeline_options.force_pipeline_steps` keys for the restart automation modal. */
 export const RESTART_AUTOMATION_STEPS = [
   { key: "director", label: "Directely pack" },
-  { key: "research", label: "Research" },
-  { key: "outline", label: "Outline" },
+  { key: "research", label: "Research & dossier" },
+  { key: "outline", label: "Chapter outline" },
   { key: "chapters", label: "Chapter scripts" },
-  { key: "scenes", label: "Scene plan" },
+  { key: "scenes", label: "Scene planning" },
   { key: "story_research_review", label: "Story vs research" },
   { key: "auto_characters", label: "Character bible" },
   { key: "auto_images", label: "Scene images" },
-  { key: "auto_videos", label: "Scene videos" },
-  { key: "auto_narration", label: "Narration (TTS)" },
+  { key: "auto_videos", label: "Scene videos (optional)" },
+  { key: "auto_narration", label: "Scene narration (TTS)" },
+  { key: "auto_timeline", label: "Timeline version" },
+  { key: "auto_rough_cut", label: "Rough cut" },
+  { key: "auto_final_cut", label: "Final mix" },
 ];
 
 /** Agent step key → pipeline status step `id`. */

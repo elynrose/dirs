@@ -777,6 +777,16 @@ function lastScenesProgressEvent(stepsJson) {
   return null;
 }
 
+/** Latest per-scene progress while the worker is in the ``auto_narration`` step (inline TTS loop). */
+function lastAutoNarrationProgressEvent(stepsJson) {
+  const evs = Array.isArray(stepsJson) ? stepsJson : [];
+  for (let i = evs.length - 1; i >= 0; i--) {
+    const e = evs[i];
+    if (e && e.step === "auto_narration" && e.status === "progress") return e;
+  }
+  return null;
+}
+
 /** Font Awesome classes per stage (`fa-solid` + animation). Paused uses a static icon. */
 function agentPipelineActivityIconClass(effKey, runStatus) {
   if (runStatus === "paused") return "fa-solid fa-circle-pause fa-fw pipeline-fa-icon pipeline-fa-icon--paused";
@@ -954,7 +964,7 @@ function mergePipelineStepsWithAgentActivity(pipelineStatus, run, activeProjectJ
     if (s.id !== targetId) return s;
     if (s.status === "done" || s.status === "blocked") return s;
     const next = { ...s, status: "running" };
-    if (effKey === "chapters" && !next.detail) {
+    if (effKey === "chapters") {
       next.detail =
         "Batched model call for all chapters — often several minutes with no intermediate database updates.";
     }
@@ -984,6 +994,8 @@ function activeStudioJobsMatchEffKey(activeProjectJobs, effKey) {
 function stallThresholdMs(effKey, runStatus) {
   if (runStatus === "queued") return 120_000;
   if (effKey === "chapters" || effKey === "scenes") return 600_000;
+  // Inline per-scene TTS can exceed 3m between agent row touches; progress events supply heartbeats.
+  if (effKey === "auto_narration") return 600_000;
   // Rough/final cut: ffmpeg may run a long time without touching the agent run row.
   if (effKey === "auto_rough_cut" || effKey === "auto_final_cut") return 1_800_000;
   return 180_000;
@@ -991,6 +1003,12 @@ function stallThresholdMs(effKey, runStatus) {
 
 function scenesProgressHeartbeatMs(stepsJson) {
   const p = lastScenesProgressEvent(stepsJson);
+  if (!p?.at) return 0;
+  return safeIsoMs(p.at);
+}
+
+function autoNarrationProgressHeartbeatMs(stepsJson) {
+  const p = lastAutoNarrationProgressEvent(stepsJson);
   if (!p?.at) return 0;
   return safeIsoMs(p.at);
 }
@@ -1075,8 +1093,8 @@ function formatStallDuration(sec) {
 }
 
 /**
- * Client-side stall signal: no recent `updated_at` on the agent run (and no scenes progress heartbeat when relevant),
- * while not explained by active Studio jobs for the same macro-step.
+ * Client-side stall signal: no recent `updated_at` on the agent run (and no scenes / auto_narration progress
+ * heartbeat when relevant), while not explained by active Studio jobs for the same macro-step.
  */
 function computeAgentRunStallInfo(run, activeProjectJobs, nowMs) {
   const empty = { stalled: false };
@@ -1093,6 +1111,9 @@ function computeAgentRunStallInfo(run, activeProjectJobs, nowMs) {
   let hb = safeIsoMs(run.updated_at);
   if (effKey === "scenes") {
     hb = Math.max(hb, scenesProgressHeartbeatMs(run.steps_json));
+  }
+  if (effKey === "auto_narration") {
+    hb = Math.max(hb, autoNarrationProgressHeartbeatMs(run.steps_json));
   }
 
   if (hb <= 0) return empty;
@@ -4414,7 +4435,15 @@ export default function App() {
     let through = restartAutomationThrough;
     if (
       force_pipeline_steps.some((k) =>
-        ["auto_characters", "auto_images", "auto_videos", "auto_narration"].includes(k),
+        [
+          "auto_characters",
+          "auto_images",
+          "auto_videos",
+          "auto_narration",
+          "auto_timeline",
+          "auto_rough_cut",
+          "auto_final_cut",
+        ].includes(k),
       )
     ) {
       through = "full_video";
@@ -5143,6 +5172,16 @@ export default function App() {
             ? ` — “${prog.chapter_title.trim()}”`
             : "";
         base = `${base} Now planning chapter ${prog.chapter_index}/${prog.chapters_total}${title}.`;
+      }
+      const narrProg = lastAutoNarrationProgressEvent(run?.steps_json);
+      if (
+        effKey === "auto_narration" &&
+        narrProg &&
+        typeof narrProg.scenes_total === "number" &&
+        narrProg.scenes_total > 0 &&
+        typeof narrProg.scene_index === "number"
+      ) {
+        base = `${base} Now synthesizing scene ${narrProg.scene_index}/${narrProg.scenes_total}.`;
       }
       return base;
     }

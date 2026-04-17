@@ -2552,11 +2552,24 @@ def _run_agent_full_pipeline_tail(
 
         def _auto_scene_narration_pass(target_scenes: list[Scene]) -> list[uuid.UUID] | None:
             failed_s: list[uuid.UUID] = []
-            for sc in target_scenes:
+            n_targets = len(target_scenes)
+            for si, sc in enumerate(target_scenes):
                 if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
                     return None
                 if _scene_has_scene_narration_audio(db, sc.id) and not force_regen_narration:
                     continue
+                # Per-scene heartbeat for Studio (same idea as ``scenes`` chapter progress): auto narration
+                # runs inline without Celery Job rows, so ``updated_at`` + progress events must advance during TTS.
+                run_hb = db.get(AgentRun, agent_run_uuid)
+                if run_hb:
+                    _append_event(
+                        run_hb,
+                        "auto_narration",
+                        "progress",
+                        scene_index=int(si + 1),
+                        scenes_total=int(n_targets),
+                    )
+                    db.commit()
                 js = _synthetic_job(
                     tenant_id=tenant_id,
                     project_id=pid,
