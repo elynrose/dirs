@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Identity, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Identity, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -331,6 +331,7 @@ class ResearchSource(Base):
 
 class ResearchClaim(Base):
     __tablename__ = "research_claims"
+    __table_args__ = (Index("ix_research_claims_dossier_sourced_disputed", "dossier_id", "adequately_sourced", "disputed"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -421,6 +422,7 @@ class Asset(Base):
 
 class CriticReport(Base):
     __tablename__ = "critic_reports"
+    __table_args__ = (Index("ix_critic_reports_target_created", "target_type", "target_id", "created_at"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -490,6 +492,7 @@ class UsageRecord(Base):
 
 class NarrationTrack(Base):
     __tablename__ = "narration_tracks"
+    __table_args__ = (Index("ix_narration_tracks_project_scene_created", "project_id", "scene_id", "created_at"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)

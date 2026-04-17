@@ -20,6 +20,17 @@ import { useEffect, useRef, useState } from "react";
 import { apiPath } from "../lib/api.js";
 import { directorAuthQuerySuffix } from "../lib/directorAuthSession.js";
 
+function parseSseJson(data, eventName) {
+  try {
+    return JSON.parse(data);
+  } catch (e) {
+    if (import.meta.env?.DEV) {
+      console.warn(`[useProjectEvents] invalid JSON in ${eventName}`, e);
+    }
+    return null;
+  }
+}
+
 export function useProjectEvents(projectId, handlers, reloadKey = 0) {
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
@@ -75,33 +86,29 @@ export function useProjectEvents(projectId, handlers, reloadKey = 0) {
       source.addEventListener("connected", () => markConnected());
 
       source.addEventListener("jobs_update", (e) => {
-        try {
-          markConnected();
-          const data = JSON.parse(e.data);
-          handlersRef.current.onJobsUpdate?.(data.jobs ?? []);
-        } catch {}
+        markConnected();
+        const data = parseSseJson(e.data, "jobs_update");
+        if (!data) return;
+        handlersRef.current.onJobsUpdate?.(data.jobs ?? []);
       });
 
       source.addEventListener("agent_run_update", (e) => {
-        try {
-          markConnected();
-          const data = JSON.parse(e.data);
-          handlersRef.current.onAgentRunUpdate?.(data.run ?? null);
-        } catch {}
+        markConnected();
+        const data = parseSseJson(e.data, "agent_run_update");
+        if (!data) return;
+        handlersRef.current.onAgentRunUpdate?.(data.run ?? null);
       });
 
       source.addEventListener("asset_ready", (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          handlersRef.current.onAssetReady?.(data.asset);
-        } catch {}
+        const data = parseSseJson(e.data, "asset_ready");
+        if (!data) return;
+        handlersRef.current.onAssetReady?.(data.asset);
       });
 
       source.addEventListener("celery_status", (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          handlersRef.current.onCeleryStatus?.(Boolean(data.online));
-        } catch {}
+        const data = parseSseJson(e.data, "celery_status");
+        if (!data) return;
+        handlersRef.current.onCeleryStatus?.(Boolean(data.online));
       });
 
       source.addEventListener("stream_end", () => {

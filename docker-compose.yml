@@ -23,6 +23,8 @@ services:
   redis:
     restart: unless-stopped
     image: redis:7-alpine
+    # Persist AOF so Celery broker / queue state survives container restarts (see scripts/improvements.md infra notes).
+    command: redis-server --appendonly yes --appendfsync everysec
     ports:
       - "6379:6379"
     volumes:

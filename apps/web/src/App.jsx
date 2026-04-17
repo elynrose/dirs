@@ -1305,6 +1305,8 @@ export default function App() {
     [expandedScene, scenes],
   );
   const [sceneAssets, setSceneAssets] = useState({});
+  /** Set when GET /v1/scenes/{id}/assets fails so the gallery is not silently empty. */
+  const [sceneAssetsFetchError, setSceneAssetsFetchError] = useState(null);
   const [retryPrompt, setRetryPrompt] = useState("");
   /** When this changes, we pre-fill retry prompt from the scene (avoid clobbering edits on scenes refresh). */
   const retryPromptSceneRef = useRef(null);
@@ -1809,6 +1811,7 @@ export default function App() {
     setExpandedScene(null);
     setPinnedPreviewAssetId(null);
     setSceneAssets({});
+    setSceneAssetsFetchError(null);
     setTrimByScene({});
     setTimelineVersionId("");
     setMediaJobId("");
@@ -2822,10 +2825,27 @@ export default function App() {
   }, []);
 
   const loadSceneAssets = useCallback(async (sid) => {
-    const r = await api(`/v1/scenes/${sid}/assets`);
-    const body = await parseJson(r);
-    if (r.ok) {
-      setSceneAssets((prev) => ({ ...prev, [sid]: body.data?.assets || [] }));
+    if (!sid) return;
+    setSceneAssetsFetchError((prev) => (prev && String(prev.sceneId) === String(sid) ? null : prev));
+    try {
+      const r = await api(`/v1/scenes/${encodeURIComponent(sid)}/assets`);
+      const body = await parseJson(r);
+      if (r.ok) {
+        setSceneAssets((prev) => ({ ...prev, [sid]: body.data?.assets || [] }));
+        setSceneAssetsFetchError((prev) => (prev && String(prev.sceneId) === String(sid) ? null : prev));
+      } else {
+        setSceneAssets((prev) => ({ ...prev, [sid]: [] }));
+        setSceneAssetsFetchError({
+          sceneId: String(sid),
+          message: apiErrorMessage(body) || "Could not load assets for this scene.",
+        });
+      }
+    } catch (e) {
+      setSceneAssets((prev) => ({ ...prev, [sid]: [] }));
+      setSceneAssetsFetchError({
+        sceneId: String(sid),
+        message: formatUserFacingError(e),
+      });
     }
   }, []);
 
@@ -5998,6 +6018,7 @@ export default function App() {
     setPinnedPreviewAssetId(null);
     setMediaPreviewTab("scene");
     setSceneAssets({});
+    setSceneAssetsFetchError(null);
     setTrimByScene({});
     setTimelineVersionId(
       restore?.timelineVersionId && String(restore.timelineVersionId).trim()
@@ -6264,6 +6285,7 @@ export default function App() {
         setExpandedScene(null);
         setPinnedPreviewAssetId(null);
         setSceneAssets({});
+        setSceneAssetsFetchError(null);
         setPhase3Summary(null);
         setCriticReport(null);
         setPhase5Ready(null);
@@ -6292,6 +6314,7 @@ export default function App() {
     setExpandedScene(null);
     setPinnedPreviewAssetId(null);
     setSceneAssets({});
+    setSceneAssetsFetchError(null);
     setTrimByScene({});
     setTimelineVersionId("");
     setMediaJobId("");
@@ -10241,6 +10264,13 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         </SceneWorkflowCard>
                         <SceneWorkflowCard title="Assets for this scene">
                     <>
+                      {sceneAssetsFetchError &&
+                      selectedSceneId &&
+                      String(sceneAssetsFetchError.sceneId) === String(selectedSceneId) ? (
+                        <p className="subtle" role="alert" style={{ margin: "0 0 10px", color: "var(--danger, #f87171)" }}>
+                          {sceneAssetsFetchError.message}
+                        </p>
+                      ) : null}
                       <p className="subtle" style={{ margin: "0 0 8px" }}>
                         Rejected assets are hidden. Use Earlier / Later to set playback order for approved images in the rough cut.
                       </p>
