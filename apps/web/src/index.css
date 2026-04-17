@@ -460,6 +460,35 @@ body:has(.studio-preauth-shell) {
   font-size: 0.75rem;
 }
 
+.chat-studio__run-meta--stale {
+  color: rgba(251, 191, 36, 0.95);
+}
+
+.chat-studio__run-list-icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+}
+
+.chat-studio__run-list-icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.chat-studio__run-list-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .chat-studio__roadmap {
   flex-shrink: 0;
   margin-top: 12px;

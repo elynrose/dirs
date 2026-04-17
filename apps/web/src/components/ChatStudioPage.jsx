@@ -77,8 +77,27 @@ function friendlyStepLine(ev) {
 
 const AGENT_RUN_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "blocked"]);
 
+/** If non-terminal and ``updated_at`` is older than this, show “idle?” (worker likely not advancing). */
+const AGENT_RUN_SIDEBAR_STALE_MS = 4 * 60 * 1000;
+
 function isAgentRunTerminalStatus(st) {
   return AGENT_RUN_TERMINAL_STATUSES.has(String(st || "").trim());
+}
+
+function agentRunSidebarLabel(run) {
+  const st = String(run?.status ?? "").trim() || "—";
+  if (isAgentRunTerminalStatus(st)) return { line: st, stale: false, rowTitle: undefined };
+  const raw = run?.updated_at;
+  const t = raw ? new Date(raw).getTime() : NaN;
+  const idleMs = Number.isFinite(t) ? Date.now() - t : 0;
+  const stale = idleMs > AGENT_RUN_SIDEBAR_STALE_MS;
+  return {
+    line: stale ? `${st} · idle?` : st,
+    stale,
+    rowTitle: stale
+      ? "No server updates for several minutes — this run may be stuck (worker stopped or task lost). Try Stop or restart the worker."
+      : undefined,
+  };
 }
 
 /**
@@ -451,34 +470,44 @@ export function ChatStudioPage({
     return () => clearInterval(id);
   }, [selectedProjectId, pollPipeline]);
 
+  const agentRunSidebarFetchPidRef = useRef("");
+
+  const fetchAgentRunSidebar = useCallback(async (projectId, withSpinner) => {
+    const pid = String(projectId || "").trim();
+    if (!pid) return;
+    if (withSpinner) setAgentRunsLoading(true);
+    try {
+      const r = await api(`/v1/projects/${encodeURIComponent(pid)}/agent-runs?limit=100&offset=0`);
+      const b = await parseJson(r);
+      if (!r.ok) {
+        setAgentRunRows([]);
+        return;
+      }
+      const rows = Array.isArray(b.data?.agent_runs) ? b.data.agent_runs : [];
+      setAgentRunRows(rows);
+    } catch {
+      setAgentRunRows([]);
+    } finally {
+      if (withSpinner) setAgentRunsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!selectedProjectId) {
       setAgentRunRows([]);
+      agentRunSidebarFetchPidRef.current = "";
       return;
     }
-    let cancelled = false;
-    setAgentRunsLoading(true);
-    void (async () => {
-      try {
-        const r = await api(`/v1/projects/${encodeURIComponent(selectedProjectId)}/agent-runs?limit=100&offset=0`);
-        const b = await parseJson(r);
-        if (cancelled) return;
-        if (!r.ok) {
-          setAgentRunRows([]);
-          return;
-        }
-        const rows = Array.isArray(b.data?.agent_runs) ? b.data.agent_runs : [];
-        setAgentRunRows(rows);
-      } catch {
-        if (!cancelled) setAgentRunRows([]);
-      } finally {
-        if (!cancelled) setAgentRunsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedProjectId, agentRunsListTick]);
+    const withSpinner = agentRunSidebarFetchPidRef.current !== selectedProjectId;
+    agentRunSidebarFetchPidRef.current = selectedProjectId;
+    void fetchAgentRunSidebar(selectedProjectId, withSpinner);
+  }, [selectedProjectId, agentRunsListTick, fetchAgentRunSidebar]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    const id = setInterval(() => void fetchAgentRunSidebar(selectedProjectId, false), 5000);
+    return () => clearInterval(id);
+  }, [selectedProjectId, fetchAgentRunSidebar]);
 
   /** Persist setup + run transcript and generation snapshot so reload keeps state. */
   useEffect(() => {
@@ -952,7 +981,7 @@ export function ChatStudioPage({
           <div className="chat-studio__prev-runs" style={{ marginTop: 12 }}>
             <strong style={{ fontSize: "0.9rem" }}>Hands-off runs</strong>
             <p className="subtle" style={{ margin: "4px 0 0", fontSize: "0.8rem" }}>
-              All runs for this production (newest first). Open one to reload its activity.
+              All runs for this production (newest first). Open one to reload its activity. List refreshes every 5s.
             </p>
             {agentRunsLoading ? (
               <p className="subtle" style={{ margin: "8px 0 0" }}>
@@ -968,6 +997,7 @@ export function ChatStudioPage({
                   const rid = String(run.id || "");
                   const st = run.status != null ? String(run.status) : "";
                   const terminal = isAgentRunTerminalStatus(st);
+                  const { line, stale, rowTitle } = agentRunSidebarLabel(run);
                   const rowBusy = runListActionId === rid;
                   return (
                     <li
@@ -983,45 +1013,59 @@ export function ChatStudioPage({
                         type="button"
                         className={`chat-studio__project-row${String(agentRunId) === rid ? " is-active" : ""}`}
                         style={{ flex: 1, minWidth: 0, textAlign: "left", padding: "6px 8px" }}
+                        title={rowTitle}
                         onClick={() => void loadAgentRunIntoPanel(rid)}
                       >
                         <span className="chat-studio__project-title mono" style={{ fontSize: "0.75rem", display: "block" }}>
                           {rid.slice(0, 8)}…
                         </span>
-                        <span className="subtle chat-studio__project-meta" style={{ fontSize: "0.72rem" }}>
-                          {st || "—"}
+                        <span
+                          className={`subtle chat-studio__project-meta${stale ? " chat-studio__run-meta--stale" : ""}`}
+                          style={{ fontSize: "0.72rem" }}
+                          title={rowTitle}
+                        >
+                          {line || st || "—"}
                           {run.created_at ? ` · ${String(run.created_at).replace("T", " ").slice(0, 16)}` : ""}
                         </span>
                       </button>
                       {terminal ? (
                         <button
                           type="button"
-                          className="secondary"
+                          className="chat-studio__run-list-icon-btn"
                           title="Remove this run from the server"
+                          aria-label="Delete run"
                           disabled={rowBusy}
-                          style={{ flexShrink: 0, padding: "4px 8px", fontSize: "0.72rem" }}
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             void deleteAgentRunInList(rid);
                           }}
                         >
-                          Delete
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path
+                              d="M3 6h18M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2m2 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14zM10 11v5M14 11v5"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                            />
+                          </svg>
                         </button>
                       ) : (
                         <button
                           type="button"
-                          className="secondary"
+                          className="chat-studio__run-list-icon-btn"
                           title="Request stop at next safe point"
+                          aria-label="Stop run"
                           disabled={rowBusy}
-                          style={{ flexShrink: 0, padding: "4px 8px", fontSize: "0.72rem" }}
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             void stopAgentRunInList(rid);
                           }}
                         >
-                          Stop
+                          <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">
+                            <rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" />
+                          </svg>
                         </button>
                       )}
                     </li>
