@@ -88,6 +88,12 @@ make worker
 | `AGENT_RUN_FAST` | `1` or `true`: full `POST /v1/agent-runs` skips **LLM scene + chapter critics** and **scene-plan refinement** (still runs director/research/outline/chapters/scene cards). Much faster for local smoke; not for production QA. |
 | `OPENAI_AGENTS_PARALLEL` | Default **true**: autonomous agent run fans out **scene** and **chapter** critic LLM calls in parallel via the **[OpenAI Agents SDK](https://github.com/openai/openai-agents-python)** (`asyncio.gather` + structured outputs). Set **`false`** to use the older sequential Chat Completions path. Single-scene/chapter **Celery** jobs still use Chat Completions. |
 
+## Stress / resilience checks
+
+- **Pytest** (markers `stress`): `pytest tests/stress` — fast in-process tests; one **Postgres** test is skipped unless `STRESS_INTEGRATION=1` (creates a large timeline, then deletes the project). Tune with `STRESS_SCENE_COUNT` (default 80) and `STRESS_READINESS_MAX_SEC` (default 45).
+- **HTTP probe** (live API): `python scripts/stress/http_probe.py` — optional `STRESS_EMAIL` / `STRESS_PASSWORD` for login.
+- **Docker infra**: `scripts/stress/restart_redis.sh` and `restart_postgres.sh` from repo root (expects `docker compose`). **Disk fill** helper: `fill_disk_small_mount.sh` only runs with `STRESS_DESTRUCTIVE=1` and a dedicated `STRESS_FILL_DIR`.
+
 ## Smoke flow
 
 See [`../../docs/ADAPTER_SMOKE.md`](../../docs/ADAPTER_SMOKE.md).

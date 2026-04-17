@@ -66,3 +66,7 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "stress: load or resilience checks (some require STRESS_INTEGRATION=1)",
+    "stress_destructive: may restart containers or fill disk — run manually",
+]
