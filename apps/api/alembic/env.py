@@ -1,3 +1,9 @@
+"""Alembic migration environment (``alembic/versions``).
+
+Deploy / local: configure ``DATABASE_URL`` (see ``director_api.config``), install the
+API package, ``cd apps/api``, then run ``alembic upgrade head``.
+"""
+
 from logging.config import fileConfig
 
 from alembic import context

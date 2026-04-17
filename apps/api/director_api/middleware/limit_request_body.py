@@ -1,4 +1,10 @@
-"""Reject oversized HTTP request bodies using Content-Length (cheap DoS guard)."""
+"""Reject oversized HTTP request bodies using Content-Length (cheap DoS guard).
+
+Chunked ``Transfer-Encoding`` uploads may omit ``Content-Length``; this middleware
+does not read the stream to enforce a byte cap in that case (Starlette would need
+streaming limits elsewhere). API clients should send a Content-Length for large
+JSON bodies; document this limitation for operators.
+"""
 
 from __future__ import annotations
 

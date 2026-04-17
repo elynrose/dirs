@@ -552,6 +552,13 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
+    ffmpeg_min_major_version: int = Field(
+        default=4,
+        ge=0,
+        le=99,
+        description="Log a warning when ``ffmpeg -version`` reports a major below this (unset parsing → no warning).",
+        validation_alias=AliasChoices("ffmpeg_min_major_version", "FFMPEG_MIN_MAJOR_VERSION"),
+    )
     ffmpeg_compile_enabled: bool = True
     ffmpeg_slideshow_default_sec: float = 3.0
     scene_clip_duration_sec: int = Field(default=10, ge=5, le=10, description="5 or 10 seconds")

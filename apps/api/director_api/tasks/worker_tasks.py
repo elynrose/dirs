@@ -96,6 +96,7 @@ from director_api.services.scene_timeline_duration import (
     get_scene_narration_audio_duration_sec,
     scene_vo_tail_padding_sec_from_settings,
 )
+from director_api.services.timeline_manifest_prefetch import manifest_prefetch_asset_hierarchy
 from director_api.services.timeline_image_repair import list_export_ready_scene_visuals_ordered
 from director_api.style_presets import effective_narration_style, effective_visual_style
 from director_api.services.runtime_settings import resolve_runtime_settings
@@ -344,37 +345,6 @@ def _manifest_row_duration_sec(
     raise ValueError(f"unsupported asset_type for audio slot: {at}")
 
 
-def _manifest_prefetch_asset_hierarchy(
-    db: Any,
-    manifest: list[dict[str, Any]],
-) -> tuple[dict[uuid.UUID, Asset], dict[uuid.UUID, Scene], dict[uuid.UUID, Chapter]]:
-    """Batch-load Asset → Scene → Chapter for all manifest rows (avoids N+1 ``db.get``)."""
-    aids: set[uuid.UUID] = set()
-    for m in manifest:
-        aid = m.get("asset_id")
-        if aid is None:
-            continue
-        try:
-            aids.add(uuid.UUID(str(aid)))
-        except (ValueError, TypeError):
-            continue
-    if not aids:
-        return {}, {}, {}
-    assets = list(db.scalars(select(Asset).where(Asset.id.in_(aids))).all())
-    asset_by_id = {a.id: a for a in assets}
-    scene_ids = {a.scene_id for a in assets if a.scene_id}
-    if not scene_ids:
-        return asset_by_id, {}, {}
-    scenes = list(db.scalars(select(Scene).where(Scene.id.in_(scene_ids))).all())
-    scene_by_id = {s.id: s for s in scenes}
-    ch_ids = {s.chapter_id for s in scenes if s.chapter_id}
-    if not ch_ids:
-        return asset_by_id, scene_by_id, {}
-    chapters = list(db.scalars(select(Chapter).where(Chapter.id.in_(ch_ids))).all())
-    ch_by_id = {c.id: c for c in chapters}
-    return asset_by_id, scene_by_id, ch_by_id
-
-
 def _final_cut_audio_slots_from_manifest(
     db: Any,
     manifest: list[dict[str, Any]],
@@ -385,7 +355,7 @@ def _final_cut_audio_slots_from_manifest(
     timeout_sec: float,
 ) -> list[tuple[float, uuid.UUID | None]]:
     """(slot_duration, scene_id or None for chapter title card). Matches rough_cut visual order."""
-    asset_by_id, scene_by_id, ch_by_id = _manifest_prefetch_asset_hierarchy(db, manifest)
+    asset_by_id, scene_by_id, ch_by_id = manifest_prefetch_asset_hierarchy(db, manifest)
     slots: list[tuple[float, uuid.UUID | None]] = []
     prev_chapter_id: uuid.UUID | None = None
     for m in manifest:
@@ -429,7 +399,7 @@ def _expand_manifest_and_slots_for_full_narration(
     tail_padding_sec: float,
 ) -> tuple[list[dict[str, Any]], list[tuple[float, uuid.UUID | None]]]:
     """Widen the first timeline clip per scene so visuals run at least VO length + tail padding (export)."""
-    asset_by_id, scene_by_id, ch_by_id = _manifest_prefetch_asset_hierarchy(db, manifest)
+    asset_by_id, scene_by_id, ch_by_id = manifest_prefetch_asset_hierarchy(db, manifest)
     adjusted: list[dict[str, Any]] = [copy.deepcopy(m) for m in manifest]
     slots: list[tuple[float, uuid.UUID | None]] = []
     voice_used: set[uuid.UUID] = set()
@@ -638,7 +608,7 @@ def _rough_cut_visual_segments_with_chapter_cards(
     ffprobe_bin: str = "ffprobe",
 ) -> list[Any]:
     """Build mixed-timeline segments: optional black title cards at chapter boundaries + clip assets."""
-    asset_by_id, scene_by_id, ch_by_id = _manifest_prefetch_asset_hierarchy(db, manifest)
+    asset_by_id, scene_by_id, ch_by_id = manifest_prefetch_asset_hierarchy(db, manifest)
     segments: list[Any] = []
     prev_chapter_id: uuid.UUID | None = None
     for m in manifest:

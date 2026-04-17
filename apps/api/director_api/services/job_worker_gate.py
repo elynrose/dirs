@@ -1,4 +1,14 @@
-"""Worker-side gate: skip Celery deliveries for cancelled / duplicate / terminal jobs."""
+"""Worker-side gate: skip Celery deliveries for cancelled / duplicate / terminal jobs.
+
+**Transient failures / Celery retries:** ``acquire_job_for_work`` only allows the
+first delivery to move a job from ``queued`` → ``running``. If the task body fails
+after that transition, a blind Celery ``retry`` would re-enter with ``running``
+status and return ``False`` (duplicate delivery) unless the job is reset to
+``queued`` in an idempotent failure handler. Prefer: catch provider timeouts,
+mark the job ``failed`` with a structured error *or* explicitly revert to
+``queued`` with a monotonic ``attempt`` counter before ``retry``, and ensure side
+effects are keyed by job id so retries do not double-charge.
+"""
 
 from __future__ import annotations
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from contextlib import asynccontextmanager
@@ -66,6 +67,22 @@ def _cors_allow_origins() -> list[str]:
     return list(dict.fromkeys(base))
 
 
+def _ffmpeg_reported_major_version(first_line: str) -> int | None:
+    """Best-effort parse of ``ffmpeg -version`` first line (returns None for dev ``N-`` builds, etc.)."""
+    s = (first_line or "").strip()
+    if not s:
+        return None
+    if re.search(r"ffmpeg version\s+n-", s, re.IGNORECASE):
+        return None
+    m = re.search(r"ffmpeg version\s+(\d+)", s, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"version\s+(\d+)\.(\d+)", s, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def _check_ffmpeg_binaries() -> None:
     """Warn at startup if ffmpeg/ffprobe are missing from PATH.
 
@@ -92,7 +109,20 @@ def _check_ffmpeg_binaries() -> None:
                     timeout=5,
                 )
                 first_line = (result.stdout or result.stderr or "").splitlines()[0]
-                log.info("ffmpeg_binary_ok", label=label, binary=resolved, version=first_line)
+                major = _ffmpeg_reported_major_version(first_line)
+                min_maj = int(cfg.ffmpeg_min_major_version)
+                if label == "ffmpeg" and major is not None and major < min_maj:
+                    log.warning(
+                        "ffmpeg_version_below_minimum",
+                        label=label,
+                        binary=resolved,
+                        reported_major=major,
+                        min_major=min_maj,
+                        version_line=first_line,
+                        hint=f"Upgrade ffmpeg to {min_maj}.x or newer, or lower FFMPEG_MIN_MAJOR_VERSION if intentional.",
+                    )
+                else:
+                    log.info("ffmpeg_binary_ok", label=label, binary=resolved, version=first_line)
             except Exception as exc:
                 log.warning("ffmpeg_binary_error", label=label, binary=resolved, error=str(exc))
 

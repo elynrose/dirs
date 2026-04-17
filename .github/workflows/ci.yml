@@ -56,6 +56,8 @@ jobs:
         run: .venv/bin/python -c "from director_api.main import app; print(app.title)"
       - name: Pytest
         run: .venv/bin/pytest -q
+      - name: Pytest phase5 readiness module
+        run: .venv/bin/pytest -q tests/test_phase5_readiness.py
 
   ffmpeg-pipelines:
     runs-on: ubuntu-latest

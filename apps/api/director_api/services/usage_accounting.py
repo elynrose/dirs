@@ -268,10 +268,48 @@ def usage_summary_for_tenant(
             }
         )
 
+    media_stmt = (
+        select(
+            UsageRecord.service_type.label("service_type"),
+            UsageRecord.provider.label("provider"),
+            UsageRecord.unit_type.label("unit_type"),
+            func.sum(func.coalesce(UsageRecord.units, 0.0)).label("units"),
+            func.sum(credit_row).label("credits"),
+            func.sum(func.coalesce(UsageRecord.cost_estimate, 0.0)).label("cost_usd"),
+            func.count().label("calls"),
+        )
+        .where(UsageRecord.tenant_id == tenant_id)
+        .where(UsageRecord.created_at >= since)
+        .where(UsageRecord.unit_type != "tokens")
+        .group_by(UsageRecord.service_type, UsageRecord.provider, UsageRecord.unit_type)
+        .order_by(func.sum(credit_row).desc())
+    )
+    media_services: list[dict[str, Any]] = []
+    for mr in db.execute(media_stmt).all():
+        st = str(mr.service_type or "unknown")
+        pv = str(mr.provider or "unknown")
+        ut = str(mr.unit_type or "")
+        u = float(mr.units or 0.0)
+        cr = float(mr.credits or 0.0)
+        cusd = float(mr.cost_usd or 0.0)
+        n = int(mr.calls or 0)
+        media_services.append(
+            {
+                "service_type": st,
+                "provider": pv,
+                "unit_type": ut,
+                "units": round(u, 4),
+                "credits": round(cr, 4),
+                "estimated_cost_usd": round(cusd, 6),
+                "calls": n,
+            }
+        )
+
     return {
         "period_days": days,
         "since": since.isoformat(),
         "models": models,
+        "media_services": media_services,
         "totals": {
             "prompt_tokens": tot_pt,
             "completion_tokens": tot_ct,

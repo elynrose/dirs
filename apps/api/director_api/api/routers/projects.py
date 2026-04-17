@@ -21,7 +21,11 @@ from director_api.config import Settings, get_settings
 from director_api.db.models import AgentRun, Asset, AuditEvent, Chapter, CriticReport, GenerationArtifact, Job, Project, Scene, TimelineVersion
 from director_api.services import timeline_image_repair as timeline_image_repair_svc
 from director_api.services.job_quota import assert_can_enqueue
-from director_api.services.phase5_readiness import compute_phase5_readiness, get_timeline_asset_for_project
+from director_api.services.phase5_readiness import (
+    build_phase5_gate_payload,
+    compute_phase5_readiness,
+    get_timeline_asset_for_project,
+)
 from director_api.tasks.job_enqueue import enqueue_run_phase3_job
 from director_api.services.tenant_entitlements import assert_can_create_project
 from director_api.storage.project_storage_cleanup import remove_generated_project_files
@@ -265,12 +269,27 @@ def get_phase5_readiness(
             detail={
                 "code": "BAD_REQUEST",
                 "message": "timeline_version_id is required when export_stage is set",
+                "phase5_gate": build_phase5_gate_payload(
+                    {
+                        "ready": False,
+                        "primary_metric": "bad_request",
+                        "issues": [
+                            {
+                                "code": "timeline_version_required",
+                                "detail": {"export_stage": export_stage},
+                            }
+                        ],
+                    },
+                    label="BAD_REQUEST",
+                ),
             },
         )
+    tenant_id = str(settings.default_tenant_id)
+    require_project_for_tenant(db, project_id, tenant_id)
     r = compute_phase5_readiness(
         db,
         project_id=project_id,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=tenant_id,
         storage_root=settings.local_storage_root,
         timeline_version_id=timeline_version_id,
         export_stage=export_stage,
@@ -278,7 +297,10 @@ def get_phase5_readiness(
     )
     if r.get("error") == "project_not_found":
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
-    return {"data": r, "meta": meta}
+    out = dict(r)
+    if not r.get("ready"):
+        out["phase5_gate"] = build_phase5_gate_payload(r, label="PHASE5_NOT_READY")
+    return {"data": out, "meta": meta}
 
 
 @router.post("/{project_id}/assets/approve-all-succeeded")

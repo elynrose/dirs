@@ -237,7 +237,6 @@ def register(body: RegisterIn, response: Response, db: Session = Depends(get_db)
     assign_free_plan_to_new_tenant(db, tid, settings)
     db.commit()
 
-    tenants = _serialize_tenants(db, [mem])
     ok = _create_web_session(
         response=response,
         settings=settings,

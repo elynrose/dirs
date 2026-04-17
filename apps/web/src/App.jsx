@@ -6702,8 +6702,8 @@ export default function App() {
             <div>
               <h2>Usage</h2>
               <p className="subtle">
-                LLM token totals by model for this workspace (tenant). Costs are rough estimates from built-in price hints — verify against
-                your provider invoices.
+                LLM token totals by model plus media/TTS usage (image_gen, video_gen, narration, etc.) for this workspace. Costs are rough
+                estimates from built-in price hints and credits — verify against your provider invoices.
               </p>
               {usageErr ? <p className="err usage-page-error">{usageErr}</p> : null}
             </div>
@@ -6836,6 +6836,48 @@ export default function App() {
                             }).format(Number(m.estimated_cost_usd ?? 0))}
                           </td>
                           <td>{Number(m.credits ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+
+              {usageSummary.media_services?.length ? (
+                <div className="usage-table-wrap">
+                  <h3 className="usage-section-title">Media &amp; TTS</h3>
+                  <p className="subtle">
+                    Rows grouped by service type (non-token usage): image/video generation, TTS characters, and other provider calls.
+                  </p>
+                  <table className="usage-table">
+                    <thead>
+                      <tr>
+                        <th>Service</th>
+                        <th>Provider</th>
+                        <th>Unit</th>
+                        <th>Quantity</th>
+                        <th>Calls</th>
+                        <th>Est. USD</th>
+                        <th>Credits</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usageSummary.media_services.map((row) => (
+                        <tr key={`${row.provider}:${row.service_type}:${row.unit_type}:row`}>
+                          <td>{row.service_type}</td>
+                          <td>{row.provider}</td>
+                          <td>{row.unit_type || "—"}</td>
+                          <td>{Number(row.units ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                          <td>{row.calls ?? 0}</td>
+                          <td>
+                            {new Intl.NumberFormat("en-US", {
+                              style: "currency",
+                              currency: "USD",
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 4,
+                            }).format(Number(row.estimated_cost_usd ?? 0))}
+                          </td>
+                          <td>{Number(row.credits ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
                         </tr>
                       ))}
                     </tbody>
