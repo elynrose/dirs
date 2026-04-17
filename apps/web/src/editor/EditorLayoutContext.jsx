@@ -4,16 +4,13 @@ const STORAGE_KEY = "director_editor_layout_v2";
 
 /**
  * Center column: scene workflow panels shown as tabs (single visible panel; order from layout).
- * Includes narration, jobs, media generation, prompts, script, assets, video prompt.
+ * Assets = generate + image prompt + gallery; Script = narration audio + VO script; Motion; Jobs.
  */
 export const EDITOR_CENTER_SCENE_TAB_IDS = [
-  "previewNarration",
-  "mediaJobs",
-  "mediaGen",
-  "retryPrompt",
-  "scriptExcerpt",
-  "sceneAssets",
+  "sceneMediaHub",
+  "scriptAndVoice",
   "retryVideoPrompt",
+  "mediaJobs",
 ];
 
 /** Default card order per column (ids must match EditorCard usage in App.jsx). */
@@ -23,14 +20,10 @@ export const EDITOR_COLUMN_DEFAULT_ORDER = {
     "previewVisual",
     "chapter",
     "scenes",
-    "chapterNarration",
-    "previewNarration",
-    "mediaJobs",
-    "mediaGen",
-    "retryPrompt",
-    "scriptExcerpt",
-    "sceneAssets",
+    "sceneMediaHub",
+    "scriptAndVoice",
     "retryVideoPrompt",
+    "mediaJobs",
   ],
   right: ["progress", "brief", "projectSubtitles", "reviewsAndAlerts"],
   timeline: ["sceneOrder", "compile"],

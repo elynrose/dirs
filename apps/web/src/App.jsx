@@ -109,6 +109,36 @@ function normalizeDirectorActivePage(v) {
   return STUDIO_PAGE_IDS.has(id) ? id : "editor";
 }
 
+/** Sub-panel inside merged center-column scene tabs (Generate / Assets / Script…). */
+function SceneWorkflowCard({ title, children }) {
+  return (
+    <div
+      className="scene-workflow-card panel"
+      style={{
+        marginBottom: 14,
+        padding: "12px 14px",
+        border: "1px solid var(--border-subtle, #333)",
+        borderRadius: 8,
+        background: "var(--panel-elevated, rgba(255,255,255,0.03))",
+      }}
+    >
+      <div
+        style={{
+          fontSize: "0.72rem",
+          fontWeight: 700,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "rgba(255,255,255,0.5)",
+          margin: "0 0 10px",
+        }}
+      >
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /**
  * Fal catalog video row: { endpoint_id, display_name, category? }.
  * Platform category: "text-to-video" | "image-to-video".
@@ -9938,216 +9968,24 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                 ),
               },
               {
-                id: "previewNarration",
-                  title: "Scene narration (audio)",
-                  tabShortTitle: "Narration",
-                  show: Boolean(projectId),
-                  info: (
-                    <>
-                      Queue TTS for <strong>every scene</strong> in this project that has narration text but no audio yet. Each scene gets its own job; progress shows in{" "}
-                      <strong>Background jobs</strong> below.
-                    </>
-                  ),
-                  children: (
-                    <div className="canvas-narration" style={{ marginTop: 0 }}>
-                      <p className="subtle" style={{ margin: "0 0 10px" }}>
-                        Audio for the selected scene (per-scene TTS).
-                      </p>
-                      <div className="audio-panel-actions" style={{ flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-                        <button
-                          type="button"
-                          disabled={busy || !projectId}
-                          onClick={async () => {
-                            if (!projectId) return;
-                            setBusy(true);
-                            setMessage("");
-                            setError("");
-                            try {
-                              const r = await api(`/v1/projects/${projectId}/narration/generate-all-scenes`, { method: "POST" });
-                              const b = await parseJson(r);
-                              if (!r.ok) throw new Error(apiErrorMessage(b));
-                              const d = b.data || {};
-                              setMessage(`Queued ${d.jobs_queued || 0} scene VO jobs (${d.scenes_skipped || 0} skipped).`);
-                            } catch (err) {
-                              setError(String(err.message || err));
-                            } finally {
-                              setBusy(false);
-                            }
-                          }}
-                        >
-                          Generate all scene VO
-                        </button>
-                      </div>
-                      {narrationPreviewSrc ? (
-                        <audio
-                          key={narrationPreviewSrc}
-                          className="canvas-narration-audio director-audio"
-                          controls
-                          src={narrationPreviewSrc}
-                        >
-                          {narrationPreviewIsSceneTrack &&
-                          sceneNarrationMeta?.has_subtitles &&
-                          selectedSceneId ? (
-                            <track
-                              kind="captions"
-                              srcLang="en"
-                              label="Narration"
-                              src={apiSceneNarrationSubtitlesUrl(
-                                selectedSceneId,
-                                sceneNarrationMeta.created_at || sceneNarrationMeta.track_id || "",
-                              )}
-                            />
-                          ) : null}
-                        </audio>
-                      ) : (
-                        <p className="subtle" style={{ margin: 0, fontSize: "0.85rem" }}>
-                          Select a scene with generated VO to preview it here.
-                        </p>
-                      )}
-                    </div>
-                  ),
-                },
-                {
-                  id: "mediaJobs",
-                  title: "Background jobs",
-                  tabShortTitle: "Jobs",
-                  children: (
-                    <div className="subtle">
-                      <div
-                        title={celeryStatusDetail || undefined}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 10,
-                          marginBottom: 10,
-                          padding: "8px 10px",
-                          borderRadius: 6,
-                          background: celeryStatus === "online"
-                            ? "rgba(40,167,69,0.12)"
-                            : celeryStatus === "restarting"
-                              ? "rgba(255,193,7,0.12)"
-                              : "rgba(220,53,69,0.12)",
-                        }}
-                      >
-                        <span
-                          style={{
-                            width: 10,
-                            height: 10,
-                            borderRadius: "50%",
-                            flexShrink: 0,
-                            background: celeryStatus === "online"
-                              ? "#28a745"
-                              : celeryStatus === "restarting"
-                                ? "#ffc107"
-                                : "#dc3545",
-                            boxShadow: celeryStatus === "online"
-                              ? "0 0 6px rgba(40,167,69,0.6)"
-                              : celeryStatus === "restarting"
-                                ? "0 0 6px rgba(255,193,7,0.6)"
-                                : "0 0 6px rgba(220,53,69,0.6)",
-                          }}
-                        />
-                        <span style={{ fontWeight: 600, fontSize: "0.82rem" }}>
-                          Celery worker:{" "}
-                          {celeryStatus === "online"
-                            ? "Online"
-                            : celeryStatus === "restarting"
-                              ? "Restarting…"
-                              : celeryStatus === "unknown"
-                                ? "Checking…"
-                                : "Offline"}
-                        </span>
-                        {celeryWorkers.length > 0 && (
-                          <span className="subtle" style={{ fontSize: "0.7rem" }}>
-                            ({celeryWorkers.length} worker{celeryWorkers.length !== 1 ? "s" : ""})
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          className="secondary"
-                          style={{ marginLeft: "auto", fontSize: "0.75rem", padding: "3px 10px" }}
-                          disabled={celeryRestarting}
-                          onClick={() => {
-                            const ok = window.confirm(
-                              "Restart the Celery worker? Running tasks will be interrupted.",
-                            );
-                            if (ok) void restartCelery();
-                          }}
-                        >
-                          {celeryRestarting ? "Restarting…" : "Restart"}
-                        </button>
-                      </div>
-                      <p style={{ marginTop: 0 }}>
-                        Tracked in UI: {mediaJobId ? `${mediaJobId.slice(0, 8)}…` : "—"}
-                        {mediaPoll ? " (polling…)" : ""}
-                        {mediaJob?.status ? ` — ${friendlyRunStatus(mediaJob.status)}` : ""}
-                      </p>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, marginTop: 4 }}>
-                        <span style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.45)" }}>Job queue</span>
-                        <InfoTip>Queued and running work for this project (refreshes every few seconds). Job concurrency caps are off by default; cancel revokes the Celery task when possible.</InfoTip>
-                      </div>
-                      <div className="action-row" style={{ marginBottom: 10, alignItems: "center" }}>
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={busy}
-                          onClick={() => {
-                            const ok = window.confirm(
-                              "Cancel all queued jobs and agent runs, and purge the Celery queue? Running tasks are not stopped.",
-                            );
-                            if (ok) void clearTaskBacklog();
-                          }}
-                        >
-                          Clear queue backlog
-                        </button>
-                        <InfoTip>Cancels every <em>queued</em> job and agent run for this workspace, then purges pending Celery messages. Does <strong>not</strong> stop work already running on the worker.</InfoTip>
-                      </div>
-                      {activeJobsLoadErr ? <p className="err">{activeJobsLoadErr}</p> : null}
-                      {!projectId ? (
-                        <p className="subtle">Open a project to list jobs.</p>
-                      ) : activeProjectJobs.length === 0 ? (
-                        <p className="subtle">No queued or running jobs for this project.</p>
-                      ) : (
-                        <ul className="active-jobs-list" style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                          {activeProjectJobs.map((j) => (
-                            <li
-                              key={j.id}
-                              style={{
-                                display: "flex",
-                                flexWrap: "wrap",
-                                alignItems: "center",
-                                gap: 8,
-                                padding: "6px 0",
-                                borderBottom: "1px solid var(--border-subtle, #333)",
-                              }}
-                            >
-                              <span style={{ fontFamily: "monospace", fontSize: 12 }}>{String(j.id).slice(0, 8)}…</span>
-                              <span>{j.type}</span>
-                              <span>{friendlyRunStatus(j.status)}</span>
-                              <button
-                                type="button"
-                                className="secondary"
-                                style={{ marginLeft: "auto" }}
-                                onClick={() => void cancelBackgroundJob(j.id)}
-                              >
-                                Cancel
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      <p className="subtle" style={{ marginTop: 10, marginBottom: 0 }}>
-                        After a browser refresh, the app reloads the project and resumes polling active jobs from the API.
-                      </p>
-                    </div>
-                  ),
-                },
-                {
-                  id: "mediaGen",
-                  title: "Generate media",
-                  tabShortTitle: "Generate",
-                  show: Boolean(selectedScene),
-                  children: selectedScene ? (
+                id: "sceneMediaHub",
+                title: "Scene media workspace",
+                tabShortTitle: "Assets",
+                show: Boolean(projectId),
+                info: (
+                  <>
+                    Generate media, refine the image retry prompt, and manage this scene&apos;s gallery — together in one tab. Select a scene first.
+                  </>
+                ),
+                children: (
+                  <>
+                    {!projectId ? (
+                      <p className="subtle">Open a project to use scene media tools.</p>
+                    ) : !selectedScene ? (
+                      <p className="subtle">Select a scene in <strong>Scenes</strong> to generate media, edit prompts, and manage assets.</p>
+                    ) : (
+                      <>
+                        <SceneWorkflowCard title="Generate">
                     <>
                       {selectedNarrGuide ? (
                         <div style={{ marginBottom: 12 }}>
@@ -10275,14 +10113,8 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         </p>
                       ) : null}
                     </>
-                  ) : null,
-                },
-                {
-                  id: "retryPrompt",
-                  title: "Image prompt for retry",
-                  tabShortTitle: "Img prompt",
-                  show: Boolean(selectedScene),
-                  children: selectedScene ? (
+                        </SceneWorkflowCard>
+                        <SceneWorkflowCard title="Image prompt (retry)">
                     <>
                       <p className="subtle" style={{ margin: "0 0 6px" }}>
                         Pre-filled like <strong>Image</strong> above; edit the full prompt, then retry.
@@ -10313,225 +10145,8 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         </button>
                       </div>
                     </>
-                  ) : null,
-                },
-                {
-                  id: "retryVideoPrompt",
-                  title: "Video / motion prompt for retry",
-                  tabShortTitle: "Motion",
-                  show: Boolean(selectedScene),
-                  children: selectedScene ? (
-                    <>
-                      <p className="subtle" style={{ margin: "0 0 6px" }}>
-                        Motion and camera for generative video (zoom, pan, angle, pace). Pre-filled from{" "}
-                        <code>prompt_package_json.video_prompt</code> when the storyboard set it; edit and queue <strong>Retry video</strong>.{" "}
-                        <strong>Local still→video</strong> uses the same text for coarse Ken Burns / pan hints (e.g. &quot;zoom in&quot;, &quot;pan
-                        left&quot;).
-                      </p>
-                      <textarea rows={4} value={retryVideoPrompt} onChange={(e) => setRetryVideoPrompt(e.target.value)} />
-                      <div className="action-row">
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={busy}
-                          onClick={() =>
-                            postImage(selectedScene.id, "generate-video", {
-                              video_prompt_override: retryVideoPrompt.trim() || undefined,
-                              generation_tier: "preview",
-                            })
-                          }
-                        >
-                          Retry video
-                        </button>
-                      </div>
-                    </>
-                  ) : null,
-                },
-                {
-                  id: "scriptExcerpt",
-                  title: "Scene script (VO)",
-                  tabShortTitle: "Script",
-                  show: Boolean(selectedScene),
-                  children: selectedScene ? (
-                    <>
-                      <p className="subtle" style={{ margin: "0 0 6px" }}>
-                        Spoken narration for this beat. Saved to the server; used for image fallbacks, scene VO TTS, and exports. Video uses{" "}
-                        <code>video_prompt</code> in the scene package when present (storyboard / refine). Max 12k characters.
-                      </p>
-                      <textarea
-                        className="scene-script-excerpt scene-script-editor"
-                        rows={10}
-                        maxLength={12000}
-                        value={sceneNarrationDraft}
-                        onChange={(e) => {
-                          setSceneNarrationDraft(e.target.value);
-                          setSceneNarrationDirty(true);
-                        }}
-                        spellCheck
-                        aria-label="Scene narration script"
-                      />
-                      <div className="subtle" style={{ marginTop: 6, fontSize: "0.72rem" }}>
-                        {(() => {
-                          const words = narrationWordCount(sceneNarrationDraft);
-                          const readSec = Math.round((words / 125) * 60);
-                          const budget = Number(selectedScene?.planned_duration_sec) || 0;
-                          const diff = budget > 0 ? readSec - budget : 0;
-                          return (
-                            <>
-                              {words.toLocaleString()} words · ~{readSec}s read time
-                              {budget > 0 ? (
-                                diff > 3 ? (
-                                  <span style={{ marginLeft: 6, color: "var(--accent-err, #e05252)" }}>
-                                    ↑ {diff}s over budget ({budget}s)
-                                  </span>
-                                ) : diff < -3 ? (
-                                  <span style={{ marginLeft: 6, color: "var(--accent-warn, #c9a227)" }}>
-                                    ↓ {Math.abs(diff)}s under budget ({budget}s)
-                                  </span>
-                                ) : words > 0 ? (
-                                  <span style={{ marginLeft: 6, color: "var(--accent-ok, #4caf50)" }}>
-                                    ✓ On budget ({budget}s)
-                                  </span>
-                                ) : null
-                              ) : null}
-                              {sceneNarrationDirty ? (
-                                <span style={{ marginLeft: 8, color: "var(--accent-warn, #c9a227)" }}>Unsaved changes</span>
-                              ) : null}
-                            </>
-                          );
-                        })()}
-                      </div>
-                      <div
-                        className="panel"
-                        style={{
-                          marginTop: 10,
-                          padding: 10,
-                          background: "var(--panel-elevated, rgba(0,0,0,0.04))",
-                        }}
-                      >
-                        <p className="subtle" style={{ margin: "0 0 8px", fontSize: "0.85rem" }}>
-                          <strong>Expand script</strong> — lengthen the current text with the model. Set a rough sentence target
-                          and optional notes (facts to add, tone, pacing).
-                        </p>
-                        <div
-                          className="action-row"
-                          style={{ flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}
-                        >
-                          <label className="subtle" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
-                            Sentences (approx.)
-                            <input
-                              type="number"
-                              min={1}
-                              max={40}
-                              value={sceneVoExpandSentenceTarget}
-                              onChange={(e) => {
-                                const v = parseInt(e.target.value, 10);
-                                setSceneVoExpandSentenceTarget(Number.isFinite(v) ? Math.min(40, Math.max(1, v)) : 6);
-                              }}
-                              style={{ width: 80 }}
-                              aria-label="Target sentence count for expansion"
-                            />
-                          </label>
-                          <label
-                            className="subtle"
-                            style={{
-                              display: "flex",
-                              flexDirection: "column",
-                              gap: 4,
-                              flex: 1,
-                              minWidth: 160,
-                              fontSize: "0.85rem",
-                            }}
-                          >
-                            Expansion context (optional)
-                            <textarea
-                              rows={2}
-                              maxLength={2000}
-                              placeholder="e.g. Mention the year, add one human detail, keep sentences short…"
-                              value={sceneVoExpandContext}
-                              onChange={(e) => setSceneVoExpandContext(e.target.value)}
-                              style={{ width: "100%", minHeight: 44, resize: "vertical", fontSize: "0.85rem" }}
-                              aria-label="Optional context for script expansion"
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className="secondary"
-                            disabled={
-                              busy ||
-                              promptEnhanceVoBusy ||
-                              promptExpandVoBusy ||
-                              sceneNarrationSaving ||
-                              !String(sceneNarrationDraft || "").trim()
-                            }
-                            onClick={() => void expandSceneVoScript()}
-                            title="Call the text model to expand this scene’s narration"
-                          >
-                            {promptExpandVoBusy ? "Expanding…" : "Expand script"}
-                          </button>
-                        </div>
-                      </div>
-                      <div className="action-row" style={{ marginTop: 10, flexWrap: "wrap", gap: 8 }}>
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={
-                            busy ||
-                            promptEnhanceVoBusy ||
-                            promptExpandVoBusy ||
-                            sceneNarrationSaving ||
-                            !String(sceneNarrationDraft || "").trim()
-                          }
-                          onClick={() => void enhanceSceneVoFromStyle()}
-                          title="Rewrite narration to match the project narration style (e.g. question-and-answer structure from the style prompt)"
-                        >
-                          {promptEnhanceVoBusy ? "Improving…" : "Improve VO"}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={sceneNarrationSaving || !sceneNarrationDirty}
-                          onClick={() => void saveSceneNarrationDraft()}
-                        >
-                          Save narration
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={sceneNarrationSaving || !sceneNarrationDirty}
-                          onClick={() => revertSceneNarrationDraft()}
-                        >
-                          Revert
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={
-                            busy ||
-                            !selectedScene ||
-                            !(String(sceneNarrationDraft || "").trim().length >= 2)
-                          }
-                          onClick={() => {
-                            if (!selectedScene) return;
-                            void queueMediaJob(
-                              `/v1/scenes/${encodeURIComponent(selectedScene.id)}/narration/generate`,
-                              {},
-                              "Scene narration (VO) queued…",
-                            );
-                          }}
-                          title="Synthesize this scene’s script as audio for the final mix (per-scene timeline)."
-                        >
-                          Generate scene VO
-                        </button>
-                      </div>
-                    </>
-                  ) : null,
-                },
-                {
-                  id: "sceneAssets",
-                  title: "Assets for this scene",
-                  tabShortTitle: "Assets",
-                  show: Boolean(selectedScene),
-                  children: selectedScene ? (
+                        </SceneWorkflowCard>
+                        <SceneWorkflowCard title="Assets for this scene">
                     <>
                       <p className="subtle" style={{ margin: "0 0 8px" }}>
                         Rejected assets are hidden. Use Earlier / Later to set playback order for approved images in the rough cut.
@@ -10739,7 +10354,443 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         </div>
                       ) : null}
                     </>
-                  ) : null,
+                        </SceneWorkflowCard>
+                      </>
+                    )}
+                  </>
+                ),
+              },
+              {
+                id: "scriptAndVoice",
+                title: "Script & narration",
+                tabShortTitle: "Script",
+                show: Boolean(projectId),
+                info: (
+                  <>
+                    Spoken script, style tools, per-scene VO, and project-wide scene narration queue.
+                  </>
+                ),
+                children: (
+                  <>
+                    <SceneWorkflowCard title="Narration (audio)">
+                    <div className="canvas-narration" style={{ marginTop: 0 }}>
+                      <p className="subtle" style={{ margin: "0 0 10px" }}>
+                        Audio for the selected scene (per-scene TTS).
+                      </p>
+                      <div className="audio-panel-actions" style={{ flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                        <button
+                          type="button"
+                          disabled={busy || !projectId}
+                          onClick={async () => {
+                            if (!projectId) return;
+                            setBusy(true);
+                            setMessage("");
+                            setError("");
+                            try {
+                              const r = await api(`/v1/projects/${projectId}/narration/generate-all-scenes`, { method: "POST" });
+                              const b = await parseJson(r);
+                              if (!r.ok) throw new Error(apiErrorMessage(b));
+                              const d = b.data || {};
+                              setMessage(`Queued ${d.jobs_queued || 0} scene VO jobs (${d.scenes_skipped || 0} skipped).`);
+                            } catch (err) {
+                              setError(String(err.message || err));
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        >
+                          Generate all scene VO
+                        </button>
+                      </div>
+                      {narrationPreviewSrc ? (
+                        <audio
+                          key={narrationPreviewSrc}
+                          className="canvas-narration-audio director-audio"
+                          controls
+                          src={narrationPreviewSrc}
+                        >
+                          {narrationPreviewIsSceneTrack &&
+                          sceneNarrationMeta?.has_subtitles &&
+                          selectedSceneId ? (
+                            <track
+                              kind="captions"
+                              srcLang="en"
+                              label="Narration"
+                              src={apiSceneNarrationSubtitlesUrl(
+                                selectedSceneId,
+                                sceneNarrationMeta.created_at || sceneNarrationMeta.track_id || "",
+                              )}
+                            />
+                          ) : null}
+                        </audio>
+                      ) : (
+                        <p className="subtle" style={{ margin: 0, fontSize: "0.85rem" }}>
+                          Select a scene with generated VO to preview it here.
+                        </p>
+                      )}
+                    </div>
+                    </SceneWorkflowCard>
+                    {selectedScene ? (
+                      <SceneWorkflowCard title="Scene script (VO)">
+                    <>
+                      <p className="subtle" style={{ margin: "0 0 6px" }}>
+                        Spoken narration for this beat. Saved to the server; used for image fallbacks, scene VO TTS, and exports. Video uses{" "}
+                        <code>video_prompt</code> in the scene package when present (storyboard / refine). Max 12k characters.
+                      </p>
+                      <textarea
+                        className="scene-script-excerpt scene-script-editor"
+                        rows={10}
+                        maxLength={12000}
+                        value={sceneNarrationDraft}
+                        onChange={(e) => {
+                          setSceneNarrationDraft(e.target.value);
+                          setSceneNarrationDirty(true);
+                        }}
+                        spellCheck
+                        aria-label="Scene narration script"
+                      />
+                      <div className="subtle" style={{ marginTop: 6, fontSize: "0.72rem" }}>
+                        {(() => {
+                          const words = narrationWordCount(sceneNarrationDraft);
+                          const readSec = Math.round((words / 125) * 60);
+                          const budget = Number(selectedScene?.planned_duration_sec) || 0;
+                          const diff = budget > 0 ? readSec - budget : 0;
+                          return (
+                            <>
+                              {words.toLocaleString()} words · ~{readSec}s read time
+                              {budget > 0 ? (
+                                diff > 3 ? (
+                                  <span style={{ marginLeft: 6, color: "var(--accent-err, #e05252)" }}>
+                                    ↑ {diff}s over budget ({budget}s)
+                                  </span>
+                                ) : diff < -3 ? (
+                                  <span style={{ marginLeft: 6, color: "var(--accent-warn, #c9a227)" }}>
+                                    ↓ {Math.abs(diff)}s under budget ({budget}s)
+                                  </span>
+                                ) : words > 0 ? (
+                                  <span style={{ marginLeft: 6, color: "var(--accent-ok, #4caf50)" }}>
+                                    ✓ On budget ({budget}s)
+                                  </span>
+                                ) : null
+                              ) : null}
+                              {sceneNarrationDirty ? (
+                                <span style={{ marginLeft: 8, color: "var(--accent-warn, #c9a227)" }}>Unsaved changes</span>
+                              ) : null}
+                            </>
+                          );
+                        })()}
+                      </div>
+                      <div
+                        className="panel"
+                        style={{
+                          marginTop: 10,
+                          padding: 10,
+                          background: "var(--panel-elevated, rgba(0,0,0,0.04))",
+                        }}
+                      >
+                        <p className="subtle" style={{ margin: "0 0 8px", fontSize: "0.85rem" }}>
+                          <strong>Expand script</strong> — lengthen the current text with the model. Set a rough sentence target
+                          and optional notes (facts to add, tone, pacing).
+                        </p>
+                        <div
+                          className="action-row"
+                          style={{ flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}
+                        >
+                          <label className="subtle" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.85rem" }}>
+                            Sentences (approx.)
+                            <input
+                              type="number"
+                              min={1}
+                              max={40}
+                              value={sceneVoExpandSentenceTarget}
+                              onChange={(e) => {
+                                const v = parseInt(e.target.value, 10);
+                                setSceneVoExpandSentenceTarget(Number.isFinite(v) ? Math.min(40, Math.max(1, v)) : 6);
+                              }}
+                              style={{ width: 80 }}
+                              aria-label="Target sentence count for expansion"
+                            />
+                          </label>
+                          <label
+                            className="subtle"
+                            style={{
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 4,
+                              flex: 1,
+                              minWidth: 160,
+                              fontSize: "0.85rem",
+                            }}
+                          >
+                            Expansion context (optional)
+                            <textarea
+                              rows={2}
+                              maxLength={2000}
+                              placeholder="e.g. Mention the year, add one human detail, keep sentences short…"
+                              value={sceneVoExpandContext}
+                              onChange={(e) => setSceneVoExpandContext(e.target.value)}
+                              style={{ width: "100%", minHeight: 44, resize: "vertical", fontSize: "0.85rem" }}
+                              aria-label="Optional context for script expansion"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={
+                              busy ||
+                              promptEnhanceVoBusy ||
+                              promptExpandVoBusy ||
+                              sceneNarrationSaving ||
+                              !String(sceneNarrationDraft || "").trim()
+                            }
+                            onClick={() => void expandSceneVoScript()}
+                            title="Call the text model to expand this scene’s narration"
+                          >
+                            {promptExpandVoBusy ? "Expanding…" : "Expand script"}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="action-row" style={{ marginTop: 10, flexWrap: "wrap", gap: 8 }}>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={
+                            busy ||
+                            promptEnhanceVoBusy ||
+                            promptExpandVoBusy ||
+                            sceneNarrationSaving ||
+                            !String(sceneNarrationDraft || "").trim()
+                          }
+                          onClick={() => void enhanceSceneVoFromStyle()}
+                          title="Rewrite narration to match the project narration style (e.g. question-and-answer structure from the style prompt)"
+                        >
+                          {promptEnhanceVoBusy ? "Improving…" : "Improve VO"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={sceneNarrationSaving || !sceneNarrationDirty}
+                          onClick={() => void saveSceneNarrationDraft()}
+                        >
+                          Save narration
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={sceneNarrationSaving || !sceneNarrationDirty}
+                          onClick={() => revertSceneNarrationDraft()}
+                        >
+                          Revert
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={
+                            busy ||
+                            !selectedScene ||
+                            !(String(sceneNarrationDraft || "").trim().length >= 2)
+                          }
+                          onClick={() => {
+                            if (!selectedScene) return;
+                            void queueMediaJob(
+                              `/v1/scenes/${encodeURIComponent(selectedScene.id)}/narration/generate`,
+                              {},
+                              "Scene narration (VO) queued…",
+                            );
+                          }}
+                          title="Synthesize this scene’s script as audio for the final mix (per-scene timeline)."
+                        >
+                          Generate scene VO
+                        </button>
+                      </div>
+                    </>
+                      </SceneWorkflowCard>
+                    ) : (
+                      <p className="subtle" style={{ marginTop: 8 }}>
+                        Select a scene to edit its script, save, and generate per-scene VO.
+                      </p>
+                    )}
+                  </>
+                ),
+              },
+              {
+                id: "retryVideoPrompt",
+                title: "Video & motion",
+                tabShortTitle: "Motion",
+                show: Boolean(projectId),
+                info: (
+                  <>
+                    Motion and camera for generative video (and still→video). Select a scene to edit.
+                  </>
+                ),
+                children: (
+                  <>
+                    {selectedScene ? (
+                      <SceneWorkflowCard title="Motion & video prompt">
+                    <>
+                      <p className="subtle" style={{ margin: "0 0 6px" }}>
+                        Motion and camera for generative video (zoom, pan, angle, pace). Pre-filled from{" "}
+                        <code>prompt_package_json.video_prompt</code> when the storyboard set it; edit and queue <strong>Retry video</strong>.{" "}
+                        <strong>Local still→video</strong> uses the same text for coarse Ken Burns / pan hints (e.g. &quot;zoom in&quot;, &quot;pan
+                        left&quot;).
+                      </p>
+                      <textarea rows={4} value={retryVideoPrompt} onChange={(e) => setRetryVideoPrompt(e.target.value)} />
+                      <div className="action-row">
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={busy}
+                          onClick={() =>
+                            postImage(selectedScene.id, "generate-video", {
+                              video_prompt_override: retryVideoPrompt.trim() || undefined,
+                              generation_tier: "preview",
+                            })
+                          }
+                        >
+                          Retry video
+                        </button>
+                      </div>
+                    </>
+                      </SceneWorkflowCard>
+                    ) : (
+                      <p className="subtle">Select a scene to edit video/motion prompts.</p>
+                    )}
+                  </>
+                ),
+              },
+                {
+                  id: "mediaJobs",
+                  title: "Background jobs",
+                  tabShortTitle: "Jobs",
+                  children: (
+                    <div className="subtle">
+                      <div
+                        title={celeryStatusDetail || undefined}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          marginBottom: 10,
+                          padding: "8px 10px",
+                          borderRadius: 6,
+                          background: celeryStatus === "online"
+                            ? "rgba(40,167,69,0.12)"
+                            : celeryStatus === "restarting"
+                              ? "rgba(255,193,7,0.12)"
+                              : "rgba(220,53,69,0.12)",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: "50%",
+                            flexShrink: 0,
+                            background: celeryStatus === "online"
+                              ? "#28a745"
+                              : celeryStatus === "restarting"
+                                ? "#ffc107"
+                                : "#dc3545",
+                            boxShadow: celeryStatus === "online"
+                              ? "0 0 6px rgba(40,167,69,0.6)"
+                              : celeryStatus === "restarting"
+                                ? "0 0 6px rgba(255,193,7,0.6)"
+                                : "0 0 6px rgba(220,53,69,0.6)",
+                          }}
+                        />
+                        <span style={{ fontWeight: 600, fontSize: "0.82rem" }}>
+                          Celery worker:{" "}
+                          {celeryStatus === "online"
+                            ? "Online"
+                            : celeryStatus === "restarting"
+                              ? "Restarting…"
+                              : celeryStatus === "unknown"
+                                ? "Checking…"
+                                : "Offline"}
+                        </span>
+                        {celeryWorkers.length > 0 && (
+                          <span className="subtle" style={{ fontSize: "0.7rem" }}>
+                            ({celeryWorkers.length} worker{celeryWorkers.length !== 1 ? "s" : ""})
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          className="secondary"
+                          style={{ marginLeft: "auto", fontSize: "0.75rem", padding: "3px 10px" }}
+                          disabled={celeryRestarting}
+                          onClick={() => {
+                            const ok = window.confirm(
+                              "Restart the Celery worker? Running tasks will be interrupted.",
+                            );
+                            if (ok) void restartCelery();
+                          }}
+                        >
+                          {celeryRestarting ? "Restarting…" : "Restart"}
+                        </button>
+                      </div>
+                      <p style={{ marginTop: 0 }}>
+                        Tracked in UI: {mediaJobId ? `${mediaJobId.slice(0, 8)}…` : "—"}
+                        {mediaPoll ? " (polling…)" : ""}
+                        {mediaJob?.status ? ` — ${friendlyRunStatus(mediaJob.status)}` : ""}
+                      </p>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, marginTop: 4 }}>
+                        <span style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.45)" }}>Job queue</span>
+                        <InfoTip>Queued and running work for this project (refreshes every few seconds). Job concurrency caps are off by default; cancel revokes the Celery task when possible.</InfoTip>
+                      </div>
+                      <div className="action-row" style={{ marginBottom: 10, alignItems: "center" }}>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={busy}
+                          onClick={() => {
+                            const ok = window.confirm(
+                              "Cancel all queued jobs and agent runs, and purge the Celery queue? Running tasks are not stopped.",
+                            );
+                            if (ok) void clearTaskBacklog();
+                          }}
+                        >
+                          Clear queue backlog
+                        </button>
+                        <InfoTip>Cancels every <em>queued</em> job and agent run for this workspace, then purges pending Celery messages. Does <strong>not</strong> stop work already running on the worker.</InfoTip>
+                      </div>
+                      {activeJobsLoadErr ? <p className="err">{activeJobsLoadErr}</p> : null}
+                      {!projectId ? (
+                        <p className="subtle">Open a project to list jobs.</p>
+                      ) : activeProjectJobs.length === 0 ? (
+                        <p className="subtle">No queued or running jobs for this project.</p>
+                      ) : (
+                        <ul className="active-jobs-list" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                          {activeProjectJobs.map((j) => (
+                            <li
+                              key={j.id}
+                              style={{
+                                display: "flex",
+                                flexWrap: "wrap",
+                                alignItems: "center",
+                                gap: 8,
+                                padding: "6px 0",
+                                borderBottom: "1px solid var(--border-subtle, #333)",
+                              }}
+                            >
+                              <span style={{ fontFamily: "monospace", fontSize: 12 }}>{String(j.id).slice(0, 8)}…</span>
+                              <span>{j.type}</span>
+                              <span>{friendlyRunStatus(j.status)}</span>
+                              <button
+                                type="button"
+                                className="secondary"
+                                style={{ marginLeft: "auto" }}
+                                onClick={() => void cancelBackgroundJob(j.id)}
+                              >
+                                Cancel
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <p className="subtle" style={{ marginTop: 10, marginBottom: 0 }}>
+                        After a browser refresh, the app reloads the project and resumes polling active jobs from the API.
+                      </p>
+                    </div>
+                  ),
                 },
               ]}
           />
