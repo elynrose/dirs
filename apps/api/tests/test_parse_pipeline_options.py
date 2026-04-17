@@ -57,11 +57,12 @@ def test_pipeline_speed_demo_fast_expands_and_strips_key():
     assert out["min_scene_videos"] == 1
 
 
-def test_pipeline_speed_demo_fast_user_min_images_wins():
+def test_pipeline_speed_demo_fast_preset_wins_over_duplicate_scene_media_keys():
+    """Workspace + client often send both explicit min_scene_* and pipeline_speed; preset must apply."""
     out = apply_pipeline_speed_for_persist(
         {"pipeline_speed": "demo_fast", "min_scene_images": 4, "through": "full_video"},
     )
-    assert out["min_scene_images"] == 4
+    assert out["min_scene_images"] == 1
     assert out["auto_generate_scene_videos"] is False
 
 

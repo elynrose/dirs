@@ -212,7 +212,9 @@ def parse_pipeline_options(raw: Any) -> tuple[bool, str, bool]:
 def apply_pipeline_speed_for_persist(raw: dict[str, Any]) -> dict[str, Any]:
     """Expand ``pipeline_speed`` into concrete tail options before persistence.
 
-    User-provided keys (except ``pipeline_speed``) override preset defaults.
+    When ``pipeline_speed`` is ``demo_fast`` or ``production_heavy``, the preset controls
+    ``auto_generate_scene_*`` and ``min_scene_*`` for the automation tail. Other keys from the
+    client (e.g. ``through``, ``unattended``) still apply.
 
     - ``demo_fast``: one still per scene, no auto scene videos (faster remote demos).
     - ``production_heavy``: two stills and two clips per scene when generation flags allow.
@@ -243,7 +245,8 @@ def apply_pipeline_speed_for_persist(raw: dict[str, Any]) -> dict[str, Any]:
             "min_scene_images": 2,
             "min_scene_videos": 2,
         }
-    merged = {**defaults, **user}
+    # Preset must win over duplicate scene-media keys sent with the same payload (workspace mirrors).
+    merged = {**user, **defaults}
     merged["_applied_pipeline_speed"] = ps
     return merged
 

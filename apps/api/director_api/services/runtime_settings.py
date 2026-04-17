@@ -195,6 +195,9 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             clean.pop("agent_run_auto_images_max_concurrency", None)
     if "agent_run_abort_on_auto_video_failure" in clean:
         clean["agent_run_abort_on_auto_video_failure"] = bool(clean["agent_run_abort_on_auto_video_failure"])
+    if "agent_run_pipeline_speed" in clean:
+        v = str(clean["agent_run_pipeline_speed"]).strip().lower()
+        clean["agent_run_pipeline_speed"] = v if v in ("demo_fast", "production_heavy") else "standard"
     if "studio_default_mix_music_volume" in clean:
         try:
             fv = float(clean["studio_default_mix_music_volume"])

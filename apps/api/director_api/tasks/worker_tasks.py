@@ -34,6 +34,7 @@ from typing import Any
 
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import delete, desc, func, or_, select
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from director_api.agents import phase2_llm, phase3_llm, phase4_llm
@@ -2124,7 +2125,9 @@ def _run_agent_full_pipeline_tail(
                 return "fail"
             if isinstance(out, dict) and out.get("stopped"):
                 return "stop"
-            aid_s = out.get("asset_id")
+            if not _phase3_scene_still_job_succeeded(out, db):
+                return "fail"
+            aid_s = out.get("asset_id") if isinstance(out, dict) else None
             if aid_s:
                 ast = db.get(Asset, uuid.UUID(str(aid_s)))
                 if ast and ast.status == "succeeded" and ast.approved_at is None:
@@ -2163,7 +2166,21 @@ def _run_agent_full_pipeline_tail(
                     return "fail"
                 if isinstance(out, dict) and out.get("stopped"):
                     return "stop"
-                aid_s = out.get("asset_id")
+                if not _phase3_scene_still_job_succeeded(out, tdb):
+                    try:
+                        tdb.commit()
+                    except Exception as e:  # noqa: BLE001
+                        log.warning(
+                            "auto_pipeline_image_thread_commit_failed",
+                            scene_id=str(scene_id),
+                            error=str(e)[:400],
+                        )
+                        try:
+                            tdb.rollback()
+                        except Exception:
+                            pass
+                    return "fail"
+                aid_s = out.get("asset_id") if isinstance(out, dict) else None
                 if aid_s:
                     ast = tdb.get(Asset, uuid.UUID(str(aid_s)))
                     if ast and ast.status == "succeeded" and ast.approved_at is None:
@@ -4113,6 +4130,31 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
         order_index=next_idx,
     )
     return {"scene_id": str(new_id)}
+
+
+def _phase3_scene_still_job_succeeded(out: Any, db: Session) -> bool:
+    """True when scene_generate_image produced a usable succeeded image (not failed/stopped)."""
+    if not isinstance(out, dict):
+        return False
+    if out.get("stopped"):
+        return False
+    o = out.get("ok")
+    if o is False:
+        return False
+    if o is True:
+        return True
+    aid = out.get("asset_id")
+    if not aid:
+        return False
+    try:
+        ast = db.get(Asset, uuid.UUID(str(aid)))
+    except Exception:
+        return False
+    return bool(
+        ast is not None
+        and getattr(ast, "asset_type", None) == "image"
+        and ast.status == "succeeded"
+    )
 
 
 def _phase3_image_generate(db, job: Job) -> dict[str, Any]:

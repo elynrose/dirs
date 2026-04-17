@@ -437,6 +437,11 @@ class Settings(BaseSettings):
     )
     # When false (default), automated scene video failures after retries do not abort the agent run — narration and timeline continue.
     agent_run_abort_on_auto_video_failure: bool = False
+    # Merged server-side into pipeline_options on full-video tails (demo_fast / production_heavy).
+    agent_run_pipeline_speed: str = Field(
+        default="standard",
+        description="Automation tail preset: standard, demo_fast, or production_heavy.",
+    )
     # Studio → Background music & final mix: default slider values (persisted via PATCH /v1/settings).
     studio_default_mix_music_volume: float | None = Field(default=None, ge=0.0, le=1.0)
     studio_default_mix_narration_volume: float | None = Field(default=None, ge=0.0, le=4.0)
