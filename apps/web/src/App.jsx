@@ -1321,6 +1321,10 @@ export default function App() {
   /** Scene script expand: approximate sentence count + optional user hints for the LLM. */
   const [sceneVoExpandSentenceTarget, setSceneVoExpandSentenceTarget] = useState(6);
   const [sceneVoExpandContext, setSceneVoExpandContext] = useState("");
+  /** idle | recording | saving — browser MediaRecorder for scene VO upload */
+  const [sceneVoRecordPhase, setSceneVoRecordPhase] = useState("idle");
+  const sceneVoRecorderRef = useRef(null);
+  const sceneVoMediaChunksRef = useRef([]);
   const [mediaJobId, setMediaJobId] = useState(() => UI_BOOT.mediaJobId);
   const [mediaPoll, setMediaPoll] = useState(() => UI_BOOT.mediaPoll);
   const [lastHandledMediaJobId, setLastHandledMediaJobId] = useState("");
@@ -5591,6 +5595,95 @@ export default function App() {
     projectId,
     refreshPhase5Readiness,
   ]);
+
+  const uploadRecordedSceneVo = useCallback(
+    async (blob) => {
+      const sid = String(selectedSceneId || "").trim();
+      if (!sid || !blob?.size) {
+        setSceneVoRecordPhase("idle");
+        return;
+      }
+      setSceneVoRecordPhase("saving");
+      setError("");
+      try {
+        const fd = new FormData();
+        const name =
+          blob.type && String(blob.type).includes("webm")
+            ? "scene-vo.webm"
+            : blob.type && String(blob.type).includes("mp4")
+              ? "scene-vo.m4a"
+              : "scene-vo.webm";
+        fd.append("file", blob, name);
+        const r = await apiForm(`/v1/scenes/${encodeURIComponent(sid)}/narration/upload`, {
+          method: "POST",
+          body: fd,
+        });
+        const b = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(b));
+        void loadSceneNarrationMeta(sid);
+        if (chapterId) void loadPhase3Summary(chapterId);
+        if (projectId) void refreshPhase5Readiness({ reportError: false });
+        setMessage("Microphone VO saved for this scene (replaces previous scene narration audio).");
+      } catch (e) {
+        setError(formatUserFacingError(e));
+      } finally {
+        setSceneVoRecordPhase("idle");
+      }
+    },
+    [selectedSceneId, chapterId, loadSceneNarrationMeta, loadPhase3Summary, projectId, refreshPhase5Readiness],
+  );
+
+  const startSceneVoRecording = useCallback(async () => {
+    const sid = String(selectedSceneId || "").trim();
+    if (!sid) return;
+    setError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      sceneVoMediaChunksRef.current = [];
+      const mimeCandidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+      let mime = "";
+      for (const m of mimeCandidates) {
+        if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m)) {
+          mime = m;
+          break;
+        }
+      }
+      const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      mr.addEventListener("dataavailable", (ev) => {
+        if (ev.data && ev.data.size) sceneVoMediaChunksRef.current.push(ev.data);
+      });
+      mr.addEventListener("stop", () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const chunks = sceneVoMediaChunksRef.current;
+        sceneVoRecorderRef.current = null;
+        const blob = new Blob(chunks, { type: mr.mimeType || mime || "audio/webm" });
+        void uploadRecordedSceneVo(blob);
+      });
+      mr.start(250);
+      sceneVoRecorderRef.current = mr;
+      setSceneVoRecordPhase("recording");
+    } catch (e) {
+      const err = e && typeof e === "object" ? e : null;
+      setError(
+        err && "name" in err && err.name === "NotAllowedError"
+          ? "Microphone permission denied. Allow access in the browser to record."
+          : formatUserFacingError(e) || "Could not start recording.",
+      );
+    }
+  }, [selectedSceneId, uploadRecordedSceneVo]);
+
+  const stopSceneVoRecording = useCallback(() => {
+    const mr = sceneVoRecorderRef.current;
+    if (mr && mr.state === "recording") {
+      setSceneVoRecordPhase("saving");
+      try {
+        if (typeof mr.requestData === "function") mr.requestData();
+      } catch {
+        /* ignore */
+      }
+      mr.stop();
+    }
+  }, []);
 
   const enhanceRetryImagePrompt = useCallback(async () => {
     const sid = String(selectedSceneId || "").trim();
@@ -10601,6 +10694,46 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         >
                           Generate scene VO
                         </button>
+                      </div>
+                      <div
+                        className="panel"
+                        style={{
+                          marginTop: 12,
+                          padding: 10,
+                          background: "var(--panel-elevated, rgba(0,0,0,0.04))",
+                        }}
+                      >
+                        <p className="subtle" style={{ margin: "0 0 8px", fontSize: "0.85rem", lineHeight: 1.45 }}>
+                          <strong>Record microphone VO</strong> — alternative to TTS. Press <strong>Stop &amp; save</strong> to upload and replace
+                          this scene&apos;s narration audio (same as generated VO for the timeline). Max ~10 minutes. Requires mic permission.
+                        </p>
+                        <div className="action-row" style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={
+                              busy ||
+                              sceneVoRecordPhase === "saving" ||
+                              sceneVoRecordPhase === "recording" ||
+                              !selectedScene
+                            }
+                            onClick={() => void startSceneVoRecording()}
+                          >
+                            {sceneVoRecordPhase === "recording" ? "Recording…" : "Start recording"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || sceneVoRecordPhase !== "recording"}
+                            onClick={() => stopSceneVoRecording()}
+                          >
+                            Stop &amp; save
+                          </button>
+                          {sceneVoRecordPhase === "saving" ? (
+                            <span className="subtle" style={{ fontSize: "0.78rem" }}>
+                              Encoding &amp; uploading…
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                     </>
                       </SceneWorkflowCard>

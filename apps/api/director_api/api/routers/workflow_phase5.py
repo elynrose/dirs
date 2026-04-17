@@ -23,6 +23,7 @@ from director_api.api.idempotency import (
     store_idempotency,
 )
 from director_api.api.routers.workflow_phase3 import _chapter_or_404, _scene_or_404, file_response_local_media
+from director_api.services.scene_narration_mic_upload import save_scene_narration_from_microphone_upload
 from director_api.services.tenant_entitlements import assert_subtitles_allowed
 from director_api.api.schemas.phase5 import (
     ExportBundleBody,
@@ -683,6 +684,59 @@ def scene_narration_generate(
         response_body=response_body,
     )
     return JSONResponse(status_code=202, content=response_body)
+
+
+_SCENE_VO_UPLOAD_MAX_BYTES = 40 * 1024 * 1024
+
+
+@router.post("/scenes/{scene_id}/narration/upload")
+async def scene_narration_upload_microphone(
+    scene_id: UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Save recorded or uploaded audio as this scene's VO (``NarrationTrack``), replacing any existing track.
+
+    Browser ``MediaRecorder`` typically sends ``audio/webm``; the server transcodes to MP3. Max length ~600s.
+    """
+    sc = _scene_or_404(db, settings, scene_id)
+    ch = db.get(Chapter, sc.chapter_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
+    p = _project_or_404(db, settings, ch.project_id)
+
+    raw_parts: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _SCENE_VO_UPLOAD_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "TOO_LARGE", "message": f"upload exceeds {_SCENE_VO_UPLOAD_MAX_BYTES // (1024 * 1024)} MB"},
+            )
+        raw_parts.append(chunk)
+    raw = b"".join(raw_parts)
+
+    try:
+        out = save_scene_narration_from_microphone_upload(
+            db,
+            scene=sc,
+            project_id=p.id,
+            chapter_id=ch.id,
+            tenant_id=settings.default_tenant_id,
+            raw_bytes=raw,
+            original_filename=file.filename or "recording.webm",
+            settings=settings,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail={"code": "NARRATION_UPLOAD_INVALID", "message": str(e)}) from e
+
+    return {"data": out, "meta": meta}
 
 
 @router.post("/projects/{project_id}/narration/generate-all-scenes")
