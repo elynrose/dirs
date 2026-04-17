@@ -43,6 +43,12 @@ make worker
 # or: cd apps/api && celery -A director_api.tasks.celery_app worker -Q text,media,compile -l info
 ```
 
+Run **Celery beat** in another terminal so housekeeping runs (every **15 min**): stale **`Job`** rows → `director.reap_stale_jobs`, stale **`running` agent runs** → `director.reap_stale_agent_runs` (same window as env **`STALE_JOB_MINUTES`**, default **45**).
+
+```bash
+cd apps/api && celery -A director_api.tasks.celery_app beat -l info
+```
+
 **Agent runs** (`POST /v1/agent-runs`) and **async jobs** need a **healthy worker** and **Redis**. If the UI sticks on a step (e.g. **outline running**):
 
 1. Confirm `make worker` is running and logs show tasks like `director.run_agent_run` being received (not only `adapter_smoke`).

@@ -68,6 +68,7 @@ celery_app.conf.update(
         "director.run_phase3_job": {"queue": "media"},
         "director.run_phase5_job": {"queue": "compile"},
         "director.reap_stale_jobs": {"queue": "text"},
+        "director.reap_stale_agent_runs": {"queue": "text"},
     },
 
     **({"worker_pool": _worker_pool} if _worker_pool else {}),
@@ -80,6 +81,10 @@ if _settings.celery_eager:
 celery_app.conf.beat_schedule = {
     "reap-stale-jobs": {
         "task": "director.reap_stale_jobs",
+        "schedule": crontab(minute="*/15"),
+    },
+    "reap-stale-agent-runs": {
+        "task": "director.reap_stale_agent_runs",
         "schedule": crontab(minute="*/15"),
     },
 }
