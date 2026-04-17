@@ -81,6 +81,7 @@ make worker
 | `LOCAL_STORAGE_ROOT` | Filesystem asset root (default `./data/storage` repo-relative from cwd) |
 | `OPENAI_API_KEY` | Tier A smoke |
 | `OPENAI_TIMEOUT_SEC` | OpenAI HTTP timeout in seconds (default **120**); avoids hung agent-run steps |
+| `OPENAI_PROMPT_ENHANCE_TIMEOUT_SEC` | Cap for **Improve prompt / VO / Expand** scene endpoints (default **90**; never exceeds `OPENAI_TIMEOUT_SEC`) |
 | `OPENROUTER_API_KEY` | Tier A smoke |
 | `FAL_KEY` | Tier A smoke (image; may incur cost) |
 | `TAVILY_API_KEY` | Phase 2 research search provider |

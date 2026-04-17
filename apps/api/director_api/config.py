@@ -187,6 +187,16 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("openai_local_chat_max_tokens", "OPENAI_LOCAL_CHAT_MAX_TOKENS"),
     )
     openai_timeout_sec: float = 120.0
+    openai_prompt_enhance_timeout_sec: float = Field(
+        default=90.0,
+        ge=5.0,
+        le=600.0,
+        description="HTTP timeout (seconds) for synchronous scene prompt improve/expand endpoints; capped by openai_timeout_sec.",
+        validation_alias=AliasChoices(
+            "openai_prompt_enhance_timeout_sec",
+            "OPENAI_PROMPT_ENHANCE_TIMEOUT_SEC",
+        ),
+    )
     openai_tts_model: str = "tts-1"
     openai_tts_voice: str = "alloy"
 

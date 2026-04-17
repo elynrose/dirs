@@ -100,8 +100,21 @@ const STUDIO_PAGE_RAILS = [
 
 const STUDIO_PAGE_IDS = new Set(STUDIO_PAGE_RAILS.map((r) => r.id));
 
+/**
+ * Browser-side cap for synchronous prompt-improve LLM routes (server default ~90s via
+ * OPENAI_PROMPT_ENHANCE_TIMEOUT_SEC). Slightly higher so the API can return a JSON error first.
+ */
+const PROMPT_ENHANCE_API_TIMEOUT_MS = 110_000;
+
 /** In-app legal views (not shown in the primary rail). */
 const LEGAL_PAGE_IDS = new Set(["terms", "privacy", "copyright"]);
+
+function formatPromptEnhanceClientError(e) {
+  if (e && typeof e === "object" && e.name === "AbortError") {
+    return "That request timed out. Check OpenAI or LM Studio is reachable and API keys are set, then try again.";
+  }
+  return formatUserFacingError(e);
+}
 
 function normalizeDirectorActivePage(v) {
   const id = typeof v === "string" ? v.trim() : "";
@@ -5770,6 +5783,7 @@ export default function App() {
       const r = await api(`/v1/scenes/${encodeURIComponent(sid)}/prompt-enhance-image`, {
         method: "POST",
         body: JSON.stringify({ current_prompt: current }),
+        timeoutMs: PROMPT_ENHANCE_API_TIMEOUT_MS,
       });
       const b = await parseJson(r);
       if (!r.ok) throw new Error(apiErrorMessage(b));
@@ -5778,7 +5792,7 @@ export default function App() {
       setRetryPrompt(String(text).trim());
       setMessage("Image prompt improved with previous scene + character context.");
     } catch (e) {
-      setError(formatUserFacingError(e));
+      setError(formatPromptEnhanceClientError(e));
     } finally {
       setPromptEnhanceImageBusy(false);
     }
@@ -5798,6 +5812,7 @@ export default function App() {
       const r = await api(`/v1/scenes/${encodeURIComponent(sid)}/prompt-enhance-vo`, {
         method: "POST",
         body: JSON.stringify({ current_script: current }),
+        timeoutMs: PROMPT_ENHANCE_API_TIMEOUT_MS,
       });
       const b = await parseJson(r);
       if (!r.ok) throw new Error(apiErrorMessage(b));
@@ -5807,7 +5822,7 @@ export default function App() {
       setSceneNarrationDirty(true);
       setMessage("Narration rewritten to match project narration style.");
     } catch (e) {
-      setError(formatUserFacingError(e));
+      setError(formatPromptEnhanceClientError(e));
     } finally {
       setPromptEnhanceVoBusy(false);
     }
@@ -5834,6 +5849,7 @@ export default function App() {
       const r = await api(`/v1/scenes/${encodeURIComponent(sid)}/prompt-expand-vo`, {
         method: "POST",
         body: JSON.stringify(payload),
+        timeoutMs: PROMPT_ENHANCE_API_TIMEOUT_MS,
       });
       const b = await parseJson(r);
       if (!r.ok) throw new Error(apiErrorMessage(b));
@@ -5843,7 +5859,7 @@ export default function App() {
       setSceneNarrationDirty(true);
       setMessage("Narration expanded. Review and save if it reads well.");
     } catch (e) {
-      setError(formatUserFacingError(e));
+      setError(formatPromptEnhanceClientError(e));
     } finally {
       setPromptExpandVoBusy(false);
     }

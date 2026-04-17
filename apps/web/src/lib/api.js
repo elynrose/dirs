@@ -146,6 +146,16 @@ async function _detailCodeFrom401Response(response) {
  * @param {string} path — same as `api()` (e.g. `/v1/...`)
  * @param {Record<string, string>} mergedHeaders — headers actually sent on the request
  */
+function _mergedAbortSignal(userSignal, timeoutMs) {
+  if (timeoutMs == null || timeoutMs <= 0) return userSignal;
+  if (typeof AbortSignal === "undefined") return userSignal;
+  const t = typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(timeoutMs) : null;
+  if (!t) return userSignal;
+  if (!userSignal) return t;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([userSignal, t]);
+  return t;
+}
+
 async function _applySessionPolicyOn401(path, mergedHeaders, response) {
   if (
     response.status !== 401 ||
@@ -172,19 +182,22 @@ async function _applySessionPolicyOn401(path, mergedHeaders, response) {
 }
 
 export const api = (path, opts = {}) => {
-  const method = String(opts.method || "GET").toUpperCase();
+  const { timeoutMs, ...rest } = opts;
+  const method = String(rest.method || "GET").toUpperCase();
   const baseHeaders =
     method === "GET" || method === "HEAD" ? {} : { "Content-Type": "application/json" };
   const auth = directorAuthHeaders();
   const headers = {
     ...baseHeaders,
     ...auth,
-    ...(opts.headers || {}),
+    ...(rest.headers || {}),
   };
+  const signal = _mergedAbortSignal(rest.signal, timeoutMs);
   return fetch(apiPath(path), {
-    ...opts,
-    credentials: opts.credentials ?? "include",
+    ...rest,
+    credentials: rest.credentials ?? "include",
     headers,
+    signal,
   }).then((response) => _applySessionPolicyOn401(path, headers, response));
 };
 

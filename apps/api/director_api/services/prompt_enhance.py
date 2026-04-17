@@ -21,6 +21,13 @@ from director_api.services.character_prompt import character_bible_for_llm_conte
 from director_api.style_presets import effective_narration_style
 
 
+def _prompt_enhance_llm_timeout_sec(settings: Settings) -> float:
+    """Shorter cap for interactive Studio prompt improve (fails fast; bounded by global OpenAI timeout)."""
+    te = float(getattr(settings, "openai_prompt_enhance_timeout_sec", 90.0) or 90.0)
+    cap = float(getattr(settings, "openai_timeout_sec", 120.0) or 120.0)
+    return max(5.0, min(te, cap))
+
+
 def _previous_scene_in_chapter(db: Session, sc: Scene) -> Scene | None:
     return db.scalar(
         select(Scene)
@@ -61,6 +68,7 @@ def _chat_json_text_field(
     client = make_openai_client(settings)
     model = resolve_openai_compatible_chat_model(settings)
     local = openai_chat_targets_local_compatible_server(settings)
+    req_timeout = _prompt_enhance_llm_timeout_sec(settings)
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -70,6 +78,7 @@ def _chat_json_text_field(
         "messages": messages,
         "temperature": 0.35,
         "max_tokens": min(max_out_tokens, int(getattr(settings, "openai_local_chat_max_tokens", 8192) or 8192)),
+        "timeout": req_timeout,
     }
     if not local:
         kw["response_format"] = {"type": "json_object"}
@@ -122,7 +131,7 @@ def enhance_image_retry_prompt(
     if not ch:
         return None, "chapter not found"
     proj = db.get(Project, ch.project_id)
-    if not proj or proj.tenant_id != settings.default_tenant_id:
+    if not proj:
         return None, "project not found"
 
     prev = _previous_scene_in_chapter(db, sc)
@@ -166,7 +175,7 @@ def refine_bracket_visual_prompt_llm(
     if not ch:
         return None, "chapter not found"
     proj = db.get(Project, ch.project_id)
-    if not proj or proj.tenant_id != settings.default_tenant_id:
+    if not proj:
         return None, "project not found"
 
     prev = _previous_scene_in_chapter(db, sc)
@@ -214,7 +223,7 @@ def enhance_scene_vo_script(
     if not ch:
         return None, "chapter not found"
     proj = db.get(Project, ch.project_id)
-    if not proj or proj.tenant_id != settings.default_tenant_id:
+    if not proj:
         return None, "project not found"
 
     style_raw = (narration_style_prompt_override or "").strip()
@@ -263,7 +272,7 @@ def expand_scene_vo_script(
     if not ch:
         return None, "chapter not found"
     proj = db.get(Project, ch.project_id)
-    if not proj or proj.tenant_id != settings.default_tenant_id:
+    if not proj:
         return None, "project not found"
 
     n = max(1, min(40, int(target_sentence_count)))
