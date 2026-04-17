@@ -6498,6 +6498,22 @@ def _export_bundle(db, job: Job, settings: Any) -> dict[str, Any]:
     return {"bundle": bundle}
 
 
+def _append_timeline_export_warnings(tv: TimelineVersion, messages: list[str]) -> None:
+    """Persist user-visible export warnings on the timeline document (e.g. manifest-only rough cut)."""
+    msgs = [str(m).strip() for m in messages if m and str(m).strip()]
+    if not msgs:
+        return
+    tj: dict[str, Any] = dict(tv.timeline_json) if isinstance(tv.timeline_json, dict) else {}
+    existing = tj.get("export_warnings")
+    cur: list[str] = [str(x) for x in existing] if isinstance(existing, list) else []
+    for w in msgs:
+        if w not in cur:
+            cur.append(w)
+    tj["export_warnings"] = cur
+    tv.timeline_json = tj
+    flag_modified(tv, "timeline_json")
+
+
 def _rough_cut(
     db,
     job: Job,
@@ -6703,6 +6719,21 @@ def _rough_cut(
     elif manifest and settings.ffmpeg_compile_enabled:
         compile_meta = {"invoked": False, "reason": "ffmpeg_binary_not_found", "ffmpeg_bin": ffmpeg_bin}
 
+    export_warn: list[str] = []
+    if manifest and not settings.ffmpeg_compile_enabled:
+        export_warn.append(
+            "FFmpeg compile is disabled (ffmpeg_compile_enabled=false). "
+            "Only timeline manifest metadata was updated — no rough_cut.mp4 was produced. "
+            "Enable compile in workspace Settings or environment to generate an MP4."
+        )
+    elif manifest and settings.ffmpeg_compile_enabled and not shutil.which(ffmpeg_bin):
+        export_warn.append(
+            f"FFmpeg binary not found ({ffmpeg_bin!r} not on PATH). "
+            "Rough cut did not write rough_cut.mp4. Install ffmpeg or set FFMPEG_BIN."
+        )
+    if export_warn:
+        _append_timeline_export_warnings(tv, export_warn)
+
     tv.render_status = render_status
     tv.output_url = output_url
     return {
@@ -6711,6 +6742,7 @@ def _rough_cut(
         "manifest": manifest,
         "ffmpeg": compile_meta,
         "export_manifest": export_manifest,
+        "export_warnings": export_warn,
     }
 
 

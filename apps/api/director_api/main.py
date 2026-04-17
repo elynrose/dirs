@@ -35,6 +35,7 @@ from director_api.api.routers import (
 )
 from director_api.config import get_settings
 from director_api.logging_config import configure_logging
+from director_api.middleware.limit_request_body import LimitRequestBodyMiddleware
 from director_api.middleware.rate_limit import TenantRateLimitMiddleware
 from director_api.middleware.request_context import RequestContextMiddleware
 
@@ -135,6 +136,7 @@ app.add_middleware(
     expose_headers=["Accept-Ranges", "Content-Range", "Content-Length"],
 )
 app.add_middleware(RequestContextMiddleware)
+app.add_middleware(LimitRequestBodyMiddleware)
 app.add_middleware(TenantRateLimitMiddleware)
 app.include_router(health.router, prefix="/v1")
 app.include_router(admin_api.router, prefix="/v1")

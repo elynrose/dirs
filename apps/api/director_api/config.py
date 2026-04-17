@@ -130,6 +130,14 @@ class Settings(BaseSettings):
         le=200,
         validation_alias=AliasChoices("db_max_overflow", "DB_MAX_OVERFLOW"),
     )
+    # Reject JSON / form bodies larger than this when Content-Length is set (multipart uploads included).
+    api_max_request_body_bytes: int = Field(
+        default=64_000_000,
+        ge=4096,
+        le=500_000_000,
+        validation_alias=AliasChoices("api_max_request_body_bytes", "API_MAX_REQUEST_BODY_BYTES"),
+        description="Maximum request body size (bytes) for methods with a body; enforced via Content-Length header.",
+    )
     redis_url: str = "redis://localhost:6379/0"
 
     local_storage_root: str = ""

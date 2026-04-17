@@ -1345,6 +1345,8 @@ export default function App() {
   const [phase5ExportGateModal, setPhase5ExportGateModal] = useState(null);
   const [approveAllMediaBusy, setApproveAllMediaBusy] = useState(false);
   const [timelineVersionId, setTimelineVersionId] = useState(() => UI_BOOT.timelineVersionId);
+  /** From timeline_json.export_warnings (e.g. manifest-only rough cut when FFmpeg compile is off). */
+  const [timelineExportWarnings, setTimelineExportWarnings] = useState([]);
   const [musicBeds, setMusicBeds] = useState([]);
   const _mixVolInit = readStoredDefaultMixVolumes();
   const [mixMusicVol, setMixMusicVol] = useState(
@@ -1814,6 +1816,7 @@ export default function App() {
     setSceneAssetsFetchError(null);
     setTrimByScene({});
     setTimelineVersionId("");
+    setTimelineExportWarnings([]);
     setMediaJobId("");
     setMediaPoll(false);
     setCharactersJobId("");
@@ -2422,13 +2425,18 @@ export default function App() {
 
   const loadTimelineMixFields = useCallback(async () => {
     const tid = String(timelineVersionId || "").trim();
-    if (!tid) return;
+    if (!tid) {
+      setTimelineExportWarnings([]);
+      return;
+    }
     try {
       const r = await api(`/v1/timeline-versions/${encodeURIComponent(tid)}`);
       const b = await parseJson(r);
       if (!r.ok) return;
       const tj = b.data?.timeline_json;
       if (!tj || typeof tj !== "object") return;
+      const ew = tj.export_warnings;
+      setTimelineExportWarnings(Array.isArray(ew) ? ew.map((x) => String(x || "").trim()).filter(Boolean) : []);
       const { fbMm, fbMn } = resolveStudioMixFallbacks();
       setMixMusicVol(
         typeof tj.mix_music_volume === "number" ? tj.mix_music_volume : fbMm,
@@ -2760,23 +2768,36 @@ export default function App() {
   const loadProjects = useCallback(async (opts) => {
     const silent = Boolean(opts && typeof opts === "object" && opts.silent);
     try {
-      const r = await api("/v1/projects?limit=100");
-      const body = await parseJson(r);
-      if (r.ok) {
-        const next = body.data?.projects || [];
-        const snap = projectsPollSnapshotFromRows(next);
-        if (silent && snap === lastProjectsPollSnapshotRef.current) {
+      const pageLimit = 200;
+      let offset = 0;
+      let all = [];
+      let total = null;
+      for (;;) {
+        const r = await api(`/v1/projects?limit=${pageLimit}&offset=${offset}`);
+        const body = await parseJson(r);
+        if (!r.ok) {
+          if (!silent) {
+            setError(apiErrorMessage(body) || `Could not load projects (HTTP ${r.status}).`);
+            lastProjectsPollSnapshotRef.current = projectsPollSnapshotFromRows([]);
+            setProjects([]);
+          }
           return;
         }
-        lastProjectsPollSnapshotRef.current = snap;
-        setProjects(next);
+        const chunk = body.data?.projects || [];
+        if (total === null) {
+          const tc = body.data?.total_count;
+          total = typeof tc === "number" && Number.isFinite(tc) ? tc : chunk.length;
+        }
+        all = all.concat(chunk);
+        if (all.length >= total || chunk.length < pageLimit || offset > 100_000) break;
+        offset += pageLimit;
+      }
+      const snap = projectsPollSnapshotFromRows(all);
+      if (silent && snap === lastProjectsPollSnapshotRef.current) {
         return;
       }
-      if (!silent) {
-        setError(apiErrorMessage(body) || `Could not load projects (HTTP ${r.status}).`);
-        lastProjectsPollSnapshotRef.current = projectsPollSnapshotFromRows([]);
-        setProjects([]);
-      }
+      lastProjectsPollSnapshotRef.current = snap;
+      setProjects(all);
     } catch (e) {
       if (!silent) {
         const net =
@@ -6290,6 +6311,7 @@ export default function App() {
         setCriticReport(null);
         setPhase5Ready(null);
         setTimelineVersionId("");
+        setTimelineExportWarnings([]);
         setProjectCharacters([]);
       }
       await loadProjects();
@@ -6317,6 +6339,7 @@ export default function App() {
     setSceneAssetsFetchError(null);
     setTrimByScene({});
     setTimelineVersionId("");
+    setTimelineExportWarnings([]);
     setMediaJobId("");
     setMediaPoll(false);
     setCharactersJobId("");
@@ -11048,6 +11071,26 @@ export TELEGRAM_WEBHOOK_SECRET='…'
 
         <section className="panel timeline-panel">
           <h2>Timeline &amp; export</h2>
+          {Array.isArray(timelineExportWarnings) && timelineExportWarnings.length > 0 ? (
+            <div
+              className="panel"
+              role="status"
+              style={{
+                marginBottom: 12,
+                padding: "10px 12px",
+                border: "1px solid rgb(251 191 36 / 35%)",
+                background: "rgb(251 191 36 / 10%)",
+                borderRadius: 8,
+              }}
+            >
+              <strong style={{ display: "block", marginBottom: 6, fontSize: "0.85rem" }}>Export notice</strong>
+              <ul style={{ margin: 0, paddingLeft: "1.2rem", lineHeight: 1.5, fontSize: "0.82rem" }}>
+                {timelineExportWarnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <EditorCardColumn
             column="timeline"
             sections={[
