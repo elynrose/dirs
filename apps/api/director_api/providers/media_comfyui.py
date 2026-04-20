@@ -2,6 +2,9 @@
 
 **OSS** (default): ``/prompt``, ``/history/{id}``, ``/view``, ``/upload/image`` at ``COMFYUI_BASE_URL``.
 Optional ``COMFYUI_API_KEY`` → ``Authorization: Bearer …`` for gated proxies.
+When ``COMFYUI_USE_WEBSOCKET`` is true (default), a background ``/ws`` connection uses the same
+``client_id`` as ``/prompt`` to detect run completion and tighten ``/history`` polling (same pattern as
+https://9elements.com/blog/hosting-a-comfyui-workflow-via-api/).
 
 **Cloud** (``COMFYUI_API_FLAVOR=cloud``): Comfy Cloud uses ``/api/*`` routes and ``X-API-Key``; see
 https://docs.comfy.org/development/cloud/api-reference — default base ``https://cloud.comfy.org`` when URL is empty.
@@ -11,6 +14,8 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -19,6 +24,8 @@ from typing import Any
 import httpx
 
 from director_api.config import Settings
+
+log = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -63,6 +70,95 @@ def _upload_image_path(settings: Settings) -> str:
     return "/api/upload/image" if _is_cloud(settings) else "/upload/image"
 
 
+def _http_base_to_ws_base(base: str) -> str:
+    """``http(s)://host:port`` → ``ws(s)://host:port`` for ComfyUI ``/ws``."""
+    b = (base or "").strip().rstrip("/")
+    if b.startswith("https://"):
+        return "wss://" + b[len("https://") :]
+    if b.startswith("http://"):
+        return "ws://" + b[len("http://") :]
+    return b
+
+
+def _spawn_comfyui_ws_done_watcher(
+    base: str,
+    client_id: str,
+    prompt_id: str,
+    deadline: float,
+) -> threading.Event | None:
+    """Background thread: watch ``/ws`` until ComfyUI signals this ``prompt_id`` finished."""
+    try:
+        from websocket import WebSocket, WebSocketTimeoutException
+    except ImportError:
+        log.debug("comfyui_ws_unavailable", reason="websocket_client_not_installed")
+        return None
+
+    ev = threading.Event()
+
+    def _run() -> None:
+        ws: WebSocket | None = None
+        try:
+            remain_conn = min(15.0, max(2.0, deadline - time.monotonic()))
+            if remain_conn <= 0:
+                return
+            ws = WebSocket()
+            ws.connect(
+                f"{_http_base_to_ws_base(base)}/ws?clientId={client_id}",
+                timeout=remain_conn,
+            )
+            while time.monotonic() < deadline:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                ws.settimeout(min(4.0, rem))
+                try:
+                    raw = ws.recv()
+                except WebSocketTimeoutException:
+                    continue
+                except Exception:
+                    break
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") == "progress":
+                    data = msg.get("data")
+                    if isinstance(data, dict) and "value" in data and "max" in data:
+                        log.debug(
+                            "comfyui_sampler_progress",
+                            prompt_id=prompt_id,
+                            step=data.get("value"),
+                            max=data.get("max"),
+                        )
+                    continue
+                if msg.get("type") != "executing":
+                    continue
+                data = msg.get("data")
+                if not isinstance(data, dict):
+                    continue
+                if data.get("node") is not None:
+                    continue
+                if str(data.get("prompt_id") or "") != prompt_id:
+                    continue
+                ev.set()
+                break
+        except Exception as e:
+            log.debug("comfyui_ws_watcher_failed", error=str(e)[:400])
+        finally:
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_run, name="comfyui-ws", daemon=True).start()
+    return ev
+
+
 def _history_response_to_entry(hr: httpx.Response, prompt_id: str) -> dict[str, Any] | None:
     if hr.status_code != 200:
         return None
@@ -90,11 +186,21 @@ def _wait_for_history_entry(
     prompt_id: str,
     timeout: float,
     poll: float,
+    *,
+    client_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
     """Poll until workflow outputs are available. Returns (entry, error_code, detail)."""
     deadline = time.monotonic() + timeout
     cloud = _is_cloud(settings)
     last_hr: httpx.Response | None = None
+
+    ws_done: threading.Event | None = None
+    if (
+        not cloud
+        and (client_id or "").strip()
+        and bool(getattr(settings, "comfyui_use_websocket", True))
+    ):
+        ws_done = _spawn_comfyui_ws_done_watcher(base, client_id.strip(), prompt_id, deadline)
 
     if cloud:
         while time.monotonic() < deadline:
@@ -131,7 +237,10 @@ def _wait_for_history_entry(
                 entry = hist[prompt_id]
                 if isinstance(entry, dict):
                     return entry, None, None
-        time.sleep(poll)
+        sleep_for = poll
+        if ws_done is not None and ws_done.is_set():
+            sleep_for = min(poll, 0.25)
+        time.sleep(sleep_for)
     return None, "timeout", f"No history for prompt_id after {timeout:.0f}s"
 
 
@@ -205,6 +314,101 @@ def _inject_prompt(
             nnode.setdefault("inputs", {})[field] = neg[:8000]
     elif len(candidates) >= 2 and neg:
         workflow[candidates[1]].setdefault("inputs", {})[field] = neg[:8000]
+
+
+def _validate_workflow_nodes_in_graph(
+    workflow: dict[str, Any],
+    *,
+    prompt_node_id: str,
+    prompt_field: str,
+    negative_node_id: str,
+    load_image_node_id: str,
+    require_load_image: bool,
+) -> tuple[list[str], list[str]]:
+    """Validate API-export workflow JSON against configured node ids. Returns (errors, warnings)."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    field = (prompt_field or "text").strip() or "text"
+    p_nid = (prompt_node_id or "").strip()
+    if p_nid:
+        node = workflow.get(p_nid)
+        if not isinstance(node, dict):
+            errors.append(f"prompt_node_missing:{p_nid}")
+        else:
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict) or field not in inputs:
+                errors.append(f"prompt_node_missing_field:{p_nid}:{field}")
+    elif not _clip_text_encode_node_ids(workflow):
+        errors.append("no_clip_text_encode_for_auto_prompt_inject")
+
+    n_nid = (negative_node_id or "").strip()
+    if n_nid:
+        node = workflow.get(n_nid)
+        if not isinstance(node, dict):
+            errors.append(f"negative_node_missing:{n_nid}")
+        else:
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict) or field not in inputs:
+                errors.append(f"negative_node_missing_field:{n_nid}:{field}")
+
+    if require_load_image:
+        lid = (load_image_node_id or "").strip()
+        if not lid:
+            errors.append("load_image_node_id_required_when_comfyui_video_use_scene_image")
+        else:
+            node = workflow.get(lid)
+            if not isinstance(node, dict):
+                errors.append(f"load_image_node_missing:{lid}")
+            else:
+                inputs = node.get("inputs")
+                if not isinstance(inputs, dict) or "image" not in inputs:
+                    errors.append(f"load_image_node_no_image_input:{lid}")
+
+    return errors, warnings
+
+
+def _workflow_env_report_from_path(
+    role: str,
+    path: Path,
+    *,
+    prompt_node_id: str,
+    prompt_field: str,
+    negative_node_id: str,
+    load_image_node_id: str = "",
+    require_load_image: bool = False,
+) -> dict[str, Any]:
+    """Structured checks for adapter smoke / local ComfyUI env verification."""
+    out: dict[str, Any] = {
+        "role": role,
+        "path": str(path),
+        "ok": False,
+        "errors": [],
+        "warnings": [],
+    }
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+        wf = json.loads(raw_text)
+    except OSError as e:
+        out["errors"].append(f"read_failed:{e}")
+        return out
+    except json.JSONDecodeError as e:
+        out["errors"].append(f"invalid_json:{e}")
+        return out
+    if not isinstance(wf, dict):
+        out["errors"].append("workflow_root_not_object")
+        return out
+    errs, warns = _validate_workflow_nodes_in_graph(
+        wf,
+        prompt_node_id=prompt_node_id,
+        prompt_field=prompt_field,
+        negative_node_id=negative_node_id,
+        load_image_node_id=load_image_node_id,
+        require_load_image=require_load_image,
+    )
+    out["errors"] = errs
+    out["warnings"] = warns
+    out["ok"] = len(errs) == 0
+    return out
 
 
 _VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".mov", ".avi")
@@ -300,6 +504,56 @@ def smoke_image(settings: Settings) -> dict[str, Any]:
             "error": str(e),
             "base_url": base,
         }
+
+    img_field = (settings.comfyui_prompt_input_key or "text").strip() or "text"
+    img_env = _workflow_env_report_from_path(
+        "image",
+        wf_path,
+        prompt_node_id=settings.comfyui_prompt_node_id,
+        prompt_field=img_field,
+        negative_node_id=settings.comfyui_negative_node_id,
+        require_load_image=False,
+    )
+    video_env: dict[str, Any]
+    try:
+        vpath = _resolve_video_workflow_path(settings)
+    except FileNotFoundError:
+        video_env = {
+            "skipped": True,
+            "detail": "COMFYUI_VIDEO_WORKFLOW_JSON_PATH unset or file not found",
+        }
+    else:
+        v_field = (
+            (settings.comfyui_video_prompt_input_key or settings.comfyui_prompt_input_key or "text").strip()
+            or "text"
+        )
+        video_env = _workflow_env_report_from_path(
+            "video",
+            vpath,
+            prompt_node_id=settings.comfyui_video_prompt_node_id or settings.comfyui_prompt_node_id,
+            prompt_field=v_field,
+            negative_node_id=settings.comfyui_video_negative_node_id or settings.comfyui_negative_node_id,
+            load_image_node_id=settings.comfyui_video_load_image_node_id,
+            require_load_image=bool(settings.comfyui_video_use_scene_image),
+        )
+
+    workflow_env: dict[str, Any] = {"image": img_env, "video": video_env}
+    workflow_env_ok = bool(img_env.get("ok")) and (
+        bool(video_env.get("skipped")) or bool(video_env.get("ok"))
+    )
+
+    if not img_env.get("ok"):
+        return {
+            "configured": False,
+            "provider": "comfyui",
+            "error": "workflow_env_image_invalid",
+            "detail": "; ".join(img_env.get("errors") or []),
+            "base_url": base,
+            "workflow_path": str(wf_path),
+            "workflow_env": workflow_env,
+            "workflow_env_ok": False,
+        }
+
     ping = f"{base}/api/object_info" if _is_cloud(settings) else f"{base}/system_stats"
     try:
         with httpx.Client(timeout=8.0, headers=hdr) as client:
@@ -311,6 +565,8 @@ def smoke_image(settings: Settings) -> dict[str, Any]:
                     "base_url": base,
                     "api_flavor": "cloud" if _is_cloud(settings) else "oss",
                     "workflow_path": str(wf_path),
+                    "workflow_env": workflow_env,
+                    "workflow_env_ok": workflow_env_ok,
                     "error": f"http_{r.status_code}",
                     "detail": r.text[:400],
                 }
@@ -320,16 +576,28 @@ def smoke_image(settings: Settings) -> dict[str, Any]:
             "provider": "comfyui",
             "base_url": base,
             "api_flavor": "cloud" if _is_cloud(settings) else "oss",
+            "workflow_path": str(wf_path),
+            "workflow_env": workflow_env,
+            "workflow_env_ok": workflow_env_ok,
             "error": "request_failed",
             "detail": str(e)[:400],
         }
-    return {
+    out: dict[str, Any] = {
         "configured": True,
         "provider": "comfyui",
         "base_url": base,
         "api_flavor": "cloud" if _is_cloud(settings) else "oss",
         "workflow_path": str(wf_path),
+        "workflow_env": workflow_env,
+        "workflow_env_ok": workflow_env_ok,
     }
+    if not _is_cloud(settings):
+        out["comfyui_use_websocket"] = bool(getattr(settings, "comfyui_use_websocket", True))
+    if not workflow_env_ok and not video_env.get("skipped"):
+        out["workflow_env_warnings"] = [
+            "Video workflow env has errors; comfyui_wan may fail until COMFYUI_VIDEO_* node paths match the JSON.",
+        ]
+    return out
 
 
 def generate_scene_image_comfyui(
@@ -423,7 +691,7 @@ def generate_scene_image_comfyui(
                 return {"ok": False, "provider": "comfyui", "model": model, "error": "no_prompt_id"}
 
             entry, wait_err, wait_detail = _wait_for_history_entry(
-                http, settings, base, prompt_id, timeout, poll
+                http, settings, base, prompt_id, timeout, poll, client_id=client_id
             )
             if wait_err:
                 return {
@@ -682,7 +950,7 @@ def generate_scene_video_comfyui(
                 return {"ok": False, "provider": "comfyui_wan", "model": model, "error": "no_prompt_id"}
 
             entry, wait_err, wait_detail = _wait_for_history_entry(
-                http, settings, base, prompt_id, timeout, poll
+                http, settings, base, prompt_id, timeout, poll, client_id=client_id
             )
             if wait_err:
                 return {

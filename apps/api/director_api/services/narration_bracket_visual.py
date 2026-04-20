@@ -98,3 +98,26 @@ def video_text_prompt_from_scene_fields(
         )
     base = narr or purpose or visual_type or "cinematic documentary scene"
     return sanitize_jsonb_text(str(base)[:3000], 3000)
+
+
+def append_video_character_dialogue_to_prompt(
+    base: str,
+    *,
+    include_spoken_dialogue_in_video_prompt: bool,
+    video_character_dialogue: str | None,
+) -> str:
+    """When the project opts in and the scene has dialogue text, append a model-friendly ``saying: \"…\"`` fragment."""
+    if not include_spoken_dialogue_in_video_prompt:
+        return base
+    raw = video_character_dialogue if isinstance(video_character_dialogue, str) else ""
+    line = sanitize_jsonb_text(raw.strip(), 800)
+    if not line:
+        return base
+    inner = line.replace('"', "'")
+    suffix = f' saying: "{inner}"'
+    cap = 3000
+    if len(base) + len(suffix) <= cap:
+        return sanitize_jsonb_text(base + suffix, cap)
+    room = max(0, cap - len(suffix))
+    trimmed = base[:room] if room else ""
+    return sanitize_jsonb_text(trimmed + suffix, cap)

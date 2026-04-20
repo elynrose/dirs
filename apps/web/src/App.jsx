@@ -1355,6 +1355,9 @@ export default function App() {
   const retryPromptSceneRef = useRef(null);
   const [retryVideoPrompt, setRetryVideoPrompt] = useState("");
   const retryVideoPromptSceneRef = useRef(null);
+  const [sceneVideoCharacterDialogueDraft, setSceneVideoCharacterDialogueDraft] = useState("");
+  const [sceneVideoCharacterDialogueDirty, setSceneVideoCharacterDialogueDirty] = useState(false);
+  const sceneVideoDialogueSceneRef = useRef(null);
   /** Inline scene narration editor: sync draft when switching scene vs. when scenes[] reloads from API. */
   const scriptEditSceneIdRef = useRef("");
   const [sceneNarrationDraft, setSceneNarrationDraft] = useState("");
@@ -2101,6 +2104,8 @@ export default function App() {
   });
   /** When true, storyboard sync / reconcile / auto timeline add one clip per approved export-ready visual per scene. */
   const [useAllApprovedSceneMedia, setUseAllApprovedSceneMedia] = useState(false);
+  /** Project: append optional per-scene video_character_dialogue to generative video prompts (Veo-class). */
+  const [includeSpokenDialogueInVideoPrompt, setIncludeSpokenDialogueInVideoPrompt] = useState(false);
   /** Agent `through` when in auto mode: critics only vs full render tail. */
   const [autoThrough, setAutoThrough] = useState(() => {
     try {
@@ -2332,6 +2337,33 @@ export default function App() {
           nextBool
             ? "Use all approved scene media is on — Reconcile / export auto-heal use every approved still or video per scene (gallery order)."
             : "Use all approved scene media is off — one primary clip per scene when syncing the timeline.",
+        );
+      } catch (e) {
+        setError(formatUserFacingError(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId],
+  );
+
+  const saveIncludeSpokenDialogueInVideoPrompt = useCallback(
+    async (nextBool) => {
+      if (!projectId) return;
+      setBusy(true);
+      setError("");
+      try {
+        const r = await api(`/v1/projects/${encodeURIComponent(projectId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ include_spoken_dialogue_in_video_prompt: nextBool }),
+        });
+        const b = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(b));
+        setIncludeSpokenDialogueInVideoPrompt(Boolean(b.data?.include_spoken_dialogue_in_video_prompt));
+        setMessage(
+          nextBool
+            ? "Spoken dialogue in video prompts is on — add lines per scene under Video & motion when you want speech."
+            : "Spoken dialogue in video prompts is off — scene video prompts are visual-only.",
         );
       } catch (e) {
         setError(formatUserFacingError(e));
@@ -2746,6 +2778,48 @@ export default function App() {
       setSceneNarrationSaving(false);
     }
   }, [expandedScene, scenes, sceneNarrationDraft, sceneNarrationDirty]);
+
+  const saveSceneVideoCharacterDialogue = useCallback(async () => {
+    const sid = expandedScene || scenes[0]?.id || "";
+    if (!sid || !sceneVideoCharacterDialogueDirty) return;
+    setBusy(true);
+    setError("");
+    try {
+      const sc = scenes.find((s) => String(s.id) === String(sid));
+      const prev =
+        sc?.prompt_package_json && typeof sc.prompt_package_json === "object"
+          ? { ...sc.prompt_package_json }
+          : {};
+      const trimmed = sceneVideoCharacterDialogueDraft.trim();
+      if (trimmed) prev.video_character_dialogue = trimmed;
+      else delete prev.video_character_dialogue;
+      const r = await api(`/v1/scenes/${encodeURIComponent(sid)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ prompt_package_json: prev }),
+      });
+      const b = await parseJson(r);
+      if (!r.ok) throw new Error(apiErrorMessage(b));
+      const row = b.data;
+      setScenes((prevScenes) =>
+        prevScenes.map((s) => {
+          if (String(s.id) !== String(sid)) return s;
+          return { ...s, ...row, asset_count: row.asset_count ?? s.asset_count };
+        }),
+      );
+      setSceneVideoCharacterDialogueDirty(false);
+      setSceneVideoCharacterDialogueDraft(trimmed);
+      setMessage("Scene character dialogue saved.");
+    } catch (e) {
+      setError(formatUserFacingError(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    expandedScene,
+    scenes,
+    sceneVideoCharacterDialogueDraft,
+    sceneVideoCharacterDialogueDirty,
+  ]);
 
   const loadChapters = useCallback(async (pid) => {
     if (!pid) return;
@@ -3993,6 +4067,32 @@ export default function App() {
       setRetryVideoPrompt(baseVideoPromptFromScene(sc));
     }
   }, [expandedScene, scenes]);
+
+  useEffect(() => {
+    const sid = expandedScene || scenes[0]?.id || "";
+    if (!sid) {
+      setSceneVideoCharacterDialogueDraft("");
+      setSceneVideoCharacterDialogueDirty(false);
+      sceneVideoDialogueSceneRef.current = null;
+      return;
+    }
+    const switched = String(sceneVideoDialogueSceneRef.current) !== String(sid);
+    sceneVideoDialogueSceneRef.current = String(sid);
+    const sc = scenes.find((s) => String(s.id) === String(sid));
+    const pkg = sc?.prompt_package_json;
+    const v =
+      pkg && typeof pkg === "object" && typeof pkg.video_character_dialogue === "string"
+        ? pkg.video_character_dialogue
+        : "";
+    if (switched) {
+      setSceneVideoCharacterDialogueDraft(v);
+      setSceneVideoCharacterDialogueDirty(false);
+      return;
+    }
+    if (!sceneVideoCharacterDialogueDirty) {
+      setSceneVideoCharacterDialogueDraft(v);
+    }
+  }, [expandedScene, scenes, sceneVideoCharacterDialogueDirty]);
 
   useEffect(() => {
     const sid = expandedScene || scenes[0]?.id || "";
@@ -6120,6 +6220,7 @@ export default function App() {
       setRuntime(Number(p.target_runtime_minutes || 15));
       setFrameAspectRatio(p.frame_aspect_ratio === "9:16" ? "9:16" : "16:9");
       setUseAllApprovedSceneMedia(Boolean(p.use_all_approved_scene_media));
+      setIncludeSpokenDialogueInVideoPrompt(Boolean(p.include_spoken_dialogue_in_video_prompt));
 
       const cr = await api(`/v1/projects/${pe}/chapters`);
       const cb = await parseJson(cr);
@@ -10923,6 +11024,43 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                         left&quot;).
                       </p>
                       <textarea rows={4} value={retryVideoPrompt} onChange={(e) => setRetryVideoPrompt(e.target.value)} />
+                      {includeSpokenDialogueInVideoPrompt ? (
+                        <div
+                          className="panel"
+                          style={{
+                            marginTop: 12,
+                            padding: 10,
+                            background: "var(--panel-elevated, rgba(0,0,0,0.04))",
+                          }}
+                        >
+                          <p className="subtle" style={{ margin: "0 0 6px", fontSize: "0.85rem" }}>
+                            <strong>What the main character says</strong> (optional) — saved as{" "}
+                            <code>prompt_package_json.video_character_dialogue</code>. Appended to the video prompt as{" "}
+                            <code>saying: &quot;…&quot;</code> for models that generate speech in the same pass (e.g. Veo). Leave empty for silent
+                            scenes.
+                          </p>
+                          <textarea
+                            rows={2}
+                            maxLength={800}
+                            value={sceneVideoCharacterDialogueDraft}
+                            onChange={(e) => {
+                              setSceneVideoCharacterDialogueDraft(e.target.value);
+                              setSceneVideoCharacterDialogueDirty(true);
+                            }}
+                            placeholder='e.g. We need to leave now.'
+                            aria-label="Optional main character dialogue for generative video"
+                          />
+                          <div className="action-row" style={{ marginTop: 8 }}>
+                            <button
+                              type="button"
+                              disabled={busy || !sceneVideoCharacterDialogueDirty}
+                              onClick={() => void saveSceneVideoCharacterDialogue()}
+                            >
+                              Save character dialogue
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="action-row">
                         <button
                           type="button"
@@ -11336,6 +11474,30 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                             After review, include <strong>every</strong> approved image and video on each scene in the edit timeline (gallery order).
                             Applies to <strong>Reconcile timeline clips</strong>, export auto-heal, and <strong>Auto / hands-off</strong> timeline build.
                             Turn off to keep one primary clip per scene.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 12,
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        background: "var(--panel-elevated-bg, rgba(0,0,0,0.04))",
+                      }}
+                    >
+                      <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", fontSize: "0.85rem" }}>
+                        <input
+                          type="checkbox"
+                          checked={includeSpokenDialogueInVideoPrompt}
+                          disabled={busy || !projectId}
+                          onChange={(e) => void saveIncludeSpokenDialogueInVideoPrompt(e.target.checked)}
+                        />
+                        <span>
+                          <strong>Include spoken dialogue in video prompts</strong>
+                          <span className="subtle" style={{ display: "block", marginTop: 4, lineHeight: 1.45 }}>
+                            For video models that generate speech in the same pass (e.g. Google Veo). When on, optional per-scene lines under{" "}
+                            <strong>Video &amp; motion</strong> are appended to the scene video prompt. Leave scenes blank for silent shots.
                           </span>
                         </span>
                       </label>

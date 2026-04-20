@@ -52,6 +52,10 @@ class ProjectPatch(BaseModel):
     critic_policy_json: dict[str, Any] | None = None
     use_all_approved_scene_media: bool | None = None
     frame_aspect_ratio: FrameAspectRatio | None = None
+    include_spoken_dialogue_in_video_prompt: bool | None = Field(
+        default=None,
+        description="Append optional per-scene video_character_dialogue to generative video prompts (e.g. Veo).",
+    )
 
 
 class ProjectOut(BaseModel):
@@ -80,6 +84,7 @@ class ProjectOut(BaseModel):
     critic_policy_json: dict[str, Any] | None = None
     use_all_approved_scene_media: bool = False
     frame_aspect_ratio: str = "16:9"
+    include_spoken_dialogue_in_video_prompt: bool = False
     created_at: datetime
     updated_at: datetime
     # Populated on GET /v1/projects list when an automation run is active (queued / running / paused).

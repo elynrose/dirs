@@ -1,6 +1,7 @@
 """Tests for [bracket] narration visual hints."""
 
 from director_api.services.narration_bracket_visual import (
+    append_video_character_dialogue_to_prompt,
     base_image_prompt_from_scene_fields,
     extract_bracket_phrases,
     video_text_prompt_from_scene_fields,
@@ -49,3 +50,35 @@ def test_video_uses_brackets_when_no_video_prompt():
     )
     assert "volcano" in t.lower()
     assert "motion" in t.lower() or "documentary" in t.lower()
+
+
+def test_append_dialogue_off_unchanged():
+    base = "cinematic shot of a door"
+    out = append_video_character_dialogue_to_prompt(
+        base,
+        include_spoken_dialogue_in_video_prompt=False,
+        video_character_dialogue="Hello there",
+    )
+    assert out == base
+
+
+def test_append_dialogue_on_empty_line_unchanged():
+    base = "wide establishing shot"
+    out = append_video_character_dialogue_to_prompt(
+        base,
+        include_spoken_dialogue_in_video_prompt=True,
+        video_character_dialogue="   ",
+    )
+    assert out == base
+
+
+def test_append_dialogue_appends_saying():
+    base = "interior office"
+    out = append_video_character_dialogue_to_prompt(
+        base,
+        include_spoken_dialogue_in_video_prompt=True,
+        video_character_dialogue='We need to leave now.',
+    )
+    assert out.startswith(base)
+    assert 'saying:' in out
+    assert "We need to leave now." in out

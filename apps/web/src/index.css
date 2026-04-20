@@ -17,9 +17,15 @@ body {
 }
 
 #root {
+  /* Fill the padded body viewport so nested flex + min-height:0 scroll regions get a real height cap */
   min-height: calc(100vh - 28px);
+  height: calc(100vh - 28px);
+  max-height: calc(100vh - 28px);
+  height: calc(100dvh - 28px);
+  max-height: calc(100dvh - 28px);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .app-shell {
@@ -28,6 +34,7 @@ body {
   flex-direction: column;
   gap: 10px;
   min-height: 0;
+  overflow: hidden;
 }
 
 /* Login / public pricing — full-bleed background (see public/images/login-studio-bg.png) */
@@ -37,6 +44,9 @@ body:has(.studio-preauth-shell) {
 
 #root:has(.studio-preauth-shell) {
   min-height: 100vh;
+  height: auto;
+  max-height: none;
+  overflow: visible;
 }
 
 .studio-preauth-shell {
@@ -218,6 +228,7 @@ body:has(.studio-preauth-shell) {
   flex-direction: row;
   align-items: stretch;
   gap: 10px;
+  overflow: hidden;
 }
 
 .app-shell__main {
@@ -226,6 +237,7 @@ body:has(.studio-preauth-shell) {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* App footer — legal links + copyright */
@@ -728,6 +740,16 @@ body:has(.studio-preauth-shell) {
 .app-shell__main > .settings-page {
   flex: 1;
   min-height: 0;
+}
+
+/* Tall rail pages: keep the shell viewport-locked and scroll inside the panel */
+.app-shell__main > .legal-page,
+.app-shell__main > .account-page,
+.app-shell__main > .admin-console,
+.app-shell__main > .studio-error-boundary {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 /* Blender-style vertical tabs: sideways labels, narrow rail */

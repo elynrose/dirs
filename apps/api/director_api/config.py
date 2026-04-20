@@ -415,6 +415,17 @@ class Settings(BaseSettings):
             "COMFYUI_VIDEO_LOAD_IMAGE_NODE_ID",
         ),
     )
+    comfyui_use_websocket: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "comfyui_use_websocket",
+            "COMFYUI_USE_WEBSOCKET",
+        ),
+        description=(
+            "OSS ComfyUI only: connect to /ws with the same client_id as /prompt to detect run completion "
+            "and reduce blind /history polling (see ComfyUI WebSocket API)."
+        ),
+    )
 
     # ------------------------------------------------------------------
     # Research

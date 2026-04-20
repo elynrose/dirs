@@ -106,6 +106,7 @@ from director_api.services.llm_prompt_service import build_resolved_prompt_map
 from director_api.services.webhook_delivery import notify_job_terminal
 from director_api.services.narration_bracket_visual import (
     base_image_prompt_from_scene_fields,
+    append_video_character_dialogue_to_prompt,
     video_text_prompt_from_scene_fields,
 )
 from director_api.services.prompt_enhance import refine_bracket_visual_prompt_llm
@@ -880,14 +881,29 @@ def _resolve_phase3_video_text_prompt(
     pp: dict[str, Any],
     *,
     override: Any = None,
+    project: Project | None = None,
 ) -> str:
-    """Text sent to generative video models; optional job override, else package, else ``[bracket]`` hints, else VO/purpose."""
-    return video_text_prompt_from_scene_fields(
+    """Text sent to generative video models; optional job override, else package, else ``[bracket]`` hints, else VO/purpose.
+
+    When ``project.include_spoken_dialogue_in_video_prompt`` and ``pp["video_character_dialogue"]`` are set, appends a
+    ``saying: "…"`` fragment for native video+audio models (e.g. Veo).
+    """
+    base = video_text_prompt_from_scene_fields(
         narration_text=scene.narration_text,
         purpose=scene.purpose,
         visual_type=scene.visual_type,
         prompt_package_json=pp if isinstance(pp, dict) else {},
         video_prompt_override=override if isinstance(override, str) else None,
+    )
+    if project is None:
+        return base
+    dial = pp.get("video_character_dialogue") if isinstance(pp.get("video_character_dialogue"), str) else None
+    return append_video_character_dialogue_to_prompt(
+        base,
+        include_spoken_dialogue_in_video_prompt=bool(
+            getattr(project, "include_spoken_dialogue_in_video_prompt", False)
+        ),
+        video_character_dialogue=dial,
     )
 
 
@@ -4520,7 +4536,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
 
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
     base_video_text_prompt = _resolve_phase3_video_text_prompt(
-        scene, pp, override=payload.get("video_prompt_override")
+        scene, pp, override=payload.get("video_prompt_override"), project=project
     )
     payload_override = payload.get("video_provider")
     if isinstance(payload_override, str) and payload_override.strip():

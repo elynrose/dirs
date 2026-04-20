@@ -272,6 +272,7 @@ assign scene duration
 determine required asset types
 create prompts and references
 optional bracketed visual emphases in narration text (e.g. [subject]) for downstream image/video prompt control
+optional per-scene `prompt_package_json.video_character_dialogue` when the project has `include_spoken_dialogue_in_video_prompt`: appends a `saying: "..."` fragment to the scene video prompt for native video+audio models (e.g. Google Veo); leave blank per scene for silent shots
 
 Outputs:
 

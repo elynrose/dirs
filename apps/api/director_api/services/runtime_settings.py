@@ -212,6 +212,8 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             clean.pop("studio_default_mix_narration_volume", None)
     if "comfyui_video_use_scene_image" in clean:
         clean["comfyui_video_use_scene_image"] = bool(clean["comfyui_video_use_scene_image"])
+    if "comfyui_use_websocket" in clean:
+        clean["comfyui_use_websocket"] = bool(clean["comfyui_use_websocket"])
     if "comfyui_api_flavor" in clean:
         fv = str(clean["comfyui_api_flavor"]).strip().lower()
         clean["comfyui_api_flavor"] = "cloud" if fv in ("cloud", "comfy_cloud", "comfy-cloud") else "oss"

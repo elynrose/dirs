@@ -45,6 +45,11 @@ class Project(Base):
     # visual per scene (ordered by gallery sequence), not only a single primary still per scene.
     use_all_approved_scene_media: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
+    # When True, optional per-scene prompt_package_json.video_character_dialogue is appended to the video model prompt.
+    include_spoken_dialogue_in_video_prompt: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
