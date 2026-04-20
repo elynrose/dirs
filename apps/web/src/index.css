@@ -17,15 +17,12 @@ body {
 }
 
 #root {
-  /* Fill the padded body viewport so nested flex + min-height:0 scroll regions get a real height cap */
+  /* Match padded body; let the document scroll if a panel overflows (Apr 20 overflow:hidden + fixed
+     height clipped the studio vs short viewports). Nested panels still use min-height:0 + overflow:auto. */
   min-height: calc(100vh - 28px);
-  height: calc(100vh - 28px);
-  max-height: calc(100vh - 28px);
-  height: calc(100dvh - 28px);
-  max-height: calc(100dvh - 28px);
+  min-height: calc(100dvh - 28px);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 .app-shell {
@@ -34,7 +31,6 @@ body {
   flex-direction: column;
   gap: 10px;
   min-height: 0;
-  overflow: hidden;
 }
 
 /* Login / public pricing — full-bleed background (see public/images/login-studio-bg.png) */
@@ -44,9 +40,7 @@ body:has(.studio-preauth-shell) {
 
 #root:has(.studio-preauth-shell) {
   min-height: 100vh;
-  height: auto;
-  max-height: none;
-  overflow: visible;
+  min-height: 100dvh;
 }
 
 .studio-preauth-shell {
@@ -228,7 +222,6 @@ body:has(.studio-preauth-shell) {
   flex-direction: row;
   align-items: stretch;
   gap: 10px;
-  overflow: hidden;
 }
 
 .app-shell__main {
@@ -237,7 +230,6 @@ body:has(.studio-preauth-shell) {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 /* App footer — legal links + copyright */
@@ -1081,8 +1073,8 @@ h3 {
   min-height: 0;
   display: grid;
   grid-template-columns: var(--left-width, 300px) 1fr var(--right-width, 360px);
-  /* Tall main row (~2× former 360px floor), capped so short viewports don’t overflow */
-  grid-template-rows: minmax(min(960px, calc(100dvh - var(--bottom-height, 240px) - 42px)), 1fr) var(--bottom-height, 240px);
+  /* Tall main row: cap using grid height (not 100dvh) so nested layout matches #root/body insets */
+  grid-template-rows: minmax(min(960px, calc(100% - var(--bottom-height, 240px) - 10px)), 1fr) var(--bottom-height, 240px);
   grid-template-areas:
     "assets canvas inspector"
     "timeline timeline timeline";
