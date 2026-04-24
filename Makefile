@@ -1,4 +1,4 @@
-.PHONY: up down ps logs migrate api worker kill-api restart-local web-dev electron electron-pack
+.PHONY: up down ps logs migrate api worker kill-api restart-local web-dev web-deploy electron electron-pack
 
 SHELL := /bin/bash
 
@@ -8,6 +8,8 @@ DOTENV := $(ROOT)/.env
 # PEP 668 / Homebrew: use apps/api/.venv (create: cd apps/api && python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]").
 API_DIR := $(ROOT)/apps/api
 WEB_DIR := $(ROOT)/apps/web
+# Production static root for nginx (see scripts/nginx/directely.com.conf). Override: make web-deploy WEB_DEPLOY_ROOT=/other/path
+WEB_DEPLOY_ROOT ?= /var/www/directely
 # Load repo-root .env (absolute path). Use `{ }` (same shell), not `( )`, so exports persist.
 REPO_ENV := { set -a; [ -f "$(DOTENV)" ] && . "$(DOTENV)" || true; set +a; }
 
@@ -45,6 +47,13 @@ restart-local:
 
 web-dev:
 	cd "$(WEB_DIR)" && npm install && npm run dev
+
+web-deploy:
+	@test -d "$(WEB_DEPLOY_ROOT)" || { echo "web-deploy: WEB_DEPLOY_ROOT does not exist: $(WEB_DEPLOY_ROOT)"; exit 1; }
+	cd "$(WEB_DIR)" && rm -rf node_modules/.vite && npm run build
+	rsync -a --delete "$(WEB_DIR)/dist/" "$(WEB_DEPLOY_ROOT)/"
+	nginx -s reload
+	@echo "web-deploy: synced dist/ → $(WEB_DEPLOY_ROOT) (nginx reloaded)"
 
 ELECTRON_DIR := $(ROOT)/apps/electron
 
