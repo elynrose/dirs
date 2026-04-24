@@ -559,9 +559,16 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
   const runDbBackup = useCallback(async () => {
     setDbErr("");
     setDbMsg("");
+    const platformKey = (getAdminKey().trim() || keyInput.trim());
+    if (!platformKey) {
+      setDbErr(
+        "Paste DIRECTOR_ADMIN_API_KEY into the admin key field above and click Unlock. Database backup cannot use Studio session alone.",
+      );
+      return;
+    }
     setDbBusy(true);
     try {
-      const r = await adminFetch("/v1/admin/db/backup");
+      const r = await adminFetch("/v1/admin/db/backup", { headers: { "X-Director-Admin-Key": platformKey } });
       if (!r.ok) {
         const body = await parseJson(r).catch(() => ({}));
         setDbErr(apiErrorMessage(body) || `HTTP ${r.status}`);
@@ -585,7 +592,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     } finally {
       setDbBusy(false);
     }
-  }, [showToast]);
+  }, [keyInput, showToast]);
 
   const runDbRestore = useCallback(async () => {
     setDbErr("");
@@ -601,12 +608,23 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     ) {
       return;
     }
+    const platformKey = (getAdminKey().trim() || keyInput.trim());
+    if (!platformKey) {
+      setDbErr(
+        "Paste DIRECTOR_ADMIN_API_KEY into the admin key field above and click Unlock. Database restore cannot use Studio session alone.",
+      );
+      return;
+    }
     setDbBusy(true);
     try {
       const fd = new FormData();
       fd.set("confirm", restoreConfirm);
       fd.set("dump", restoreFile, restoreFile.name || "dump.sql");
-      const r = await adminFetch("/v1/admin/db/restore", { method: "POST", body: fd });
+      const r = await adminFetch("/v1/admin/db/restore", {
+        method: "POST",
+        body: fd,
+        headers: { "X-Director-Admin-Key": platformKey },
+      });
       const body = await parseJson(r).catch(() => ({}));
       if (!r.ok) {
         setDbErr(apiErrorMessage(body) || `HTTP ${r.status}`);
@@ -626,7 +644,7 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     } finally {
       setDbBusy(false);
     }
-  }, [restoreConfirm, restoreFile, showToast]);
+  }, [keyInput, restoreConfirm, restoreFile, showToast]);
 
   useEffect(() => {
     if (getAdminKey().trim()) {
@@ -1510,13 +1528,11 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
               <h3 style={{ margin: "0 0 8px", fontSize: "1rem" }}>PostgreSQL backup &amp; restore</h3>
               <p className="subtle" style={{ margin: "0 0 12px", fontSize: "0.88rem", lineHeight: 1.45 }}>
                 Uses <code className="mono">pg_dump</code> / <code className="mono">psql</code> on the API host against{" "}
-                <code className="mono">DATABASE_URL</code>. Backup and restore require{" "}
-                <strong>
-                  <code className="mono">X-Director-Admin-Key</code>
-                </strong>{" "}
-                (the same value as <code className="mono">DIRECTOR_ADMIN_API_KEY</code> in the server env) — paste it in
-                the admin key field above. Operators enable features with env flags (see <code className="mono">.env.example</code>
-                ).
+                <code className="mono">DATABASE_URL</code>. <strong>Backup and restore always require the shared</strong>{" "}
+                <code className="mono">DIRECTOR_ADMIN_API_KEY</code> value in the field above (even if you unlocked the
+                rest of Admin with your Studio login only). Paste the key, click Unlock, then use backup/restore — or
+                leave the key in the field; either works. Operators enable features with env flags (see{" "}
+                <code className="mono">.env.example</code>).
               </p>
               {dbStatus ? (
                 <ul className="subtle" style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: "0.85rem" }}>
