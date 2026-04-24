@@ -1538,13 +1538,29 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
               )}
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <div className="action-row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                  <button type="button" disabled={dbBusy || !dbStatus?.backup_enabled} onClick={() => void runDbBackup()}>
+                  <button
+                    type="button"
+                    disabled={dbBusy || !dbStatus?.backup_enabled || !dbStatus?.pg_dump_available}
+                    onClick={() => void runDbBackup()}
+                  >
                     {dbBusy ? "Working…" : "Download SQL backup"}
                   </button>
                   <span className="subtle" style={{ fontSize: "0.82rem" }}>
                     Plain SQL; may take several minutes for large databases.
                   </span>
                 </div>
+                {dbStatus && !dbStatus.backup_enabled ? (
+                  <p className="subtle" style={{ margin: 0, fontSize: "0.82rem" }}>
+                    Backup is off: set <code className="mono">DIRECTOR_ADMIN_DB_BACKUP_ENABLED=1</code> on the API host and restart the API.
+                  </p>
+                ) : null}
+                {dbStatus?.backup_enabled && !dbStatus?.pg_dump_available ? (
+                  <p className="subtle" style={{ margin: 0, fontSize: "0.82rem" }}>
+                    Install PostgreSQL client tools on the API host so <code className="mono">pg_dump</code> is on{" "}
+                    <code className="mono">PATH</code> (e.g. Debian/Ubuntu: <code className="mono">apt install postgresql-client</code>
+                    ), then restart the API.
+                  </p>
+                ) : null}
                 <hr style={{ border: 0, borderTop: "1px solid var(--border-subtle, #333)", margin: "4px 0" }} />
                 <p className="subtle" style={{ margin: 0, fontSize: "0.85rem", lineHeight: 1.45 }}>
                   <strong>Restore</strong> runs <code className="mono">psql -v ON_ERROR_STOP=1 -f</code> against the live DB.
