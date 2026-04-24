@@ -185,6 +185,9 @@ def _stream_copy_join(
 
     The concat list file is written inside the partials' parent directory (already a short
     temp path), so only the *output* path needs NT-staging consideration.
+
+    Output is **video only** (``-map 0:v:0`` + ``-an``): stock clips (e.g. Pexels) must never
+    contribute an audio stream here, even if a partial mistakenly contained one.
     """
     if not partials:
         raise FFmpegCompileError("_stream_copy_join: no input partials")
@@ -208,11 +211,19 @@ def _stream_copy_join(
         cmd = [
             ffmpeg_bin,
             "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", ffmpeg_argv_path(list_file),
-            "-c", "copy",
-            "-movflags", "+faststart",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            ffmpeg_argv_path(list_file),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            "-an",
+            "-movflags",
+            "+faststart",
             ffmpeg_argv_path(out_write),
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)

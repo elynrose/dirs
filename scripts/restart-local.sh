@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop and restart local Directely API + Celery worker + Celery beat. See --help.
+# Stop and restart local Directely API + Celery worker + Celery beat + Vite (Studio). See --help.
 
 set -euo pipefail
 
@@ -83,6 +83,16 @@ start_background() {
     echo "restart-local: warning — /v1/health not ready yet; check $RUN_DIR/director-api.log"
     exit 1
   fi
+
+  local web_dir="$ROOT/apps/web"
+  if [[ -f "$web_dir/package.json" ]] && command -v npm >/dev/null 2>&1; then
+    cd "$web_dir"
+    nohup npm run dev >>"$RUN_DIR/vite.log" 2>&1 &
+    echo $! >"$RUN_DIR/vite.pid"
+    echo "restart-local: Vite (npm run dev) PID $(cat "$RUN_DIR/vite.pid") → $RUN_DIR/vite.log"
+  else
+    echo "restart-local: skip Vite (need apps/web/package.json and npm on PATH)"
+  fi
 }
 
 usage() {
@@ -93,7 +103,7 @@ Stop/start local Directely API + Celery worker + beat (loads repo .env, uses app
   ./scripts/restart-local.sh --stop-only   Stop only
   ./scripts/restart-local.sh --help
 
-Logs & PIDs: .run/director-api.log, .run/director-worker.log, .run/director-beat.log, *.pid
+Logs & PIDs: .run/director-api.log, .run/director-worker.log, .run/director-beat.log, vite.log, *.pid
 Or: make restart-local
 
 Windows (PowerShell): scripts/restart-local.ps1 — or set CELERY_EAGER=true and run only the API.

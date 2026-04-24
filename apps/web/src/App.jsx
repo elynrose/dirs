@@ -69,6 +69,7 @@ import {
   SkeletonAssetGrid,
   SkeletonMediaCanvas,
 } from "./components/LoadingSkeleton.jsx";
+import { StudioIdeasPage } from "./components/StudioIdeasPage.jsx";
 import { StudioAuthPanel } from "./components/StudioAuthPanel.jsx";
 import { StudioUpgradeModal } from "./components/StudioUpgradeModal.jsx";
 import { StudioPanelErrorBoundary } from "./components/StudioPanelErrorBoundary.jsx";
@@ -87,6 +88,7 @@ import {
 
 /** Primary areas — vertical rail with sideways labels (Blender-style). Order matches former top tabs. */
 const STUDIO_PAGE_RAILS = [
+  { id: "ideas", label: "Ideas" },
   { id: "editor", label: "Editor" },
   { id: "chat", label: "Chat" },
   { id: "research_chapters", label: "Research & scripts" },
@@ -972,7 +974,7 @@ function resolveEffectiveAgentStepKey(run, opts = {}) {
   if (run.status === "queued") return "queued";
   if (run.status === "running" && pipelineStopRequested(run.pipeline_control_json)) return "pipeline";
   const evs = Array.isArray(run.steps_json) ? run.steps_json : [];
-  /** Prefer live `steps_json` over `current_step` — the worker may still hold a pre-tail latch (e.g. story_research_review) while the full-video tail runs auto_characters / auto_images / … */
+  /** Prefer live `steps_json` over `current_step` — the worker may still hold a pre-tail latch (e.g. story_research_review) while the full-video tail runs auto_characters / auto_narration / auto_images / … */
   const running = lastAgentEventWithStatus(evs, "running");
   if (run.status === "running" && running?.step) return running.step;
   /**
@@ -1323,6 +1325,8 @@ export default function App() {
   const [title, setTitle] = useState("Agent run — test");
   /** Locked to the open project after load; drives new agent-run brief before a project exists. */
   const [frameAspectRatio, setFrameAspectRatio] = useState("16:9");
+  /** Pexels / stock import fit: center_crop (fill, may cut edges) vs letterbox (pad). */
+  const [clipFrameFit, setClipFrameFit] = useState("center_crop");
   const [topic, setTopic] = useState(
     "Urban community gardens and neighborhood food security in one mid-size city.",
   );
@@ -1360,6 +1364,8 @@ export default function App() {
   const sceneVideoDialogueSceneRef = useRef(null);
   /** Inline scene narration editor: sync draft when switching scene vs. when scenes[] reloads from API. */
   const scriptEditSceneIdRef = useRef("");
+  /** Last ``narration_text`` applied from ``scenes[]`` for the expanded scene — detects server-side updates (automation). */
+  const lastServerNarrationForExpandedRef = useRef("");
   const [sceneNarrationDraft, setSceneNarrationDraft] = useState("");
   const [sceneNarrationDirty, setSceneNarrationDirty] = useState(false);
   const [sceneNarrationSaving, setSceneNarrationSaving] = useState(false);
@@ -1413,6 +1419,18 @@ export default function App() {
   const mixTimelineVolPersistTimerRef = useRef(null);
   const sceneClipFileInputRef = useRef(null);
   const [sceneClipUploadKind, setSceneClipUploadKind] = useState("auto");
+  /** Stock search in Assets tab: Pexels or Storyblocks (server proxies; API keys on server only). */
+  const [sceneStockLibrary, setSceneStockLibrary] = useState("pexels");
+  const [pexelsStockTab, setPexelsStockTab] = useState("photos");
+  const [pexelsSearchQuery, setPexelsSearchQuery] = useState("");
+  const [pexelsSearchResults, setPexelsSearchResults] = useState([]);
+  const [pexelsSearchBusy, setPexelsSearchBusy] = useState(false);
+  const [pexelsSearchErr, setPexelsSearchErr] = useState("");
+  const [pexelsImportKey, setPexelsImportKey] = useState("");
+  /** When set, Studio asks how to trim a long / unknown-length stock video before import. */
+  const [stockVideoTrimModal, setStockVideoTrimModal] = useState(null);
+  const [pexelsTrimHint, setPexelsTrimHint] = useState(null);
+  const [pexelsTrimHintBusy, setPexelsTrimHintBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -2374,6 +2392,34 @@ export default function App() {
     [projectId],
   );
 
+  const saveClipFrameFit = useCallback(
+    async (nextFit) => {
+      if (!projectId) return;
+      const fit = nextFit === "letterbox" ? "letterbox" : "center_crop";
+      setBusy(true);
+      setError("");
+      try {
+        const r = await api(`/v1/projects/${encodeURIComponent(projectId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ clip_frame_fit: fit }),
+        });
+        const b = await parseJson(r);
+        if (!r.ok) throw new Error(apiErrorMessage(b));
+        setClipFrameFit(b.data?.clip_frame_fit === "letterbox" ? "letterbox" : "center_crop");
+        setMessage(
+          fit === "letterbox"
+            ? "Stock / Pexels imports use letterboxing (full image visible, may add black bars)."
+            : "Stock / Pexels imports use center crop (fills the frame; edges may be cut).",
+        );
+      } catch (e) {
+        setError(formatUserFacingError(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId],
+  );
+
   const cancelBackgroundJob = useCallback(
     async (jobId) => {
       if (!jobId) return;
@@ -2513,12 +2559,10 @@ export default function App() {
       const ew = tj.export_warnings;
       setTimelineExportWarnings(Array.isArray(ew) ? ew.map((x) => String(x || "").trim()).filter(Boolean) : []);
       const { fbMm, fbMn } = resolveStudioMixFallbacks();
-      setMixMusicVol(
-        typeof tj.mix_music_volume === "number" ? tj.mix_music_volume : fbMm,
-      );
-      setMixNarrVol(
-        typeof tj.mix_narration_volume === "number" ? tj.mix_narration_volume : fbMn,
-      );
+      const mmRaw = Number(tj.mix_music_volume);
+      const mnRaw = Number(tj.mix_narration_volume);
+      setMixMusicVol(Number.isFinite(mmRaw) ? Math.max(0, Math.min(1, mmRaw)) : fbMm);
+      setMixNarrVol(Number.isFinite(mnRaw) ? Math.max(0, Math.min(4, mnRaw)) : fbMn);
       setNarrMixMode("scene_timeline");
       setMusicBedPick(tj.music_bed_id ? String(tj.music_bed_id) : "");
       setClipCrossfadeSec(
@@ -2550,10 +2594,12 @@ export default function App() {
         if (!gr.ok) throw new Error(apiErrorMessage(gb));
         const prev = gb.data?.timeline_json;
         if (!prev || typeof prev !== "object") throw new Error("timeline_json missing");
+        const mm = Number(mixMusicVol);
+        const mn = Number(mixNarrVol);
         const next = {
           ...prev,
-          mix_music_volume: Math.max(0, Math.min(1, Number(mixMusicVol) || 0)),
-          mix_narration_volume: Math.max(0, Math.min(4, Number(mixNarrVol) || 1)),
+          mix_music_volume: Math.max(0, Math.min(1, Number.isFinite(mm) ? mm : 0)),
+          mix_narration_volume: Math.max(0, Math.min(4, Number.isFinite(mn) ? mn : 1)),
           final_cut_narration_mode: narrMixMode,
           music_bed_id: bedId && String(bedId).trim() ? String(bedId).trim() : null,
           clip_crossfade_sec: Math.max(0, Math.min(2, Number(clipCrossfadeSec) || 0)),
@@ -2894,7 +2940,7 @@ export default function App() {
         const body = await parseJson(r);
         if (!r.ok) {
           if (!silent) {
-            setError(apiErrorMessage(body) || `Could not load projects (HTTP ${r.status}).`);
+            setError(apiErrorMessage(body, r.status) || `Could not load projects (HTTP ${r.status}).`);
             lastProjectsPollSnapshotRef.current = projectsPollSnapshotFromRows([]);
             setProjects([]);
           }
@@ -2951,6 +2997,54 @@ export default function App() {
       setScenesLoading(false);
     }
   }, []);
+
+  const runSceneStockSearch = useCallback(async () => {
+    const q = String(pexelsSearchQuery || "").trim();
+    if (!q) {
+      setPexelsSearchResults([]);
+      setPexelsSearchErr("");
+      return;
+    }
+    setPexelsSearchBusy(true);
+    setPexelsSearchErr("");
+    try {
+      const lib = String(sceneStockLibrary || "pexels").toLowerCase();
+      const isPhotos = pexelsStockTab === "photos";
+      let path;
+      let sp;
+      if (lib === "storyblocks") {
+        path = isPhotos ? "/v1/storyblocks/photos/search" : "/v1/storyblocks/videos/search";
+        sp = new URLSearchParams({ query: q, page: "1", per_page: isPhotos ? "20" : "15" });
+      } else {
+        path = isPhotos ? "/v1/pexels/photos/search" : "/v1/pexels/videos/search";
+        sp = new URLSearchParams({ query: q, page: "1", per_page: isPhotos ? "20" : "15" });
+      }
+      const r = await api(`${path}?${sp.toString()}`);
+      const body = await parseJson(r);
+      if (!r.ok) {
+        throw new Error(apiErrorMessage(body) || "Stock search failed");
+      }
+      setPexelsSearchResults(Array.isArray(body.data?.results) ? body.data.results : []);
+    } catch (e) {
+      setPexelsSearchResults([]);
+      setPexelsSearchErr(formatUserFacingError(e));
+    } finally {
+      setPexelsSearchBusy(false);
+    }
+  }, [api, pexelsSearchQuery, pexelsStockTab, sceneStockLibrary]);
+
+  useEffect(() => {
+    const q = String(pexelsSearchQuery || "").trim();
+    if (!q) {
+      setPexelsSearchResults([]);
+      setPexelsSearchErr("");
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void runSceneStockSearch();
+    }, 450);
+    return () => window.clearTimeout(t);
+  }, [pexelsSearchQuery, pexelsStockTab, sceneStockLibrary, runSceneStockSearch]);
 
   const loadPhase3Summary = useCallback(async (cid) => {
     if (!cid) {
@@ -3708,7 +3802,7 @@ export default function App() {
     async (pid) => {
       if (!pid) {
         setPipelineStatus(null);
-        return;
+        return null;
       }
       try {
         const r = await api(`/v1/projects/${pid}/pipeline-status`);
@@ -3744,10 +3838,12 @@ export default function App() {
             lastPhase5BundledRefreshRef.current = now;
             await refreshPhase5Readiness({ pid, reportError: false, timelineVersionIdHint: lid || undefined });
           }
+          return lid ? String(lid) : null;
         }
       } catch {
         /* ignore */
       }
+      return null;
     },
     [refreshPhase5Readiness],
   );
@@ -3808,19 +3904,25 @@ export default function App() {
     }
 
     if (terminal && pid) {
-      loadPipelineStatus(pid);
-      loadProjectCriticReports(pid);
-      loadChapters(pid);
-      if (chapterId) {
-        loadScenes(chapterId);
-        loadPhase3Summary(chapterId);
-        loadChapterNarration(chapterId);
-      }
-      if (expandedScene) {
-        const es = String(expandedScene);
-        loadSceneAssets(es);
-        void loadSceneNarrationMeta(es);
-      }
+      void (async () => {
+        const latestTl = await loadPipelineStatus(pid);
+        if (st === "succeeded" && latestTl) {
+          setTimelineVersionId(latestTl);
+          await refreshPhase5Readiness({ pid, reportError: false, timelineVersionIdHint: latestTl });
+        }
+        loadProjectCriticReports(pid);
+        loadChapters(pid);
+        if (chapterId) {
+          loadScenes(chapterId);
+          loadPhase3Summary(chapterId);
+          loadChapterNarration(chapterId);
+        }
+        if (expandedScene) {
+          const es = String(expandedScene);
+          loadSceneAssets(es);
+          void loadSceneNarrationMeta(es);
+        }
+      })();
     }
   }, [
     studioReady,
@@ -3836,6 +3938,7 @@ export default function App() {
     loadChapterNarration,
     loadSceneAssets,
     loadSceneNarrationMeta,
+    refreshPhase5Readiness,
   ]);
 
   const agentRunFailedToastKeyRef = useRef("");
@@ -4100,6 +4203,7 @@ export default function App() {
       setSceneNarrationDraft("");
       setSceneNarrationDirty(false);
       scriptEditSceneIdRef.current = "";
+      lastServerNarrationForExpandedRef.current = "";
       return;
     }
     const switched = String(scriptEditSceneIdRef.current) !== String(sid);
@@ -4107,6 +4211,13 @@ export default function App() {
     const sc = scenes.find((s) => String(s.id) === String(sid));
     const next = sc?.narration_text ?? "";
     if (switched) {
+      setSceneNarrationDraft(next);
+      setSceneNarrationDirty(false);
+      lastServerNarrationForExpandedRef.current = next;
+      return;
+    }
+    if (next !== lastServerNarrationForExpandedRef.current) {
+      lastServerNarrationForExpandedRef.current = next;
       setSceneNarrationDraft(next);
       setSceneNarrationDirty(false);
       return;
@@ -4183,8 +4294,10 @@ export default function App() {
   };
 
   const schedulePersistStudioMixDefaults = useCallback((musicVol, narrVol) => {
-    const mVol = Math.max(0, Math.min(1, Number(musicVol) || 0));
-    const nVol = Math.max(0, Math.min(4, Number(narrVol) || 1));
+    const mNum = Number(musicVol);
+    const nNum = Number(narrVol);
+    const mVol = Math.max(0, Math.min(1, Number.isFinite(mNum) ? mNum : 0));
+    const nVol = Math.max(0, Math.min(4, Number.isFinite(nNum) ? nNum : 1));
     try {
       localStorage.setItem(LS_STUDIO_MIX_MUSIC, String(mVol));
       localStorage.setItem(LS_STUDIO_MIX_NARR, String(nVol));
@@ -4560,6 +4673,7 @@ export default function App() {
             narration_style,
             visual_style: `preset:${visId || "cinematic_documentary"}`,
             frame_aspect_ratio: frameAspectRatio === "9:16" ? "9:16" : "16:9",
+            clip_frame_fit: clipFrameFit === "letterbox" ? "letterbox" : "center_crop",
             ...briefPreferredMediaProvidersFromAppConfig(appConfig),
           },
           pipeline_options,
@@ -4581,7 +4695,7 @@ export default function App() {
           : pipelineMode === "unattended"
             ? "Hands-off run queued — worker will attempt research through final video (relaxed research gate; check logs if sources are thin)."
             : autoThrough === "critique"
-              ? "Agent run queued — by default Auto stops after the one-time story vs research check (no media tail). Switch Auto target to “Through final video” for one-pass character bible → images → narration → cuts, or Automate again later."
+              ? "Agent run queued — by default Auto stops after the one-time story vs research check (no media tail). Switch Auto target to “Through final video” for one-pass character bible → narration → scene images → cuts, or Automate again later."
               : "Agent run queued — runs through final video after scenes and story check; polling status…",
       );
     } catch (e) {
@@ -4735,7 +4849,7 @@ export default function App() {
             : "critique";
       if (needsTail && pipelineMode === "auto" && autoThrough !== "full_video") {
         setMessage(
-          "Using full video for this re-run (character bible → scene images → narration, timeline, cuts). Switch Auto target to full video to match next time.",
+          "Using full video for this re-run (character bible → narration → scene images, timeline, cuts). Switch Auto target to full video to match next time.",
         );
       }
       const rerun_web_research =
@@ -5780,6 +5894,96 @@ export default function App() {
     refreshPhase5Readiness,
   ]);
 
+  const importSceneAssetFromStock = useCallback(
+    async (library, kind, mediaId, videoTrimTarget) => {
+      const sid = String(selectedSceneId || "").trim();
+      if (!sid) {
+        setError("Select a scene before importing stock media.");
+        return;
+      }
+      const idNum = Number(mediaId);
+      if (!Number.isFinite(idNum) || idNum < 1) {
+        setError("Invalid stock media id.");
+        return;
+      }
+      const lib = String(library || "pexels").toLowerCase();
+      setPexelsImportKey(`${lib}:${kind}:${mediaId}`);
+      setError("");
+      try {
+        const k = kind === "video" ? "video" : "photo";
+        if (lib === "storyblocks") {
+          const payload = { kind: k, storyblocks_id: Math.floor(idNum) };
+          if (k === "video" && (videoTrimTarget === "5" || videoTrimTarget === "10" || videoTrimTarget === "scene_narration")) {
+            payload.video_trim_target = videoTrimTarget;
+          }
+          const r = await api(`/v1/scenes/${encodeURIComponent(sid)}/assets/import-from-storyblocks`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          const body = await parseJson(r);
+          if (!r.ok) {
+            throw new Error(apiErrorMessage(body) || "Import failed");
+          }
+        } else {
+          const payload = { kind: k, pexels_id: Math.floor(idNum) };
+          if (k === "video" && (videoTrimTarget === "5" || videoTrimTarget === "10" || videoTrimTarget === "scene_narration")) {
+            payload.video_trim_target = videoTrimTarget;
+          }
+          const r = await api(`/v1/scenes/${encodeURIComponent(sid)}/assets/import-from-pexels`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          const body = await parseJson(r);
+          if (!r.ok) {
+            throw new Error(apiErrorMessage(body) || "Import failed");
+          }
+        }
+        void loadSceneAssets(sid);
+        if (chapterId) void loadPhase3Summary(chapterId);
+        if (projectId) void refreshPhase5Readiness({ reportError: false });
+        setMessage("Stock media added to this scene.");
+      } catch (e) {
+        setError(formatUserFacingError(e));
+      } finally {
+        setPexelsImportKey("");
+      }
+    },
+    [selectedSceneId, loadSceneAssets, chapterId, loadPhase3Summary, projectId, refreshPhase5Readiness, api],
+  );
+
+  useEffect(() => {
+    if (!stockVideoTrimModal) {
+      setPexelsTrimHint(null);
+      setPexelsTrimHintBusy(false);
+      return;
+    }
+    const sid = String(selectedSceneId || "").trim();
+    if (!sid) {
+      setPexelsTrimHint(null);
+      setPexelsTrimHintBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setPexelsTrimHint(null);
+    setPexelsTrimHintBusy(true);
+    void (async () => {
+      try {
+        const r = await api(`/v1/scenes/${encodeURIComponent(sid)}/pexels-video-trim-hint`);
+        const body = await parseJson(r);
+        if (!cancelled && r.ok) {
+          setPexelsTrimHint(body.data ?? null);
+        }
+      } catch {
+        if (!cancelled) setPexelsTrimHint(null);
+      } finally {
+        if (!cancelled) setPexelsTrimHintBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, selectedSceneId, stockVideoTrimModal]);
+
   const uploadRecordedSceneVo = useCallback(
     async (blob) => {
       const sid = String(selectedSceneId || "").trim();
@@ -6219,6 +6423,7 @@ export default function App() {
       setTopic(p.topic || "");
       setRuntime(Number(p.target_runtime_minutes || 15));
       setFrameAspectRatio(p.frame_aspect_ratio === "9:16" ? "9:16" : "16:9");
+      setClipFrameFit(p.clip_frame_fit === "letterbox" ? "letterbox" : "center_crop");
       setUseAllApprovedSceneMedia(Boolean(p.use_all_approved_scene_media));
       setIncludeSpokenDialogueInVideoPrompt(Boolean(p.include_spoken_dialogue_in_video_prompt));
 
@@ -6508,6 +6713,7 @@ export default function App() {
     setTopic("Describe your topic, audience, and the story you want to tell.");
     setRuntime(15);
     setFrameAspectRatio("16:9");
+    setClipFrameFit("center_crop");
     queueMicrotask(() => {
       document.getElementById("studio-pipeline-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -6674,6 +6880,114 @@ export default function App() {
       {message ? <p className="app-toast app-toast--ok">{message}</p> : null}
       {error ? <p className="err">{error}</p> : null}
 
+      {stockVideoTrimModal ? (
+        <div
+          className="restart-automation-modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            setStockVideoTrimModal(null);
+            setPexelsTrimHint(null);
+            setPexelsTrimHintBusy(false);
+          }}
+        >
+          <div
+            className="panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="stock-trim-title"
+            style={{ maxWidth: 440 }}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setStockVideoTrimModal(null);
+                setPexelsTrimHint(null);
+                setPexelsTrimHintBusy(false);
+              }
+            }}
+          >
+            <h3 id="stock-trim-title">Trim this stock video</h3>
+            <p className="subtle" style={{ marginTop: 8 }}>
+              {stockVideoTrimModal.reportedDurationSec != null && Number.isFinite(stockVideoTrimModal.reportedDurationSec)
+                ? `${stockVideoTrimModal.library === "storyblocks" ? "Storyblocks" : "Pexels"} reports about ${Math.round(stockVideoTrimModal.reportedDurationSec)}s. `
+                : "Length may be unknown until download. "}
+              Clips are capped at 10s. Choose how much to keep from the start:
+            </p>
+            {pexelsTrimHintBusy ? (
+              <p className="subtle" style={{ marginTop: 10 }}>
+                Loading scene audio hint…
+              </p>
+            ) : pexelsTrimHint ? (
+              <p className="subtle" style={{ marginTop: 10, fontSize: "0.85rem" }}>
+                {pexelsTrimHint.scene_narration_sec != null &&
+                Number.isFinite(Number(pexelsTrimHint.scene_narration_sec)) &&
+                Number(pexelsTrimHint.scene_narration_sec) > 0
+                  ? `Latest scene narration ≈ ${Number(pexelsTrimHint.scene_narration_sec).toFixed(1)}s (“Match scene audio length” uses this, capped at 10s).`
+                  : pexelsTrimHint.planned_duration_sec != null &&
+                      Number.isFinite(Number(pexelsTrimHint.planned_duration_sec)) &&
+                      Number(pexelsTrimHint.planned_duration_sec) > 0
+                    ? `No scene VO file yet — planned scene duration ${Number(pexelsTrimHint.planned_duration_sec)}s is used for “Match scene audio length”, capped at 10s.`
+                    : `No narration or plan yet — “Match scene audio length” falls back to your studio default clip (${pexelsTrimHint.studio_clip_default_sec ?? 10}s).`}
+              </p>
+            ) : null}
+            <div className="restart-automation-modal-actions" style={{ marginTop: 16, flexWrap: "wrap", gap: 8 }}>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setStockVideoTrimModal(null);
+                  setPexelsTrimHint(null);
+                  setPexelsTrimHintBusy(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={busy || Boolean(pexelsImportKey)}
+                onClick={() => {
+                  const lib = stockVideoTrimModal.library;
+                  const id = stockVideoTrimModal.mediaId;
+                  setStockVideoTrimModal(null);
+                  setPexelsTrimHint(null);
+                  setPexelsTrimHintBusy(false);
+                  void importSceneAssetFromStock(lib, "video", id, "5");
+                }}
+              >
+                Trim to 5s
+              </button>
+              <button
+                type="button"
+                disabled={busy || Boolean(pexelsImportKey)}
+                onClick={() => {
+                  const lib = stockVideoTrimModal.library;
+                  const id = stockVideoTrimModal.mediaId;
+                  setStockVideoTrimModal(null);
+                  setPexelsTrimHint(null);
+                  setPexelsTrimHintBusy(false);
+                  void importSceneAssetFromStock(lib, "video", id, "10");
+                }}
+              >
+                Trim to 10s
+              </button>
+              <button
+                type="button"
+                disabled={busy || Boolean(pexelsImportKey)}
+                onClick={() => {
+                  const lib = stockVideoTrimModal.library;
+                  const id = stockVideoTrimModal.mediaId;
+                  setStockVideoTrimModal(null);
+                  setPexelsTrimHint(null);
+                  setPexelsTrimHintBusy(false);
+                  void importSceneAssetFromStock(lib, "video", id, "scene_narration");
+                }}
+              >
+                Match scene audio length
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {phase5ExportGateModal ? (
         <div
           className="restart-automation-modal-backdrop"
@@ -6794,6 +7108,14 @@ export default function App() {
       <StudioPanelErrorBoundary resetKey={activePage}>
       {activePage === "terms" || activePage === "privacy" || activePage === "copyright" ? (
         <StudioLegalPage docId={activePage} setActivePage={setActivePage} />
+      ) : activePage === "ideas" ? (
+        <StudioIdeasPage
+          showToast={showToast}
+          loadProjects={() => void loadProjects()}
+          setAgentRunId={setAgentRunId}
+          setProjectId={setProjectId}
+          setActivePage={setActivePage}
+        />
       ) : activePage === "chat" ? (
         <ChatStudioPage
           appConfig={appConfig}
@@ -8021,6 +8343,56 @@ export default function App() {
               />
               Auto / Hands-off: generate scene stills (preview images per scene in the media tail)
             </label>
+            <label htmlFor="cfg-pexels-scenes" style={{ marginTop: 12, textTransform: "none", letterSpacing: 0, fontSize: "0.78rem", display: "block" }}>
+              <input
+                id="cfg-pexels-scenes"
+                type="checkbox"
+                checked={Boolean(appConfig.agent_run_use_pexels_for_scenes)}
+                onChange={(e) =>
+                  setAppConfig((p) => ({ ...p, agent_run_use_pexels_for_scenes: e.target.checked }))
+                }
+                style={{ width: "auto", marginRight: 8 }}
+              />
+              Full-video automation: import first Pexels match per scene during the auto images / auto videos tail (needs PEXELS_API_KEY on the API)
+            </label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "12px 16px", alignItems: "center", marginTop: 8 }}>
+              <label htmlFor="cfg-pexels-scene-mode" className="subtle" style={{ fontSize: "0.78rem" }}>
+                Pexels stock type
+                <select
+                  id="cfg-pexels-scene-mode"
+                  value={String(appConfig.agent_run_pexels_scene_media_mode || "photos")}
+                  disabled={!appConfig.agent_run_use_pexels_for_scenes}
+                  onChange={(e) =>
+                    setAppConfig((p) => ({ ...p, agent_run_pexels_scene_media_mode: e.target.value }))
+                  }
+                  style={{ marginLeft: 8, maxWidth: 200 }}
+                >
+                  <option value="photos">Photos only</option>
+                  <option value="videos">Videos only</option>
+                  <option value="both">Photos then videos if empty</option>
+                </select>
+              </label>
+              <label htmlFor="cfg-pexels-interval" className="subtle" style={{ fontSize: "0.78rem" }}>
+                Seconds between Pexels calls (0–120)
+                <input
+                  id="cfg-pexels-interval"
+                  type="number"
+                  min={0}
+                  max={120}
+                  step={0.5}
+                  disabled={!appConfig.agent_run_use_pexels_for_scenes}
+                  value={Number(appConfig.agent_run_pexels_scene_search_interval_sec ?? 2)}
+                  onChange={(e) => {
+                    const n = Math.min(120, Math.max(0, Number.parseFloat(e.target.value) || 0))
+                    setAppConfig((p) => ({ ...p, agent_run_pexels_scene_search_interval_sec: n }))
+                  }}
+                  style={{ marginLeft: 8, width: "4.5rem" }}
+                />
+              </label>
+            </div>
+            <p className="subtle" style={{ marginTop: 4, fontSize: "0.74rem" }}>
+              Uses each scene&apos;s stock search terms when present; otherwise purpose or narration. Runs with the media tail, not during scene planning. Imports are best-effort and skipped when a scene already has a Pexels asset.
+            </p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "12px 24px", alignItems: "center", marginTop: 8 }}>
               <label htmlFor="cfg-min-scene-images" style={{ textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
                 Min stills per scene (1–10)
@@ -8120,6 +8492,22 @@ export default function App() {
               />
               Abort the whole agent run when automated scene video generation still fails after retries (default off: continue to narration and exports)
             </label>
+            <label htmlFor="cfg-auto-scene-coverage-clips" style={{ marginTop: 12, textTransform: "none", letterSpacing: 0, fontSize: "0.78rem" }}>
+              <input
+                id="cfg-auto-scene-coverage-clips"
+                type="checkbox"
+                checked={Boolean(appConfig.agent_run_auto_scene_coverage_clips)}
+                onChange={(e) =>
+                  setAppConfig((p) => ({ ...p, agent_run_auto_scene_coverage_clips: e.target.checked }))
+                }
+                style={{ width: "auto", marginRight: 8 }}
+              />
+              Auto / Hands-off: extra scene clips vs narration length (varied angles / B-roll; avoids looping one short clip)
+            </label>
+            <p className="subtle" style={{ marginTop: -6 }}>
+              When on, the automation tail generates enough image or video segments per scene to cover spoken VO (using your scene clip length), with randomized shot prompts. The timeline uses every approved visual per scene (same idea as{" "}
+              <strong>Use all approved scene media</strong> under Compile). Save settings below.
+            </p>
             <label htmlFor="cfg-scene-repair-rounds" style={{ marginTop: 14 }}>
               Auto pipeline: scene critic repair cycles
             </label>
@@ -9392,6 +9780,81 @@ export TELEGRAM_WEBHOOK_SECRET='…'
             />
                   </div>
                 </details>
+
+                <details className="settings-section">
+                  <summary className="settings-section-summary">
+                    <span className="settings-section-heading">Pexels stock media</span>
+                  </summary>
+                  <div className="settings-section-body">
+                    <label htmlFor="cfg-pexels">PEXELS_API_KEY</label>
+                    {credKeyNote("pexels_api_key")}
+                    <input
+                      id="cfg-pexels"
+                      value={appConfig.pexels_api_key || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, pexels_api_key: e.target.value }))}
+                      autoComplete="off"
+                    />
+                    <p className="subtle" style={{ marginTop: 6 }}>
+                      Used for <strong>Studio</strong> → scene <strong>Assets</strong> → stock search/import (server-side only). Get a key at{" "}
+                      <a href="https://www.pexels.com/api/" target="_blank" rel="noreferrer">
+                        pexels.com/api
+                      </a>
+                      . Empty save does not clear a key already set in <code>.env</code>.
+                    </p>
+                  </div>
+                </details>
+
+                <details className="settings-section">
+                  <summary className="settings-section-summary">
+                    <span className="settings-section-heading">Storyblocks stock media</span>
+                  </summary>
+                  <div className="settings-section-body">
+                    <label htmlFor="cfg-sb-pub">STORYBLOCKS_PUBLIC_KEY (APIKEY)</label>
+                    {credKeyNote("storyblocks_public_key")}
+                    <input
+                      id="cfg-sb-pub"
+                      value={appConfig.storyblocks_public_key || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, storyblocks_public_key: e.target.value }))}
+                      autoComplete="off"
+                    />
+                    <label htmlFor="cfg-sb-priv" style={{ marginTop: 12 }}>
+                      STORYBLOCKS_PRIVATE_KEY
+                    </label>
+                    {credKeyNote("storyblocks_private_key")}
+                    <input
+                      id="cfg-sb-priv"
+                      value={appConfig.storyblocks_private_key || ""}
+                      onChange={(e) => setAppConfig((p) => ({ ...p, storyblocks_private_key: e.target.value }))}
+                      autoComplete="off"
+                    />
+                    <label htmlFor="cfg-sb-vbase" className="subtle" style={{ marginTop: 12, fontSize: "0.78rem" }}>
+                      Video API base (optional)
+                    </label>
+                    <input
+                      id="cfg-sb-vbase"
+                      value={appConfig.storyblocks_video_api_base || ""}
+                      placeholder="https://api.videoblocks.com"
+                      onChange={(e) => setAppConfig((p) => ({ ...p, storyblocks_video_api_base: e.target.value }))}
+                    />
+                    <label htmlFor="cfg-sb-ibase" className="subtle" style={{ marginTop: 8, fontSize: "0.78rem" }}>
+                      Image API base (optional)
+                    </label>
+                    <input
+                      id="cfg-sb-ibase"
+                      value={appConfig.storyblocks_image_api_base || ""}
+                      placeholder="https://api.graphicstock.com"
+                      onChange={(e) => setAppConfig((p) => ({ ...p, storyblocks_image_api_base: e.target.value }))}
+                    />
+                    <p className="subtle" style={{ marginTop: 6 }}>
+                      Partner HMAC keys for <strong>Studio</strong> → scene <strong>Assets</strong> when Source is Storyblocks (still images via
+                      GraphicStock, footage via VideoBlocks). Overview:{" "}
+                      <a href="https://www.storyblocks.com/resources/business-solutions/api" target="_blank" rel="noreferrer">
+                        storyblocks.com/…/api
+                      </a>
+                      . Empty save does not clear keys already set in <code>.env</code>.
+                    </p>
+                  </div>
+                </details>
                 </>
               )}
               {settingsTab === "voice_ref" && (
@@ -10542,6 +11005,163 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           <code style={{ fontSize: "0.72rem" }}>assets/&lt;project&gt;/&lt;scene&gt;/&lt;asset&gt;.…</code>
                         </span>
                       </div>
+                      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border, rgba(255,255,255,0.08))" }}>
+                        <div className="subtle" style={{ margin: "0 0 8px", fontSize: "0.82rem" }}>
+                          <strong style={{ color: "var(--fg, inherit)" }}>Stock media</strong> — search and add to this scene
+                          (API keys on server only).
+                        </div>
+                        <div
+                          className="action-row"
+                          style={{ marginBottom: 8, flexWrap: "wrap", gap: 8, alignItems: "center" }}
+                        >
+                          <label className="subtle" style={{ display: "flex", gap: 6, alignItems: "center", fontSize: "0.8rem" }}>
+                            Source
+                            <select
+                              value={sceneStockLibrary}
+                              onChange={(e) => setSceneStockLibrary(e.target.value)}
+                              disabled={busy}
+                              style={{ fontSize: "0.8rem" }}
+                              aria-label="Stock provider"
+                            >
+                              <option value="pexels">Pexels</option>
+                              <option value="storyblocks">Storyblocks</option>
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            className={pexelsStockTab === "photos" ? undefined : "secondary"}
+                            disabled={busy}
+                            onClick={() => setPexelsStockTab("photos")}
+                          >
+                            Photos
+                          </button>
+                          <button
+                            type="button"
+                            className={pexelsStockTab === "videos" ? undefined : "secondary"}
+                            disabled={busy}
+                            onClick={() => setPexelsStockTab("videos")}
+                          >
+                            Videos
+                          </button>
+                          <input
+                            type="search"
+                            placeholder={sceneStockLibrary === "storyblocks" ? "Search Storyblocks…" : "Search Pexels…"}
+                            value={pexelsSearchQuery}
+                            onChange={(e) => setPexelsSearchQuery(e.target.value)}
+                            disabled={busy}
+                            aria-label="Search stock media"
+                            style={{ minWidth: "11em", flex: "1 1 160px", maxWidth: "100%" }}
+                          />
+                        </div>
+                        {pexelsSearchErr ? (
+                          <p className="subtle" role="alert" style={{ margin: "0 0 8px", color: "var(--danger, #f87171)" }}>
+                            {pexelsSearchErr}
+                          </p>
+                        ) : null}
+                        {pexelsSearchBusy && String(pexelsSearchQuery || "").trim() ? (
+                          <p className="subtle" style={{ margin: "0 0 8px" }}>
+                            Searching…
+                          </p>
+                        ) : null}
+                        {pexelsSearchResults.length > 0 ? (
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "repeat(auto-fill, minmax(104px, 1fr))",
+                              gap: 8,
+                              maxHeight: 240,
+                              overflowY: "auto",
+                            }}
+                          >
+                            {pexelsSearchResults.map((row) => {
+                              const rk = String(row.kind || "photo");
+                              const lib =
+                                String(row.provider || (sceneStockLibrary === "storyblocks" ? "storyblocks" : "pexels")).toLowerCase() ===
+                                "storyblocks"
+                                  ? "storyblocks"
+                                  : "pexels";
+                              const pid = lib === "storyblocks" ? row.storyblocks_id : row.pexels_id;
+                              const importKey = `${lib}:${rk}:${pid}`;
+                              const isImporting = pexelsImportKey === importKey;
+                              return (
+                                <div
+                                  key={importKey}
+                                  style={{
+                                    border: "1px solid var(--border, rgba(255,255,255,0.12))",
+                                    borderRadius: 6,
+                                    overflow: "hidden",
+                                    background: "var(--panel-2, rgba(0,0,0,0.2))",
+                                  }}
+                                >
+                                  {row.thumb_url ? (
+                                    rk === "video" ? (
+                                      <img
+                                        alt=""
+                                        src={row.thumb_url}
+                                        style={{ width: "100%", aspectRatio: "16/10", objectFit: "cover", display: "block" }}
+                                      />
+                                    ) : (
+                                      <img
+                                        alt=""
+                                        src={row.thumb_url}
+                                        style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }}
+                                      />
+                                    )
+                                  ) : (
+                                    <div className="subtle" style={{ padding: 10, fontSize: "0.75rem" }}>
+                                      No preview
+                                    </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    style={{ width: "100%", fontSize: "0.72rem", padding: "5px 4px", borderRadius: 0 }}
+                                    disabled={
+                                      busy ||
+                                      Boolean(pexelsImportKey) ||
+                                      !selectedSceneId ||
+                                      Boolean(stockVideoTrimModal)
+                                    }
+                                    onClick={() => {
+                                      if (rk !== "video") {
+                                        void importSceneAssetFromStock(lib, "photo", pid, null);
+                                        return;
+                                      }
+                                      const dur =
+                                        row.duration_sec != null && row.duration_sec !== ""
+                                          ? Number(row.duration_sec)
+                                          : NaN;
+                                      const needsTrimChoice = !Number.isFinite(dur) || dur > 10;
+                                      if (!needsTrimChoice) {
+                                        void importSceneAssetFromStock(lib, "video", pid, null);
+                                        return;
+                                      }
+                                      setStockVideoTrimModal({
+                                        library: lib,
+                                        mediaId: pid,
+                                        reportedDurationSec: Number.isFinite(dur) ? dur : null,
+                                      });
+                                    }}
+                                  >
+                                    {isImporting ? "Adding…" : "Add to scene"}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                        <p className="subtle" style={{ fontSize: "0.72rem", marginTop: 8, marginBottom: 0, lineHeight: 1.4 }}>
+                          <a href="https://www.pexels.com/" target="_blank" rel="noreferrer">
+                            Pexels
+                          </a>{" "}
+                          and{" "}
+                          <a href="https://www.storyblocks.com/resources/business-solutions/api" target="_blank" rel="noreferrer">
+                            Storyblocks
+                          </a>
+                          . Configure <code style={{ fontSize: "0.68rem" }}>PEXELS_API_KEY</code> or Storyblocks public/private keys
+                          in workspace Settings (or API environment) if search returns &quot;not configured&quot;.
+                        </p>
+                      </div>
                       {gallerySceneAssets.length > 0 ? (
                         <div className="action-row" style={{ marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
                           <button type="button" className="secondary" style={{ fontSize: "0.78rem", padding: "2px 8px" }} onClick={selectAllAssets}>
@@ -11501,6 +12121,31 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           </span>
                         </span>
                       </label>
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 12,
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        background: "var(--panel-elevated-bg, rgba(0,0,0,0.04))",
+                      }}
+                    >
+                      <label htmlFor="cffit" style={{ display: "block", fontSize: "0.85rem", marginBottom: 6 }}>
+                        <strong>Stock / Pexels frame fit</strong> (this project)
+                      </label>
+                      <select
+                        id="cffit"
+                        value={clipFrameFit}
+                        disabled={busy || !projectId}
+                        onChange={(e) => void saveClipFrameFit(e.target.value)}
+                        style={{ maxWidth: "100%", fontSize: "0.85rem" }}
+                      >
+                        <option value="center_crop">Center crop — fill frame (edges may be cut)</option>
+                        <option value="letterbox">Letterbox — show full image (black bars if aspect differs)</option>
+                      </select>
+                      <p className="subtle" style={{ marginTop: 8, marginBottom: 0, fontSize: "0.78rem", lineHeight: 1.45 }}>
+                        Applies when importing <strong>Pexels</strong> photos or videos into a scene. Timeline rough cut still uses its own scale+pad for mixed clips.
+                      </p>
                     </div>
                     <div
                       style={{

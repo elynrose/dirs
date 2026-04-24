@@ -774,6 +774,59 @@ def _resolve_video_workflow_path(settings: Settings) -> Path:
     raise FileNotFoundError(f"ComfyUI video workflow JSON not found: {raw}")
 
 
+def _infer_create_video_fps(workflow: dict[str, Any]) -> float:
+    """Read ``fps`` from a ``CreateVideo`` node if present (default 16)."""
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("class_type") or "") != "CreateVideo":
+            continue
+        ins = node.get("inputs")
+        if not isinstance(ins, dict):
+            continue
+        fps = ins.get("fps")
+        if isinstance(fps, (int, float)) and float(fps) > 0:
+            return float(fps)
+    return 16.0
+
+
+def _apply_duration_sec_to_comfyui_video_workflow(
+    workflow: dict[str, Any],
+    duration_sec: float | None,
+) -> None:
+    """Set Empty*LatentVideo ``length`` so clip length ~matches ``duration_sec`` (frames ≈ fps × seconds)."""
+    if duration_sec is None:
+        return
+    try:
+        ds = float(duration_sec)
+    except (TypeError, ValueError):
+        return
+    if ds < 0.5 or ds > 600.0:
+        return
+    fps = _infer_create_video_fps(workflow)
+    target_len = int(round(ds * fps))
+    target_len = max(8, min(512, target_len))
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        ct = str(node.get("class_type") or "")
+        ins = node.get("inputs")
+        if not isinstance(ins, dict) or "length" not in ins:
+            continue
+        if not isinstance(ins.get("length"), (int, float)):
+            continue
+        if "LatentVideo" in ct or ct == "EmptyHunyuanLatentVideo":
+            ins["length"] = target_len
+            log.info(
+                "comfyui_video_duration_inject",
+                class_type=ct,
+                duration_sec=ds,
+                fps=fps,
+                length=target_len,
+            )
+            return
+
+
 def _upload_image_to_comfyui(
     http: httpx.Client,
     settings: Settings,
@@ -819,9 +872,11 @@ def generate_scene_video_comfyui(
     When ``comfyui_video_use_scene_image`` is True, pass ``scene_image_path`` to upload into ComfyUI
     and set the LoadImage node given by ``comfyui_video_load_image_node_id``.
 
+    ``duration_sec`` (from workspace ``scene_clip_duration_sec``, typically 5 or 10) adjusts
+    ``Empty*LatentVideo`` ``length`` so output length tracks Settings (see ``_apply_duration_sec_to_comfyui_video_workflow``).
+
     Returns {ok, bytes?, content_type?, error?, detail?, provider, model?}.
     """
-    _ = duration_sec  # reserved for future frame-count / length injection
     base = _effective_base_url(settings)
     if not base:
         return {
@@ -855,6 +910,7 @@ def generate_scene_video_comfyui(
         return {"ok": False, "provider": "comfyui_wan", "error": "workflow_not_object"}
 
     workflow = copy.deepcopy(tpl)
+    _apply_duration_sec_to_comfyui_video_workflow(workflow, duration_sec)
     p_node = (settings.comfyui_video_prompt_node_id or settings.comfyui_prompt_node_id or "").strip()
     neg_node = (settings.comfyui_video_negative_node_id or settings.comfyui_negative_node_id or "").strip()
     neg_text = (settings.comfyui_video_default_negative_prompt or settings.comfyui_default_negative_prompt or "").strip()

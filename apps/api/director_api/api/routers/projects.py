@@ -29,6 +29,7 @@ from director_api.services.phase5_readiness import (
 from director_api.tasks.job_enqueue import enqueue_run_phase3_job
 from director_api.services.tenant_entitlements import assert_can_create_project
 from director_api.storage.project_storage_cleanup import remove_generated_project_files
+from director_api.services.project_frame import coerce_clip_frame_fit
 from director_api.validation.brief import validate_documentary_brief
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -60,6 +61,7 @@ _BRIEF_FIELDS = (
     "preferred_video_provider",
     "preferred_speech_provider",
     "frame_aspect_ratio",
+    "clip_frame_fit",
 )
 
 
@@ -111,6 +113,7 @@ def create_project(
         preferred_video_provider=body.preferred_video_provider,
         preferred_speech_provider=body.preferred_speech_provider,
         frame_aspect_ratio=(body.frame_aspect_ratio or "16:9"),
+        clip_frame_fit=coerce_clip_frame_fit(getattr(body, "clip_frame_fit", None)),
     )
     db.add(p)
     db.commit()
@@ -262,6 +265,10 @@ def get_phase5_readiness(
     timeline_version_id: UUID | None = Query(default=None),
     export_stage: Literal["rough_cut", "fine_cut", "final_cut"] | None = Query(default=None),
     allow_unapproved_media: bool = Query(default=False),
+    require_scene_narration_tracks: bool = Query(
+        default=False,
+        description="If true, treat missing scene TTS (for scenes with narration_text) as not ready.",
+    ),
 ) -> dict:
     if export_stage is not None and timeline_version_id is None:
         raise HTTPException(
@@ -294,6 +301,7 @@ def get_phase5_readiness(
         timeline_version_id=timeline_version_id,
         export_stage=export_stage,
         allow_unapproved_media=allow_unapproved_media,
+        require_scene_narration_tracks=require_scene_narration_tracks,
     )
     if r.get("error") == "project_not_found":
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})

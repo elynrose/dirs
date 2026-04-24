@@ -49,6 +49,8 @@ Examples
   python scripts/budget_pipeline_test.py --mode hands-off --login-email you@example.com
   python scripts/budget_pipeline_test.py --mode auto --api-base http://127.0.0.1:8000
   python scripts/budget_pipeline_test.py --mode hands-off --production-media -v
+  python scripts/budget_pipeline_test.py --mode hands-off --pexels-autofill-scenes --login-email you@example.com
+    (Patches settings so Pexels autofill runs in the full-video media tail; needs PEXELS_API_KEY on the API. No --admin-key.)
 """
 
 from __future__ import annotations
@@ -186,6 +188,15 @@ def run_budget_pipeline(argv: Sequence[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--pexels-autofill-scenes",
+        action="store_true",
+        help=(
+            "Session mode only: PATCH /v1/settings to enable automated Pexels imports in the full-video "
+            "media tail (auto images / auto videos; first search hit per scene). Requires PEXELS_API_KEY on the API. "
+            "Ignored with --admin-key."
+        ),
+    )
+    ap.add_argument(
         "--music-path",
         type=Path,
         default=None,
@@ -312,6 +323,22 @@ def run_budget_pipeline(argv: Sequence[str] | None = None) -> int:
             _log_response("POST", url_admin_budget, r, ok_body=r.status_code < 400)
         else:
             hdr = _ensure_api_auth(client, base, args)
+            if bool(getattr(args, "pexels_autofill_scenes", False)):
+                url_settings = f"{base}/v1/settings"
+                pexels_patch = {
+                    "agent_run_use_pexels_for_scenes": True,
+                    "agent_run_pexels_scene_media_mode": "photos",
+                    "agent_run_pexels_scene_search_interval_sec": 1.0,
+                }
+                LOG.info("PATCH %s (Pexels autofill in media tail)", url_settings)
+                pr = client.patch(
+                    url_settings,
+                    headers={**hdr, "Content-Type": "application/json"},
+                    json={"config": pexels_patch},
+                )
+                _log_response("PATCH", url_settings, pr)
+                if pr.status_code >= 400:
+                    return 1
             LOG.info("Queueing agent run: POST %s", url_runs)
             r = client.post(url_runs, headers={**hdr, "Content-Type": "application/json"}, json=body)
             _log_response("POST", url_runs, r, ok_body=r.status_code < 400)

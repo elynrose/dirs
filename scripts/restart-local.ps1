@@ -1,12 +1,12 @@
 #Requires -Version 5.1
 <#
-  Stop then start local Directely API + Celery worker + beat (Windows; uses apps\api\.venv-win).
+  Stop then start local Directely API + Celery worker + beat + Vite dev server (Windows; uses apps\api\.venv-win).
 
   Usage:
     powershell -ExecutionPolicy Bypass -File scripts\restart-local.ps1
     .\scripts\restart-local.ps1 -StopOnly
 
-  Logs: .run\director-api.log, .run\director-worker.log, .run\director-beat.log
+  Logs: .run\director-api.log, .run\director-worker.log, .run\director-beat.log (Vite runs in its own window)
 #>
 [CmdletBinding()]
 param(
@@ -17,6 +17,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RunDir = Join-Path $RepoRoot ".run"
 $ApiDir = Join-Path $RepoRoot "apps\api"
+$WebDir = Join-Path $RepoRoot "apps\web"
 
 . (Join-Path $RepoRoot "scripts\director-stop-common.ps1")
 
@@ -98,4 +99,14 @@ if (-not $healthOk) {
     exit 1
 }
 
-Write-Host "Logs: $RunDir\director-api.log, director-worker.log, director-beat.log - leave the three minimized windows open." -ForegroundColor Gray
+$pkgJson = Join-Path $WebDir "package.json"
+if (Test-Path -LiteralPath $pkgJson) {
+    $viteCmd = "Set-Location -LiteralPath '$WebDir'; npm run dev"
+    Write-Host "restart-local.ps1: starting Vite (Studio, new window)..." -ForegroundColor Cyan
+    Start-Process powershell -WorkingDirectory $WebDir `
+        -ArgumentList @("-NoExit", "-NoProfile", "-Command", $viteCmd)
+} else {
+    Write-Host "restart-local.ps1: skip Vite - missing $pkgJson" -ForegroundColor Yellow
+}
+
+Write-Host "Logs: $RunDir\director-api.log, director-worker.log, director-beat.log - API/worker/beat minimized; Vite in a separate window if started." -ForegroundColor Gray

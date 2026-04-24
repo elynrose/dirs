@@ -17,6 +17,10 @@ from ffmpeg_pipelines.nt_staging import (
 from ffmpeg_pipelines.paths import ffmpeg_argv_path, mkdir_parent, path_is_readable_file, path_stat
 from ffmpeg_pipelines.probe import ffprobe_duration_seconds
 
+# Stock / library beds are often mastered hot; scale the 0–1 slider before ``volume=`` so the
+# same UI value sits further under narration after summing + loudnorm.
+_MUSIC_SLIDER_TO_LINEAR_HEADROOM = 0.65
+
 
 def mux_video_with_narration_and_music(
     video_path: Path,
@@ -36,9 +40,10 @@ def mux_video_with_narration_and_music(
     - If ``narration_audio_path`` is set and exists, it is trimmed/padded to video duration.
     - Otherwise a stereo silence track is generated for the video duration.
     - If ``music_audio_path`` is set and exists, it is looped, trimmed to video duration,
-      attenuated, and **amix**'d under narration. ``amix`` uses ``normalize=0`` so the
-      ``music_volume`` / ``narration_volume`` linear gains are not rebalanced by FFmpeg
-      (the filter's default ``normalize=1`` would scale inputs and break the intended blend).
+      attenuated, and **amix**'d under narration. The UI slider (0–1) is multiplied by
+      ``_MUSIC_SLIDER_TO_LINEAR_HEADROOM`` before ``volume=`` so mastered beds sit under VO.
+      ``amix`` uses ``normalize=0`` and ``dropout_transition=0`` so FFmpeg does not
+      re-gain inputs when summing (``normalize=1`` would scale and break the intended blend).
     - After the mix, a fixed **0.5** linear gain prevents summing two hot sources from clipping
       before **loudnorm**; relative levels from the sliders are unchanged.
     - Output audio is **loudnorm** toward -16 LUFS integrated (single-pass ``linear=true``).
@@ -126,12 +131,13 @@ def mux_video_with_narration_and_music(
 
         mv_applied: float | None = None
         if use_music and music_idx is not None:
-            mv = max(0.0, min(float(music_volume), 1.0))
-            mv_applied = float(mv)
+            mv_user = max(0.0, min(float(music_volume), 1.0))
+            mv = mv_user * _MUSIC_SLIDER_TO_LINEAR_HEADROOM
+            mv_applied = float(mv_user)
             music_f = (
                 f"[{music_idx}:a]aformat=sample_fmts=fltp:channel_layouts=stereo:sample_rates=48000,"
                 f"atrim=0:{dstr},asetpts=PTS-STARTPTS,volume={mv}[mus];"
-                f"[narr][mus]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[amx];"
+                f"[narr][mus]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amx];"
                 f"[amx]volume=0.5[amh];"
                 f"[amh]loudnorm=I=-16:TP=-1.5:LRA=11:linear=true:print_format=summary[ao]"
             )
@@ -180,6 +186,7 @@ def mux_video_with_narration_and_music(
             "used_music_file": use_music,
             "loudnorm_target_lufs": -16,
             "music_volume_applied": mv_applied,
+            "music_linear_gain": float(mv) if use_music else None,
             "narration_volume_applied": float(nv),
         }
     finally:

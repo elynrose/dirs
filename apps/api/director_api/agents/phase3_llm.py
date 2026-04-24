@@ -102,6 +102,19 @@ def refine_scene_plan_batch(
     for s in out.get("scenes") or []:
         if isinstance(s.get("narration_text"), str):
             s["narration_text"] = sanitize_jsonb_text(s["narration_text"], 12_000)
+        st = s.get("stock_search_terms")
+        if isinstance(st, list):
+            cleaned_st = [
+                sanitize_jsonb_text(str(x), 80).strip() for x in st if x is not None and str(x).strip()
+            ][:8]
+            if cleaned_st:
+                s["stock_search_terms"] = cleaned_st
+            else:
+                s.pop("stock_search_terms", None)
+        elif isinstance(st, str) and st.strip():
+            s["stock_search_terms"] = [sanitize_jsonb_text(st.strip(), 80)]
+        else:
+            s.pop("stock_search_terms", None)
         pp = s.get("prompt_package_json")
         if isinstance(pp, dict):
             if isinstance(pp.get("image_prompt"), str):
@@ -176,6 +189,19 @@ def extend_scene_plan_batch(
     for s in out.get("scenes") or []:
         if isinstance(s.get("narration_text"), str):
             s["narration_text"] = sanitize_jsonb_text(s["narration_text"], 12_000)
+        st = s.get("stock_search_terms")
+        if isinstance(st, list):
+            cleaned_st = [
+                sanitize_jsonb_text(str(x), 80).strip() for x in st if x is not None and str(x).strip()
+            ][:8]
+            if cleaned_st:
+                s["stock_search_terms"] = cleaned_st
+            else:
+                s.pop("stock_search_terms", None)
+        elif isinstance(st, str) and st.strip():
+            s["stock_search_terms"] = [sanitize_jsonb_text(st.strip(), 80)]
+        else:
+            s.pop("stock_search_terms", None)
         pp = s.get("prompt_package_json")
         if isinstance(pp, dict):
             if isinstance(pp.get("image_prompt"), str):

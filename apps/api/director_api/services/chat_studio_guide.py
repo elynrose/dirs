@@ -29,6 +29,7 @@ _BRIEF_PATCH_KEYS = frozenset(
         "preferred_video_provider",
         "preferred_speech_provider",
         "frame_aspect_ratio",
+        "clip_frame_fit",
     }
 )
 
@@ -94,6 +95,10 @@ def _sanitize_brief_patch(raw: Any) -> dict[str, Any]:
             continue
         if k == "frame_aspect_ratio":
             if v in ("16:9", "9:16"):
+                out[k] = v
+            continue
+        if k == "clip_frame_fit":
+            if v in ("center_crop", "letterbox"):
                 out[k] = v
             continue
     return out

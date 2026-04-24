@@ -12,7 +12,9 @@ from uuid import UUID
 import structlog
 from tempfile import NamedTemporaryFile
 
-from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, UploadFile
+import httpx
+
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
@@ -29,6 +31,8 @@ from director_api.services.job_quota import assert_can_enqueue
 from director_api.api.schemas.phase3 import (
     AssetOut,
     AssetRejectBody,
+    ImportPexelsBody,
+    ImportStoryblocksBody,
     PromptEnhanceImageBody,
     PromptEnhanceVoBody,
     PromptExpandVoBody,
@@ -48,8 +52,12 @@ from director_api.services.prompt_enhance import (
     enhance_scene_vo_script,
     expand_scene_vo_script,
 )
+from director_api.providers.pexels_client import search_photos, search_videos
+from director_api.providers.storyblocks_client import search_photos as storyblocks_search_photos
+from director_api.providers.storyblocks_client import search_videos as storyblocks_search_videos
 from director_api.services.scene_clip_upload import (
     AMBIGUOUS_EXTS,
+    MAX_CLIP_SECONDS,
     MAX_UPLOAD_BYTES,
     assert_clip_duration_within_limit,
     classify_from_filename_and_hint,
@@ -57,6 +65,10 @@ from director_api.services.scene_clip_upload import (
     refine_ambiguous_kind,
     validate_explicit_clip_kind,
 )
+from director_api.services.pexels_import_execute import PexelsImportError, execute_pexels_scene_import
+from director_api.services.storyblocks_import_execute import StoryblocksImportError, execute_storyblocks_scene_import
+from director_api.services.pexels_import_support import studio_default_clip_sec
+from director_api.services.scene_timeline_duration import get_scene_narration_audio_duration_sec
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.tasks.job_enqueue import enqueue_run_phase3_job
 from ffmpeg_pipelines.paths import path_from_storage_url, path_is_readable_file
@@ -146,6 +158,38 @@ def _asset_or_404(db: Session, settings: Settings, asset_id: UUID) -> Asset:
     if not a or a.tenant_id != settings.default_tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "asset not found"})
     return a
+
+
+def _pexels_api_key_or_503(settings: Settings) -> str:
+    k = (settings.pexels_api_key or "").strip()
+    if not k:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "PEXELS_NOT_CONFIGURED",
+                "message": "Set PEXELS_API_KEY on the API server to search or import Pexels media.",
+            },
+        )
+    return k
+
+
+def _storyblocks_keys_or_503(settings: Settings) -> tuple[str, str, str, str]:
+    pub = (settings.storyblocks_public_key or "").strip()
+    priv = (settings.storyblocks_private_key or "").strip()
+    if not pub or not priv:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "STORYBLOCKS_NOT_CONFIGURED",
+                "message": (
+                    "Set Storyblocks API public and private keys (workspace Settings or STORYBLOCKS_* env) "
+                    "to search or import Storyblocks media."
+                ),
+            },
+        )
+    vbase = (settings.storyblocks_video_api_base or "").strip() or "https://api.videoblocks.com"
+    ibase = (settings.storyblocks_image_api_base or "").strip() or "https://api.graphicstock.com"
+    return pub, priv, vbase.rstrip("/"), ibase.rstrip("/")
 
 
 def file_response_local_media(
@@ -1001,3 +1045,197 @@ async def upload_scene_clip(
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
+
+
+@router.get("/pexels/photos/search")
+async def pexels_photos_search(
+    query: str = Query(..., min_length=1, max_length=500),
+    page: int = Query(1, ge=1, le=5000),
+    per_page: int = Query(20, ge=1, le=80),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    api_key = _pexels_api_key_or_503(settings)
+    try:
+        data = await search_photos(api_key=api_key, query=query, page=page, per_page=per_page)
+    except httpx.HTTPStatusError as e:
+        log.warning("pexels_photos_search_http", status_code=e.response.status_code)
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "PEXELS_UPSTREAM", "message": "Pexels search request failed."},
+        ) from e
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "PEXELS_NETWORK", "message": str(e)[:240]},
+        ) from e
+    return {"data": data, "meta": meta}
+
+
+@router.get("/pexels/videos/search")
+async def pexels_videos_search(
+    query: str = Query(..., min_length=1, max_length=500),
+    page: int = Query(1, ge=1, le=5000),
+    per_page: int = Query(15, ge=1, le=80),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    api_key = _pexels_api_key_or_503(settings)
+    try:
+        data = await search_videos(api_key=api_key, query=query, page=page, per_page=per_page)
+    except httpx.HTTPStatusError as e:
+        log.warning("pexels_videos_search_http", status_code=e.response.status_code)
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "PEXELS_UPSTREAM", "message": "Pexels search request failed."},
+        ) from e
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "PEXELS_NETWORK", "message": str(e)[:240]},
+        ) from e
+    return {"data": data, "meta": meta}
+
+
+@router.get("/scenes/{scene_id}/pexels-video-trim-hint")
+def pexels_video_trim_hint(
+    scene_id: UUID,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Hints for Pexels video trim choices (scene VO length, planned duration, studio defaults)."""
+    sc = _scene_or_404(db, settings, scene_id)
+    ch = db.get(Chapter, sc.chapter_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
+    project_id = ch.project_id
+    root = Path(settings.local_storage_root).resolve()
+    ffprobe_bin = (settings.ffprobe_bin or "ffprobe").strip() or "ffprobe"
+    narr = get_scene_narration_audio_duration_sec(
+        db,
+        project_id=project_id,
+        scene_id=scene_id,
+        storage_root=root,
+        ffprobe_bin=ffprobe_bin,
+        timeout_sec=90.0,
+    )
+    return {
+        "data": {
+            "scene_narration_sec": narr,
+            "planned_duration_sec": sc.planned_duration_sec,
+            "studio_clip_default_sec": studio_default_clip_sec(settings),
+            "max_clip_sec": MAX_CLIP_SECONDS,
+        },
+        "meta": meta,
+    }
+
+
+@router.post("/scenes/{scene_id}/assets/import-from-pexels")
+async def import_scene_asset_from_pexels(
+    scene_id: UUID,
+    body: ImportPexelsBody,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Download a Pexels photo or video, validate like ``upload-clip``, and attach as a scene asset."""
+    _pexels_api_key_or_503(settings)
+    _scene_or_404(db, settings, scene_id)
+    try:
+        a = await execute_pexels_scene_import(db, settings, scene_id, body)
+    except PexelsImportError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message}) from e
+    return {"data": AssetOut.model_validate(a).model_dump(mode="json"), "meta": meta}
+
+
+@router.get("/storyblocks/photos/search")
+async def storyblocks_photos_search(
+    query: str = Query(..., min_length=1, max_length=500),
+    page: int = Query(1, ge=1, le=5000),
+    per_page: int = Query(20, ge=1, le=100),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    pub, priv, _vbase, ibase = _storyblocks_keys_or_503(settings)
+    try:
+        data = await storyblocks_search_photos(
+            public_key=pub,
+            private_key=priv,
+            base_url=ibase,
+            query=query,
+            page=page,
+            per_page=per_page,
+        )
+    except httpx.HTTPStatusError as e:
+        log.warning("storyblocks_photos_search_http", status_code=e.response.status_code)
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "STORYBLOCKS_UPSTREAM", "message": "Storyblocks image search request failed."},
+        ) from e
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "STORYBLOCKS_NETWORK", "message": str(e)[:240]},
+        ) from e
+    except ValueError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "STORYBLOCKS_UPSTREAM", "message": str(e)[:240]},
+        ) from e
+    return {"data": data, "meta": meta}
+
+
+@router.get("/storyblocks/videos/search")
+async def storyblocks_videos_search(
+    query: str = Query(..., min_length=1, max_length=500),
+    page: int = Query(1, ge=1, le=5000),
+    per_page: int = Query(15, ge=1, le=100),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    pub, priv, vbase, _ibase = _storyblocks_keys_or_503(settings)
+    try:
+        data = await storyblocks_search_videos(
+            public_key=pub,
+            private_key=priv,
+            base_url=vbase,
+            query=query,
+            page=page,
+            per_page=per_page,
+        )
+    except httpx.HTTPStatusError as e:
+        log.warning("storyblocks_videos_search_http", status_code=e.response.status_code)
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "STORYBLOCKS_UPSTREAM", "message": "Storyblocks video search request failed."},
+        ) from e
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "STORYBLOCKS_NETWORK", "message": str(e)[:240]},
+        ) from e
+    except ValueError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "STORYBLOCKS_UPSTREAM", "message": str(e)[:240]},
+        ) from e
+    return {"data": data, "meta": meta}
+
+
+@router.post("/scenes/{scene_id}/assets/import-from-storyblocks")
+async def import_scene_asset_from_storyblocks(
+    scene_id: UUID,
+    body: ImportStoryblocksBody,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Download Storyblocks media via partner download API, validate like ``upload-clip``, attach as scene asset."""
+    _storyblocks_keys_or_503(settings)
+    _scene_or_404(db, settings, scene_id)
+    try:
+        a = await execute_storyblocks_scene_import(db, settings, scene_id, body)
+    except StoryblocksImportError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message}) from e
+    return {"data": AssetOut.model_validate(a).model_dump(mode="json"), "meta": meta}

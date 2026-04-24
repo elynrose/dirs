@@ -1,6 +1,6 @@
 [project]
 name = "director-api"
-version = "0.1.0"
+version = "1.0.0"
 description = "Directely studio orchestration API (FastAPI)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -67,6 +67,8 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Resolve ``ffmpeg_pipelines`` from the repo (matches ``dependencies``) instead of an older site-packages wheel.
+pythonpath = ["../../packages/ffmpeg-pipelines"]
 markers = [
     "stress: load or resilience checks (some require STRESS_INTEGRATION=1)",
     "stress_destructive: may restart containers or fill disk — run manually",

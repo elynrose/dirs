@@ -71,11 +71,42 @@ function _validationDetailSummary(detailArr) {
   return s ? `${s}${more}` : "";
 }
 
-/** Best-effort message from API error JSON (matches common FastAPI / app shapes). Avoids dumping raw JSON to users. */
-export function apiErrorMessage(body) {
+/**
+ * Best-effort message from API error JSON (matches common FastAPI / app shapes).
+ * Avoids dumping raw JSON to users.
+ *
+ * @param {unknown} body — Parsed JSON from `parseJson`, or `{ raw: string }` when the body was not JSON.
+ * @param {number} [httpStatus] — HTTP status when known (clearer fallbacks).
+ */
+export function apiErrorMessage(body, httpStatus) {
   if (body == null) return "Request failed.";
   if (typeof body === "string") return humanizeErrorText(body);
   if (typeof body !== "object") return String(body);
+
+  const st = typeof httpStatus === "number" && Number.isFinite(httpStatus) ? httpStatus : null;
+  const stHint = st != null ? ` (HTTP ${st})` : "";
+
+  if (typeof body.raw === "string") {
+    const raw = body.raw.trim();
+    if (!raw) {
+      return `Empty response from the server${stHint}. Is the API process running on port 8000?`;
+    }
+    if (/^<!DOCTYPE|^<html[\s>]/i.test(raw) || raw.startsWith("<")) {
+      return `The server returned HTML instead of JSON${stHint} — often a proxy error or the API is not running. Check the API terminal or Docker logs.`;
+    }
+    const tryJson = raw.startsWith("{") || raw.startsWith("[");
+    if (tryJson) {
+      try {
+        const inner = JSON.parse(raw);
+        const innerMsg = apiErrorMessage(inner, st ?? undefined);
+        if (innerMsg && !/^Request failed(\s|$)/.test(innerMsg)) return innerMsg;
+      } catch {
+        /* ignore */
+      }
+    }
+    return humanizeErrorText(raw.length > 500 ? `${raw.slice(0, 480)}…` : raw);
+  }
+
   const d = body.detail;
   const hint =
     d && typeof d === "object" && typeof d.hint === "string" && d.hint.trim()
@@ -98,10 +129,32 @@ export function apiErrorMessage(body) {
   }
   const msg = body?.detail?.message;
   if (typeof msg === "string") return `${msg}${hint}`;
-  if (body?.error?.message) return `${body.error.message}${hint}`;
   if (typeof body.message === "string") return `${body.message}${hint}`;
   if (typeof body.error === "string") return `${body.error}${hint}`;
-  return "Request failed — check the network tab or server logs if this keeps happening.";
+
+  const envErr = body.error;
+  if (envErr && typeof envErr === "object") {
+    const m = typeof envErr.message === "string" ? envErr.message.trim() : "";
+    const c = typeof envErr.code === "string" ? envErr.code.trim() : "";
+    if (m) {
+      if (
+        c === "INTERNAL_ERROR" &&
+        /unexpected error occurred|internal error/i.test(m) &&
+        m.length < 120
+      ) {
+        return (
+          "The API hit an unexpected error. Check the API terminal (uvicorn) for the full traceback. " +
+          "If Postgres was just created or you pulled new code, from apps/api run: alembic upgrade head"
+        );
+      }
+      return `${m}${hint}`;
+    }
+    if (c) {
+      return `Error: ${c}${stHint}.${hint || " Check API logs for details."}`;
+    }
+  }
+
+  return `Request failed${stHint}. The response was not a recognized error format — in DevTools → Network, open the failed request and read Response; also check the API process logs.`;
 }
 
 /** For `catch (e)` / `setError` from mixed API bodies, `Error` throws, and worker strings. */

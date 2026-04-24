@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class SceneOut(BaseModel):
@@ -25,6 +25,20 @@ class SceneOut(BaseModel):
     critic_waiver_actor_id: str | None = None
     approved_at: datetime | None
     asset_count: int | None = None
+
+    @computed_field
+    @property
+    def stock_search_terms(self) -> list[str]:
+        """Phrases for stock search (Pexels, etc.), stored under ``prompt_package_json`` when scenes are planned."""
+        pp = self.prompt_package_json
+        if not isinstance(pp, dict):
+            return []
+        raw = pp.get("stock_search_terms")
+        if isinstance(raw, list):
+            return [str(x).strip() for x in raw if x is not None and str(x).strip()][:8]
+        if isinstance(raw, str) and raw.strip():
+            return [raw.strip()[:80]]
+        return []
 
 
 class ScenePatch(BaseModel):
@@ -134,6 +148,28 @@ class SceneAssetSequenceBody(BaseModel):
     """Ordered asset IDs (first = earliest in scene playback order). Other scene assets are renumbered after these."""
 
     asset_ids: list[UUID] = Field(..., min_length=1)
+
+
+class ImportPexelsBody(BaseModel):
+    """Import a Pexels photo or video into the scene library (server downloads and stores like an upload)."""
+
+    kind: Literal["photo", "video"]
+    pexels_id: int = Field(..., ge=1, le=2_000_000_000)
+    video_trim_target: Literal["5", "10", "scene_narration"] | None = Field(
+        default=None,
+        description="When the downloaded video exceeds the clip cap: trim to 5s, 10s, or scene narration length (capped at 10s). Photos ignore.",
+    )
+
+
+class ImportStoryblocksBody(BaseModel):
+    """Import a Storyblocks still (GraphicStock) or footage clip (VideoBlocks) into the scene library."""
+
+    kind: Literal["photo", "video"]
+    storyblocks_id: int = Field(..., ge=1, le=9_000_000_000)
+    video_trim_target: Literal["5", "10", "scene_narration"] | None = Field(
+        default=None,
+        description="When the downloaded video exceeds the clip cap: trim to 5s, 10s, or scene narration length (capped at 10s). Photos ignore.",
+    )
 
 
 class AssetOut(BaseModel):

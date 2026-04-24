@@ -18,6 +18,7 @@ from director_api.db.models import AgentRun, Job
 from director_api.db.session import SessionLocal
 from director_api.services.runtime_settings import resolve_runtime_settings
 from director_api.tasks.celery_app import celery_app
+from director_api.services.project_ideas import process_due_scheduled_idea_runs
 
 log = structlog.get_logger(__name__)
 
@@ -104,3 +105,10 @@ def reap_stale_agent_runs() -> dict[str, Any]:
                     stale_after_minutes=minutes,
                 )
     return {"reaped_agent_runs": n, "stale_after_minutes": minutes}
+
+
+@celery_app.task(name="director.process_due_idea_schedules")
+def process_due_idea_schedules() -> dict[str, Any]:
+    """Fire agent runs for idea rows whose ``scheduled_at`` is due (requires Celery beat)."""
+    with SessionLocal() as db:
+        return process_due_scheduled_idea_runs(db)

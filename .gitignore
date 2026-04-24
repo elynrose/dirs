@@ -27,6 +27,8 @@ htmlcov/
 venv/
 apps/api/.venv/
 apps/electron/release/
+apps/electron/release-installer/
+apps/electron/release-build/
 /data/
 # Pip / build scratch
 .tmp_wheel/

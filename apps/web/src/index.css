@@ -3,10 +3,190 @@
   line-height: 1.4;
   color: #f5f5f5;
   background: radial-gradient(circle at 20% 0%, #1a1a1a 0, #090909 55%);
+  color-scheme: dark;
+  /* Scrollbars — match panel / border language (thin light thumb on near-black track) */
+  --scrollbar-size: 10px;
+  --scrollbar-track: rgb(8 8 10 / 92%);
+  --scrollbar-thumb: rgb(255 255 255 / 20%);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 34%);
+  --scrollbar-thumb-active: rgb(255 255 255 / 48%);
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Firefox: inherited by scrollable descendants */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/*
+ * WebKit scrollbars: scope to real scroll roots only.
+ * Universal *::-webkit-scrollbar caused extra pill-shaped tracks/glitches on <details>, flex children, etc.
+ */
+html::-webkit-scrollbar,
+.studio-page-rail::-webkit-scrollbar,
+.usage-page::-webkit-scrollbar,
+.legal-page::-webkit-scrollbar,
+.account-page::-webkit-scrollbar,
+.admin-console::-webkit-scrollbar,
+.studio-error-boundary::-webkit-scrollbar,
+.inspector-panel::-webkit-scrollbar,
+.assets-panel::-webkit-scrollbar,
+.canvas-panel::-webkit-scrollbar,
+.timeline-panel::-webkit-scrollbar,
+.studio-preauth-shell__card::-webkit-scrollbar,
+.editor-scene-tabs__list::-webkit-scrollbar,
+.editor-scene-tabs__panel::-webkit-scrollbar,
+.asset-tree::-webkit-scrollbar,
+.studio-error-boundary__detail::-webkit-scrollbar,
+.chat-studio__project-list::-webkit-scrollbar,
+.chat-studio__setup-thread::-webkit-scrollbar,
+.chat-studio__thread::-webkit-scrollbar,
+pre::-webkit-scrollbar,
+textarea::-webkit-scrollbar,
+.pipeline-status-block--scrollable::-webkit-scrollbar,
+.pipeline-status-block--scrollable-lg::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+html::-webkit-scrollbar-track,
+.studio-page-rail::-webkit-scrollbar-track,
+.usage-page::-webkit-scrollbar-track,
+.legal-page::-webkit-scrollbar-track,
+.account-page::-webkit-scrollbar-track,
+.admin-console::-webkit-scrollbar-track,
+.studio-error-boundary::-webkit-scrollbar-track,
+.inspector-panel::-webkit-scrollbar-track,
+.assets-panel::-webkit-scrollbar-track,
+.canvas-panel::-webkit-scrollbar-track,
+.timeline-panel::-webkit-scrollbar-track,
+.studio-preauth-shell__card::-webkit-scrollbar-track,
+.editor-scene-tabs__list::-webkit-scrollbar-track,
+.editor-scene-tabs__panel::-webkit-scrollbar-track,
+.asset-tree::-webkit-scrollbar-track,
+.studio-error-boundary__detail::-webkit-scrollbar-track,
+.chat-studio__project-list::-webkit-scrollbar-track,
+.chat-studio__setup-thread::-webkit-scrollbar-track,
+.chat-studio__thread::-webkit-scrollbar-track,
+pre::-webkit-scrollbar-track,
+textarea::-webkit-scrollbar-track,
+.pipeline-status-block--scrollable::-webkit-scrollbar-track,
+.pipeline-status-block--scrollable-lg::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 6px;
+}
+
+html::-webkit-scrollbar-thumb,
+.studio-page-rail::-webkit-scrollbar-thumb,
+.usage-page::-webkit-scrollbar-thumb,
+.legal-page::-webkit-scrollbar-thumb,
+.account-page::-webkit-scrollbar-thumb,
+.admin-console::-webkit-scrollbar-thumb,
+.studio-error-boundary::-webkit-scrollbar-thumb,
+.inspector-panel::-webkit-scrollbar-thumb,
+.assets-panel::-webkit-scrollbar-thumb,
+.canvas-panel::-webkit-scrollbar-thumb,
+.timeline-panel::-webkit-scrollbar-thumb,
+.studio-preauth-shell__card::-webkit-scrollbar-thumb,
+.editor-scene-tabs__list::-webkit-scrollbar-thumb,
+.editor-scene-tabs__panel::-webkit-scrollbar-thumb,
+.asset-tree::-webkit-scrollbar-thumb,
+.studio-error-boundary__detail::-webkit-scrollbar-thumb,
+.chat-studio__project-list::-webkit-scrollbar-thumb,
+.chat-studio__setup-thread::-webkit-scrollbar-thumb,
+.chat-studio__thread::-webkit-scrollbar-thumb,
+pre::-webkit-scrollbar-thumb,
+textarea::-webkit-scrollbar-thumb,
+.pipeline-status-block--scrollable::-webkit-scrollbar-thumb,
+.pipeline-status-block--scrollable-lg::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+html::-webkit-scrollbar-thumb:hover,
+.studio-page-rail::-webkit-scrollbar-thumb:hover,
+.usage-page::-webkit-scrollbar-thumb:hover,
+.legal-page::-webkit-scrollbar-thumb:hover,
+.account-page::-webkit-scrollbar-thumb:hover,
+.admin-console::-webkit-scrollbar-thumb:hover,
+.studio-error-boundary::-webkit-scrollbar-thumb:hover,
+.inspector-panel::-webkit-scrollbar-thumb:hover,
+.assets-panel::-webkit-scrollbar-thumb:hover,
+.canvas-panel::-webkit-scrollbar-thumb:hover,
+.timeline-panel::-webkit-scrollbar-thumb:hover,
+.studio-preauth-shell__card::-webkit-scrollbar-thumb:hover,
+.editor-scene-tabs__list::-webkit-scrollbar-thumb:hover,
+.editor-scene-tabs__panel::-webkit-scrollbar-thumb:hover,
+.asset-tree::-webkit-scrollbar-thumb:hover,
+.studio-error-boundary__detail::-webkit-scrollbar-thumb:hover,
+.chat-studio__project-list::-webkit-scrollbar-thumb:hover,
+.chat-studio__setup-thread::-webkit-scrollbar-thumb:hover,
+.chat-studio__thread::-webkit-scrollbar-thumb:hover,
+pre::-webkit-scrollbar-thumb:hover,
+textarea::-webkit-scrollbar-thumb:hover,
+.pipeline-status-block--scrollable::-webkit-scrollbar-thumb:hover,
+.pipeline-status-block--scrollable-lg::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+html::-webkit-scrollbar-thumb:active,
+.studio-page-rail::-webkit-scrollbar-thumb:active,
+.usage-page::-webkit-scrollbar-thumb:active,
+.legal-page::-webkit-scrollbar-thumb:active,
+.account-page::-webkit-scrollbar-thumb:active,
+.admin-console::-webkit-scrollbar-thumb:active,
+.studio-error-boundary::-webkit-scrollbar-thumb:active,
+.inspector-panel::-webkit-scrollbar-thumb:active,
+.assets-panel::-webkit-scrollbar-thumb:active,
+.canvas-panel::-webkit-scrollbar-thumb:active,
+.timeline-panel::-webkit-scrollbar-thumb:active,
+.studio-preauth-shell__card::-webkit-scrollbar-thumb:active,
+.editor-scene-tabs__list::-webkit-scrollbar-thumb:active,
+.editor-scene-tabs__panel::-webkit-scrollbar-thumb:active,
+.asset-tree::-webkit-scrollbar-thumb:active,
+.studio-error-boundary__detail::-webkit-scrollbar-thumb:active,
+.chat-studio__project-list::-webkit-scrollbar-thumb:active,
+.chat-studio__setup-thread::-webkit-scrollbar-thumb:active,
+.chat-studio__thread::-webkit-scrollbar-thumb:active,
+pre::-webkit-scrollbar-thumb:active,
+textarea::-webkit-scrollbar-thumb:active,
+.pipeline-status-block--scrollable::-webkit-scrollbar-thumb:active,
+.pipeline-status-block--scrollable-lg::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-active);
+  background-clip: padding-box;
+}
+
+html::-webkit-scrollbar-corner,
+.studio-page-rail::-webkit-scrollbar-corner,
+.usage-page::-webkit-scrollbar-corner,
+.legal-page::-webkit-scrollbar-corner,
+.account-page::-webkit-scrollbar-corner,
+.admin-console::-webkit-scrollbar-corner,
+.studio-error-boundary::-webkit-scrollbar-corner,
+.inspector-panel::-webkit-scrollbar-corner,
+.assets-panel::-webkit-scrollbar-corner,
+.canvas-panel::-webkit-scrollbar-corner,
+.timeline-panel::-webkit-scrollbar-corner,
+.studio-preauth-shell__card::-webkit-scrollbar-corner,
+.editor-scene-tabs__list::-webkit-scrollbar-corner,
+.editor-scene-tabs__panel::-webkit-scrollbar-corner,
+.asset-tree::-webkit-scrollbar-corner,
+.studio-error-boundary__detail::-webkit-scrollbar-corner,
+.chat-studio__project-list::-webkit-scrollbar-corner,
+.chat-studio__setup-thread::-webkit-scrollbar-corner,
+.chat-studio__thread::-webkit-scrollbar-corner,
+pre::-webkit-scrollbar-corner,
+textarea::-webkit-scrollbar-corner,
+.pipeline-status-block--scrollable::-webkit-scrollbar-corner,
+.pipeline-status-block--scrollable-lg::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
 }
 
 body {
@@ -1283,7 +1463,6 @@ h3 {
   overflow-y: hidden;
   flex: 1 1 auto;
   min-width: 0;
-  scrollbar-width: thin;
 }
 .editor-scene-tabs__tab-item {
   display: flex;
@@ -1493,9 +1672,50 @@ h3 {
   gap: 10px;
 }
 
+.brief-idea-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 4px 7px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 6px;
+  background: rgb(0 0 0 / 22%);
+  color: #b0b0b0;
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.brief-idea-delete-btn:hover {
+  color: #f87171;
+  border-color: rgb(248 113 113 / 40%);
+  background: rgb(248 113 113 / 10%);
+}
+
+.brief-idea-delete-btn:focus-visible {
+  outline: 2px solid rgb(248 113 113 / 45%);
+  outline-offset: 2px;
+}
+
+.brief-idea-delete-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .brief-pipeline-controls-row {
   margin-top: 14px;
   margin-bottom: 0;
+  width: 100%;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.brief-pipeline-controls-row .segmented.segmented--pipeline-three {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .segmented.segmented--pipeline-three button {
@@ -2553,7 +2773,7 @@ button.asset-row:focus-visible {
   margin-top: 4px;
 }
 
-details summary {
+details summary:not(.settings-section-summary) {
   margin-top: 10px;
   cursor: pointer;
   font-size: 0.76rem;
@@ -2704,6 +2924,9 @@ h3.settings-section-heading-static {
   flex-direction: column;
   gap: 18px;
   align-items: stretch;
+  /* Native WebKit scrollbars here — custom ::-webkit-scrollbar rules caused stray pill-shaped glitches in this panel */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 details.settings-section {
@@ -2715,7 +2938,35 @@ details.settings-section {
   border: 1px solid rgb(255 255 255 / 11%);
   border-radius: 14px;
   box-shadow: 0 2px 14px rgb(0 0 0 / 22%);
+  /*
+   * Do not use overflow: hidden on <details> — in Chromium/WebKit the disclosure box can clip the
+   * <summary> row to a few pixels tall, leaving “empty pill” accordions (API keys tab).
+   * Clip only the expandable body; keep summary painting above.
+   */
+  overflow: visible;
+}
+
+details.settings-section > .settings-section-body {
+  border-radius: 0 0 12px 12px;
   overflow: hidden;
+}
+
+details.settings-section:not([open]) > .settings-section-summary {
+  border-radius: 13px;
+}
+
+details.settings-section > .settings-section-summary {
+  margin-top: 0;
+  font-size: 1rem;
+  line-height: 1.35;
+  color: #f0f0f0;
+  overflow: visible;
+  background: linear-gradient(180deg, rgb(255 255 255 / 7%) 0%, rgb(255 255 255 / 2.5%) 100%);
+  transition: background-color 0.15s ease;
+}
+
+details.settings-section > .settings-section-summary:hover {
+  background-color: rgb(255 255 255 / 6%);
 }
 
 details.settings-section:last-child {
@@ -2744,6 +2995,27 @@ details.settings-section:last-child {
   margin: 8px 22px 0;
   font-size: 0.78rem;
   opacity: 0.85;
+}
+
+/* Ideas page topic field — full width of panel (avoid prompts-editor horizontal margins). */
+textarea.ideas-topic {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin-top: 6px;
+  min-height: 5.5rem;
+  padding: 12px 14px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  border-radius: 10px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  background: rgb(0 0 0 / 35%);
+  color: inherit;
+  resize: vertical;
+  overflow: auto;
 }
 
 .prompts-editor-textarea {
@@ -2778,7 +3050,7 @@ details.settings-section:last-child {
   list-style: none;
   user-select: none;
   font-family: inherit;
-  color: inherit;
+  color: #f0f0f0;
 }
 
 .settings-section-summary:focus {
@@ -2797,11 +3069,11 @@ details.settings-section:last-child {
 .settings-section-summary::before {
   content: "";
   display: block;
-  width: 0.45em;
-  height: 0.45em;
-  margin-top: 0.1em;
-  border-right: 2px solid rgb(255 255 255 / 55%);
-  border-bottom: 2px solid rgb(255 255 255 / 55%);
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: 0.12rem;
+  border-right: 2px solid rgb(255 255 255 / 70%);
+  border-bottom: 2px solid rgb(255 255 255 / 70%);
   transform: rotate(-45deg);
   transition: transform 0.15s ease;
   flex-shrink: 0;
@@ -2809,10 +3081,11 @@ details.settings-section:last-child {
 
 details.settings-section[open] > .settings-section-summary::before {
   transform: rotate(45deg);
-  margin-top: 0.2em;
+  margin-top: 0.18rem;
 }
 
 details.settings-section[open] > .settings-section-summary {
+  border-radius: 13px 13px 0 0;
   border-bottom: 1px solid rgb(255 255 255 / 10%);
   padding-bottom: 14px;
   margin-bottom: 4px;
@@ -2822,8 +3095,11 @@ details.settings-section[open] > .settings-section-summary {
   margin: 0;
   font-size: 1.05rem;
   font-weight: 600;
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: min-content;
   text-align: left;
+  color: #f0f0f0;
+  letter-spacing: 0.01em;
 }
 
 .settings-section-body {

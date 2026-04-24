@@ -21,6 +21,7 @@ from director_api.db.models import AgentRun, Project
 from director_api.db.session import get_db
 from director_api.tasks.worker_tasks import run_agent_run
 from director_api.services.agent_resume import normalize_pipeline_options_for_persist
+from director_api.services.project_frame import coerce_clip_frame_fit
 from director_api.services.tenant_entitlements import assert_agent_run_pipeline_allowed, assert_can_create_project
 from director_api.validation.brief import validate_documentary_brief
 
@@ -136,6 +137,7 @@ def _project_from_brief(
         preferred_video_provider=b.preferred_video_provider,
         preferred_speech_provider=b.preferred_speech_provider,
         frame_aspect_ratio=(b.frame_aspect_ratio or "16:9"),
+        clip_frame_fit=coerce_clip_frame_fit(getattr(b, "clip_frame_fit", None)),
     )
     db.add(p)
     db.flush()

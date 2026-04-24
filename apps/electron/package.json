@@ -1,6 +1,6 @@
 {
   "name": "director-electron",
-  "version": "0.1.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Directely studio — Electron desktop shell",
   "author": "Directely",
@@ -26,7 +26,7 @@
   "build": {
     "appId": "com.director.studio",
     "productName": "Directely",
-    "copyright": "Copyright © 2025 Directely",
+    "copyright": "Copyright © 2026 Directely",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release",
@@ -40,7 +40,9 @@
       {
         "from": "../web/dist",
         "to": "web-dist",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "../../docker-compose.yml",
@@ -84,8 +86,20 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "darkModeSupport": true,
       "hardenedRuntime": true,
@@ -96,21 +110,45 @@
     },
     "dmg": {
       "title": "Directely ${version}",
-      "window": { "width": 540, "height": 380 },
+      "window": {
+        "width": 540,
+        "height": 380
+      },
       "contents": [
-        { "x": 140, "y": 200, "type": "file" },
-        { "x": 400, "y": 200, "type": "link", "path": "/Applications" }
+        {
+          "x": 140,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
       ],
       "iconSize": 100
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "zip",  "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "signAndEditExecutable": false
     },
     "nsis": {
+      "include": "build-assets/nsis-docker-note.nsh",
+      "license": "../../LICENSE",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
@@ -121,7 +159,12 @@
     },
     "linux": {
       "target": [
-        { "target": "AppImage", "arch": ["x64"] }
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "category": "Office"
     }

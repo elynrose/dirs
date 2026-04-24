@@ -4,7 +4,7 @@
 import { app, BrowserWindow, dialog } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
@@ -15,7 +15,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /** Bump when bundled backend layout or install steps change (forces pip reinstall). */
-const BACKEND_BOOTSTRAP_VERSION = "1";
+const BACKEND_BOOTSTRAP_VERSION = "2";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = 8000;
@@ -94,8 +94,188 @@ function parseDotEnv(text) {
   return out;
 }
 
+/**
+ * Packaged apps started from the Start menu often inherit a short PATH, so `spawn("docker")`
+ * or `spawn("py")` fails with `Error: spawn UNKNOWN` / ENOENT. Prepend well-known install dirs.
+ */
+function augmentedProcessEnv(extra = {}) {
+  const base = { ...process.env, ...extra };
+  if (process.platform !== "win32") {
+    return base;
+  }
+  const additions = [];
+  const add = (dir) => {
+    if (dir && fs.existsSync(dir)) additions.push(dir);
+  };
+  const sr = process.env.SystemRoot || "C:\\Windows";
+  add(sr);
+  add(path.join(sr, "System32"));
+  add(path.join(sr, "System32", "Wbem"));
+  add(path.join(sr, "System32", "WindowsPowerShell", "v1.0"));
+  const pf = process.env.ProgramFiles;
+  const pf86 = process.env["ProgramFiles(x86)"];
+  if (pf) add(path.join(pf, "Docker", "Docker", "resources", "bin"));
+  if (pf86) add(path.join(pf86, "Docker", "Docker", "resources", "bin"));
+  const la = process.env.LOCALAPPDATA;
+  if (la) {
+    for (const ver of ["Python314", "Python313", "Python312", "Python311"]) {
+      add(path.join(la, "Programs", "Python", ver));
+      add(path.join(la, "Programs", "Python", ver, "Scripts"));
+    }
+  }
+  if (pf) {
+    add(path.join(pf, "Python311"));
+    add(path.join(pf, "Python312"));
+    add(path.join(pf, "Python313"));
+  }
+  const uniq = [...new Set(additions)];
+  const prefix = uniq.join(path.delimiter);
+  const pathKey = Object.keys(base).find((k) => k.toLowerCase() === "path") || "PATH";
+  const cur = base[pathKey] || "";
+  const merged = prefix ? `${prefix}${path.delimiter}${cur}` : cur;
+  base[pathKey] = merged;
+  base.PATH = merged;
+  return base;
+}
+
+function dockerCliConfigPath() {
+  return path.join(app.getPath("userData"), "docker-cli.json");
+}
+
+function readSavedDockerExe() {
+  try {
+    const j = JSON.parse(fs.readFileSync(dockerCliConfigPath(), "utf8"));
+    const exe = typeof j.dockerExe === "string" ? j.dockerExe.trim() : "";
+    if (exe && fs.existsSync(exe)) return path.normalize(exe);
+  } catch {
+    /* missing or invalid */
+  }
+  return null;
+}
+
+function writeSavedDockerExe(exe) {
+  fs.mkdirSync(app.getPath("userData"), { recursive: true });
+  fs.writeFileSync(dockerCliConfigPath(), JSON.stringify({ dockerExe: exe }, null, 2), "utf8");
+}
+
+function defaultWindowsDockerExeCandidates() {
+  const pf = process.env.ProgramFiles;
+  const pf86 = process.env["ProgramFiles(x86)"];
+  return [
+    pf && path.join(pf, "Docker", "Docker", "resources", "bin", "docker.exe"),
+    pf86 && path.join(pf86, "Docker", "Docker", "resources", "bin", "docker.exe"),
+  ].filter(Boolean);
+}
+
+/** Docker CLI for `docker compose`: saved path, then DOCKER_BIN in .env, then common install dirs, then `docker`. */
+function resolveDockerExecutable() {
+  const saved = readSavedDockerExe();
+  if (saved) return saved;
+  try {
+    const env = loadMergedEnv();
+    const fromEnv = (env.DOCKER_BIN || "")
+      .trim()
+      .replace(/^["']|["']$/g, "");
+    if (fromEnv && fs.existsSync(fromEnv)) return path.normalize(fromEnv);
+  } catch {
+    /* ignore */
+  }
+  if (process.platform === "win32") {
+    for (const p of defaultWindowsDockerExeCandidates()) {
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return "docker";
+}
+
+function dockerComposeCliWorks(dockerExe) {
+  const r = spawnSync(dockerExe, ["compose", "version"], {
+    encoding: "utf8",
+    timeout: 30_000,
+    windowsHide: true,
+    env: loadMergedEnv(),
+  });
+  return r.status === 0;
+}
+
+/**
+ * If `docker compose` cannot run, prompt for docker.exe (Windows) or docker (macOS/Linux) and save under userData.
+ * Runs before the stack is brought up (no BrowserWindow yet — native dialogs only).
+ */
+async function ensureDockerCli() {
+  const envHint =
+    process.platform === "win32"
+      ? "Typical Docker Desktop path:\nC:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\n\nYou can also set DOCKER_BIN in your app .env:\n" +
+        userEnvPath()
+      : "Install Docker and ensure `docker compose version` works in a terminal, or set DOCKER_BIN in your app .env.";
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const exe = resolveDockerExecutable();
+    if (dockerComposeCliWorks(exe)) return;
+
+    const detail =
+      attempt === 0
+        ? `Directely could not run:\n  ${exe} compose version\n\n${envHint}`
+        : `Still could not run Docker Compose with:\n  ${exe}\n\n${envHint}`;
+
+    const pick = await dialog.showMessageBox({
+      type: "warning",
+      buttons: process.platform === "win32" ? ["Locate docker.exe…", "Quit"] : ["Locate docker CLI…", "Quit"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Docker required",
+      message: "Docker is required to start the local database stack (PostgreSQL / Redis).",
+      detail,
+    });
+
+    if (pick.response !== 0) {
+      throw new Error(
+        "Docker is required. Install Docker Desktop, or set DOCKER_BIN in your .env to the full path of docker.exe, then start Directely again.",
+      );
+    }
+
+    const defaultPath =
+      process.platform === "win32"
+        ? path.join(process.env.ProgramFiles || "C:\\Program Files", "Docker", "Docker", "resources", "bin")
+        : "/usr/local/bin";
+
+    const openOpts = {
+      title: process.platform === "win32" ? "Select docker.exe" : "Select docker CLI",
+      defaultPath: fs.existsSync(defaultPath) ? defaultPath : undefined,
+      properties: ["openFile"],
+    };
+    if (process.platform === "win32") {
+      openOpts.filters = [{ name: "Docker CLI", extensions: ["exe"] }];
+    }
+    const { canceled, filePaths } = await dialog.showOpenDialog(openOpts);
+
+    if (canceled || !filePaths?.[0]) {
+      throw new Error("No Docker executable was selected.");
+    }
+
+    const picked = path.normalize(filePaths[0]);
+    if (process.platform === "win32") {
+      const base = path.basename(picked).toLowerCase();
+      if (base !== "docker.exe") {
+        const confirm = await dialog.showMessageBox({
+          type: "question",
+          buttons: ["Use this file", "Pick again"],
+          defaultId: 0,
+          cancelId: 1,
+          message: `The selected file is "${path.basename(picked)}". It is usually named docker.exe.`,
+        });
+        if (confirm.response !== 0) continue;
+      }
+    }
+
+    writeSavedDockerExe(picked);
+  }
+
+  throw new Error("Could not configure Docker after multiple attempts.");
+}
+
 function loadMergedEnv() {
-  const base = { ...process.env };
+  const base = augmentedProcessEnv();
   if (fs.existsSync(userEnvPath())) {
     const parsed = parseDotEnv(fs.readFileSync(userEnvPath(), "utf8"));
     Object.assign(base, parsed);
@@ -123,12 +303,24 @@ function ensureUserEnvFile(paths) {
 }
 
 function run(cmd, args, options = {}) {
+  const { env: envOverride, ...spawnRest } = options;
+  const env = envOverride ? { ...augmentedProcessEnv(), ...envOverride } : augmentedProcessEnv();
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
       stdio: "inherit",
-      ...options,
+      ...spawnRest,
+      env,
     });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      reject(
+        new Error(
+          `Failed to run "${cmd}": ${err.message}${err.code != null ? ` (${String(err.code)})` : ""}. ` +
+            (process.platform === "win32"
+              ? "Install Docker Desktop and Python 3.11+, then fully quit and reopen Directely (GUI apps may not see a fresh PATH until you sign out or restart)."
+              : "Ensure Docker and Python 3.11+ are installed and on PATH."),
+        ),
+      );
+    });
     child.on("close", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`${cmd} ${args.join(" ")} exited ${code}`));
@@ -139,9 +331,11 @@ function run(cmd, args, options = {}) {
 /** `parts` = executable + optional launcher args, e.g. `['py', '-3.12']` or `['python3.12']`. */
 function runPythonVersionCheck(parts) {
   const [cmd, ...pre] = parts;
+  const env = augmentedProcessEnv();
   return new Promise((resolve) => {
     const child = spawn(cmd, [...pre, "-c", "import sys; sys.exit(0 if sys.version_info[:2]>=(3,11) else 1)"], {
       stdio: "ignore",
+      env,
     });
     child.on("close", (code) => resolve(code === 0));
     child.on("error", () => resolve(false));
@@ -154,26 +348,41 @@ function runPythonVersionCheck(parts) {
  */
 async function resolveHostPython() {
   /** @type {string[][]} */
-  const candidates =
-    process.platform === "win32"
-      ? [
-          ["py", "-3.13"],
-          ["py", "-3.12"],
-          ["py", "-3.11"],
-          ["python"],
-          ["python3"],
-        ]
-      : [
-          ["python3.13"],
-          ["python3.12"],
-          ["python3.11"],
-          ["python3"],
-        ];
+  let candidates;
+  if (process.platform === "win32") {
+    const la = process.env.LOCALAPPDATA;
+    const sr = process.env.SystemRoot || "C:\\Windows";
+    const absPythons = [];
+    if (la) {
+      for (const ver of ["Python314", "Python313", "Python312", "Python311"]) {
+        const exe = path.join(la, "Programs", "Python", ver, "python.exe");
+        if (fs.existsSync(exe)) absPythons.push([exe]);
+      }
+    }
+    candidates = [
+      ...absPythons,
+      [path.join(sr, "py.exe")],
+      ["py", "-3.13"],
+      ["py", "-3.12"],
+      ["py", "-3.11"],
+      ["python"],
+      ["python3"],
+    ];
+  } else {
+    candidates = [
+      ["python3.13"],
+      ["python3.12"],
+      ["python3.11"],
+      ["python3"],
+    ];
+  }
   for (const parts of candidates) {
     if (await runPythonVersionCheck(parts)) return parts;
   }
   throw new Error(
-    "Python 3.11+ not found on PATH. Install e.g. `brew install python@3.12` and ensure `python3.12` is on PATH, then restart Directely.",
+    process.platform === "win32"
+      ? "Python 3.11+ not found. Install from https://www.python.org/downloads/ (check 'Add to PATH'), restart Windows, then launch Directely again."
+      : "Python 3.11+ not found on PATH. Install e.g. `brew install python@3.12` and ensure `python3.12` is on PATH, then restart Directely.",
   );
 }
 
@@ -183,6 +392,7 @@ function venvPythonVersionOk() {
   return new Promise((resolve) => {
     const child = spawn(vpy, ["-c", "import sys; sys.exit(0 if sys.version_info[:2]>=(3,11) else 1)"], {
       stdio: "ignore",
+      env: augmentedProcessEnv(),
     });
     child.on("close", (code) => resolve(code === 0));
     child.on("error", () => resolve(false));
@@ -251,9 +461,11 @@ async function runMigrations(paths, env) {
 
 function dockerCompose(paths, args) {
   const composeDir = path.dirname(paths.dockerComposeFile);
-  return run("docker", ["compose", "-f", paths.dockerComposeFile, ...args], {
+  const dockerExe = resolveDockerExecutable();
+  return run(dockerExe, ["compose", "-f", paths.dockerComposeFile, ...args], {
     cwd: composeDir,
     stdio: "inherit",
+    env: loadMergedEnv(),
   });
 }
 
@@ -385,6 +597,7 @@ async function boot() {
   ensureUserEnvFile(paths);
   const env = loadMergedEnv();
 
+  await ensureDockerCli();
   await dockerCompose(paths, ["up", "-d"]);
   await ensurePythonVenv(paths);
   await runMigrations(paths, env);

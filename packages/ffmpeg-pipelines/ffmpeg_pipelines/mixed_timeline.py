@@ -4,6 +4,10 @@ Assembly-style export: stills are static (no Ken Burns). Consecutive images are 
 fewer FFmpeg runs via ``compile_image_slideshow`` (``motion="none"``, optional crossfade). Videos
 are listed in order and normalized in a single ``compile_video_concat`` (already batched on
 Windows) so we do not pre-merge video runs (avoids a second lossy encode).
+
+Per-clip video normalization uses video-only encodes (``-an`` / concat ``a=0``); the final
+``_stream_copy_join`` pass maps only the video stream so stock sources (e.g. Pexels) cannot
+attach clip audio to ``rough_cut.mp4``.
 """
 
 from __future__ import annotations

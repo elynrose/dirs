@@ -92,3 +92,69 @@ def test_concat_forces_chunking_with_low_cap(tmp_path: Path) -> None:
 def test_concat_empty_raises() -> None:
     with pytest.raises(FFmpegCompileError, match="no video"):
         compile_video_concat([], Path("nope.mp4"))
+
+
+def _ffprobe_stream_types(path: Path) -> list[str]:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    return lines
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not shutil.which("ffprobe"), reason="ffprobe not on PATH")
+def test_stream_copy_join_output_is_video_only(tmp_path: Path) -> None:
+    """Joined rough-cut partials must not carry audio (e.g. stock clip sound)."""
+    parts: list[Path] = []
+    for i in range(2):
+        p = tmp_path / f"join{i}.mp4"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"testsrc=s=64x48:r=30,hue=h={float(i) * 40}",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000",
+                "-t",
+                "0.08",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                str(p),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        parts.append(p)
+        assert "audio" in _ffprobe_stream_types(p)
+
+    out = tmp_path / "joined.mp4"
+    video_chain._stream_copy_join(parts, out, ffmpeg_bin="ffmpeg", timeout_sec=120.0)
+    assert out.is_file() and out.stat().st_size > 64
+    types = _ffprobe_stream_types(out)
+    assert "video" in types
+    assert "audio" not in types

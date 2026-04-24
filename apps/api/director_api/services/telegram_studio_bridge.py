@@ -93,6 +93,9 @@ def project_create_from_brief_snapshot(snap: dict[str, Any]) -> ProjectCreate:
     far = snap.get("frame_aspect_ratio")
     if isinstance(far, str) and far.strip() in ("16:9", "9:16"):
         kwargs["frame_aspect_ratio"] = far.strip()
+    cff = snap.get("clip_frame_fit")
+    if isinstance(cff, str) and cff.strip().lower() in ("center_crop", "letterbox"):
+        kwargs["clip_frame_fit"] = cff.strip().lower()
     return ProjectCreate(**kwargs)
 
 

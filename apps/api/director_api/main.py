@@ -27,6 +27,7 @@ from director_api.api.routers import (
     project_characters,
     project_pipeline,
     projects,
+    project_ideas,
     prompts,
     settings,
     workflow_phase2,
@@ -175,6 +176,7 @@ app.include_router(billing.router, prefix="/v1")
 app.include_router(chat_studio.router, prefix="/v1")
 app.include_router(events.router, prefix="/v1")
 app.include_router(projects.router, prefix="/v1")
+app.include_router(project_ideas.router, prefix="/v1")
 app.include_router(project_characters.router, prefix="/v1")
 app.include_router(project_pipeline.router, prefix="/v1")
 app.include_router(agent_runs.router, prefix="/v1")

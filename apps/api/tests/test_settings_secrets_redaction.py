@@ -13,6 +13,9 @@ def test_redact_strips_secrets_and_presence() -> None:
             "active_text_provider": "openai",
             "fal_key": "",
             "comfyui_api_key": "comfy-secret",
+            "pexels_api_key": "pexels-secret",
+            "storyblocks_public_key": "sb-pub",
+            "storyblocks_private_key": "sb-priv",
         }
     )
     assert "openai_api_key" not in cfg
@@ -20,6 +23,12 @@ def test_redact_strips_secrets_and_presence() -> None:
     assert "fal_key" not in pres
     assert "comfyui_api_key" not in cfg
     assert pres.get("comfyui_api_key") is True
+    assert "pexels_api_key" not in cfg
+    assert pres.get("pexels_api_key") is True
+    assert "storyblocks_public_key" not in cfg
+    assert pres.get("storyblocks_public_key") is True
+    assert "storyblocks_private_key" not in cfg
+    assert pres.get("storyblocks_private_key") is True
     assert cfg.get("active_text_provider") == "openai"
 
 

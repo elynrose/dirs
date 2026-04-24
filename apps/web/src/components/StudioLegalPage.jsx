@@ -1,6 +1,6 @@
 /**
  * Terms of Service, Privacy Policy, and Copyright notice for Directely Studio.
- * Content is informational; have counsel review before production use.
+ * Content is informational; align with your distribution and THIRD_PARTY_NOTICES.md before production use.
  */
 
 const DOCS = {
@@ -61,6 +61,7 @@ const DOCS = {
         h: "8. Intellectual property",
         p: [
           "The Service, including software, branding, and documentation, is owned by Directely or its licensors and is protected by intellectual property laws. Except for the limited rights expressly granted here, no rights are transferred to you.",
+          "Desktop or self-hosted distributions may include open-source and third-party runtimes (for example database images or optional object storage). A summary of representative licenses is in THIRD_PARTY_NOTICES.md in the same distribution as the LICENSE file. You are responsible for complying with those licenses when you install, modify, or pass along those components.",
         ],
       },
       {
@@ -103,7 +104,7 @@ const DOCS = {
       {
         h: "15. Contact",
         p: [
-          "For questions about these Terms, contact us at the support channel provided in your deployment or at the address published for Directely.",
+          "For questions about these Terms, contact us at support@directely.com.",
         ],
       },
     ],
@@ -193,7 +194,7 @@ const DOCS = {
       {
         h: "13. Contact",
         p: [
-          "For privacy requests or questions, contact us through the support channel for your deployment or at the published Directely privacy contact address.",
+          "For privacy requests or questions, contact us at support@directely.com.",
         ],
       },
     ],

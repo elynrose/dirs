@@ -155,6 +155,12 @@ def compute_pipeline_status(
             "detail": char_detail,
         },
         {
+            "id": "narration",
+            "label": "Scene narration (TTS)",
+            "status": "done" if narr_need > 0 and narr_ok >= narr_need else "pending",
+            "detail": narr_detail,
+        },
+        {
             "id": "images",
             "label": "Scene images",
             "status": "done" if scenes_tot > 0 and scenes_img >= scenes_tot else "pending",
@@ -165,12 +171,6 @@ def compute_pipeline_status(
             "label": "Scene videos (optional)",
             "status": "done" if scenes_tot > 0 and scenes_vid >= scenes_tot else "pending",
             "detail": videos_detail,
-        },
-        {
-            "id": "narration",
-            "label": "Scene narration (TTS)",
-            "status": "done" if narr_need > 0 and narr_ok >= narr_need else "pending",
-            "detail": narr_detail,
         },
         {
             "id": "timeline",

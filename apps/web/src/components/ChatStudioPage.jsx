@@ -119,6 +119,7 @@ export function ChatStudioPage({
   const [topic, setTopic] = useState("");
   const [runtime, setRuntime] = useState(10);
   const [frameAspectRatio, setFrameAspectRatio] = useState("16:9");
+  const [clipFrameFit, setClipFrameFit] = useState("center_crop");
   /** Per-production overrides; empty string = fall back to workspace defaults in `buildBriefPayload`. */
   const [narrationStyleRef, setNarrationStyleRef] = useState("");
   const [visualStyleRef, setVisualStyleRef] = useState("");
@@ -183,6 +184,7 @@ export function ChatStudioPage({
         setTopic("");
         setRuntime(10);
         setFrameAspectRatio("16:9");
+        setClipFrameFit("center_crop");
         setNarrationStyleRef("");
         setVisualStyleRef("");
         setAudience("general");
@@ -205,6 +207,7 @@ export function ChatStudioPage({
         setTopic(String(p.topic || ""));
         setRuntime(Number(p.target_runtime_minutes) || 10);
         setFrameAspectRatio(p.frame_aspect_ratio === "9:16" ? "9:16" : "16:9");
+        setClipFrameFit(p.clip_frame_fit === "letterbox" ? "letterbox" : "center_crop");
         setNarrationStyleRef(p.narration_style != null ? String(p.narration_style) : "");
         setVisualStyleRef(p.visual_style != null ? String(p.visual_style) : "");
         setAudience(p.audience != null && String(p.audience).trim() ? String(p.audience) : "general");
@@ -609,6 +612,7 @@ export function ChatStudioPage({
       research_min_sources:
         researchMinSources !== "" && Number.isFinite(Number(researchMinSources)) ? Number(researchMinSources) : undefined,
       frame_aspect_ratio: frameAspectRatio === "9:16" ? "9:16" : "16:9",
+      clip_frame_fit: clipFrameFit === "letterbox" ? "letterbox" : "center_crop",
     }),
     [
       title,
@@ -622,6 +626,7 @@ export function ChatStudioPage({
       musicPreference,
       researchMinSources,
       frameAspectRatio,
+      clipFrameFit,
     ],
   );
 
@@ -647,6 +652,9 @@ export function ChatStudioPage({
     }
     if (patch.frame_aspect_ratio === "16:9" || patch.frame_aspect_ratio === "9:16") {
       setFrameAspectRatio(patch.frame_aspect_ratio);
+    }
+    if (patch.clip_frame_fit === "center_crop" || patch.clip_frame_fit === "letterbox") {
+      setClipFrameFit(patch.clip_frame_fit);
     }
   }, []);
 
@@ -774,6 +782,7 @@ export function ChatStudioPage({
       narration_style,
       visual_style,
       frame_aspect_ratio: frameAspectRatio === "9:16" ? "9:16" : "16:9",
+      clip_frame_fit: clipFrameFit === "letterbox" ? "letterbox" : "center_crop",
       ...briefPreferredMediaProvidersFromAppConfig(appConfig),
     };
     if (factualStrictness === "strict" || factualStrictness === "balanced" || factualStrictness === "creative") {
@@ -800,6 +809,7 @@ export function ChatStudioPage({
     musicPreference,
     researchMinSources,
     frameAspectRatio,
+    clipFrameFit,
   ]);
 
   const onGenerate = async () => {
@@ -832,6 +842,7 @@ export function ChatStudioPage({
           const n = Number(researchMinSources);
           if (n >= 1 && n <= 100) patchBody.research_min_sources = n;
         }
+        patchBody.clip_frame_fit = clipFrameFit === "letterbox" ? "letterbox" : "center_crop";
         const patchR = await api(`/v1/projects/${encodeURIComponent(selectedProjectId)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },

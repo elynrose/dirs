@@ -40,7 +40,8 @@ def test_compute_pipeline_status_characters_row_after_scenes_pending_when_empty(
     ids = [s["id"] for s in steps]
     assert ids.index("story_research_review") == ids.index("scenes") + 1
     assert ids.index("characters") == ids.index("story_research_review") + 1
-    assert ids.index("images") == ids.index("characters") + 1
+    assert ids.index("narration") == ids.index("characters") + 1
+    assert ids.index("images") == ids.index("narration") + 1
     char_step = next(s for s in steps if s["id"] == "characters")
     assert char_step["label"] == "Character bible"
     assert char_step["status"] == "pending"

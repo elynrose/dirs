@@ -19,7 +19,7 @@ def test_clamp_no_change_when_suggested_before_floor():
 
 
 def test_clamp_pulls_back_when_suggested_after_floor():
-    assert clamp_tail_resume_to_hard_floor("auto_narration", "auto_images") == "auto_images"
+    assert clamp_tail_resume_to_hard_floor("auto_timeline", "auto_images") == "auto_images"
     assert clamp_tail_resume_to_hard_floor("auto_final_cut", "auto_characters") == "auto_characters"
 
 

@@ -33,9 +33,9 @@ OVERSIGHT_STEP_RANK: dict[str, int] = {
     "scenes": 4,
     "story_research_review": 5,
     "auto_characters": 6,
-    "auto_images": 7,
-    "auto_videos": 8,
-    "auto_narration": 9,
+    "auto_narration": 7,
+    "auto_images": 8,
+    "auto_videos": 9,
     "auto_timeline": 10,
     "auto_rough_cut": 11,
     "auto_final_cut": 12,
@@ -43,9 +43,9 @@ OVERSIGHT_STEP_RANK: dict[str, int] = {
 
 TAIL_STEPS: tuple[str, ...] = (
     "auto_characters",
+    "auto_narration",
     "auto_images",
     "auto_videos",
-    "auto_narration",
     "auto_timeline",
     "auto_rough_cut",
     "auto_final_cut",
@@ -260,10 +260,10 @@ def oversight_llm_advisory(
 def tail_resume_from_oversight(oversight_earliest: str | None) -> str | None:
     """
     Map oversight to a tail entry point we can safely resume without rebuilding a timeline ID.
-    Timeline/rough/final gaps re-run the full tail from images (return None).
+    Timeline/rough/final gaps re-run the full tail from narration/images (return None).
     """
     o = _canonical_step(oversight_earliest)
-    if o in ("auto_characters", "auto_images", "auto_videos", "auto_narration"):
+    if o in ("auto_characters", "auto_narration", "auto_images", "auto_videos"):
         return o
     return None
 
@@ -274,15 +274,15 @@ def normalize_tail_resume(
     auto_scene_videos: bool,
     auto_scene_images: bool = True,
 ) -> str | None:
-    """If resuming at a disabled tail step, jump to the next enabled step (or narration)."""
+    """If resuming at a disabled tail step, jump to the next enabled step (tail: narration → images → videos → timeline)."""
     if not resume_from:
         return None
     if resume_from == "auto_images" and not auto_scene_images:
         if auto_scene_videos:
             return "auto_videos"
-        return "auto_narration"
+        return "auto_timeline"
     if resume_from == "auto_videos" and not auto_scene_videos:
-        return "auto_narration"
+        return "auto_timeline"
     return resume_from
 
 

@@ -102,6 +102,15 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             clean["scene_clip_duration_sec"] = 5 if iv == 5 else 10
         except (TypeError, ValueError):
             clean.pop("scene_clip_duration_sec", None)
+    if "agent_run_pexels_scene_media_mode" in clean:
+        m = str(clean["agent_run_pexels_scene_media_mode"]).strip().lower()
+        clean["agent_run_pexels_scene_media_mode"] = m if m in ("photos", "videos", "both") else "photos"
+    if "agent_run_pexels_scene_search_interval_sec" in clean:
+        try:
+            f = float(clean["agent_run_pexels_scene_search_interval_sec"])
+            clean["agent_run_pexels_scene_search_interval_sec"] = max(0.0, min(f, 120.0))
+        except (TypeError, ValueError):
+            clean.pop("agent_run_pexels_scene_search_interval_sec", None)
     if "narration_style_preset" in clean:
         from director_api.style_presets import DEFAULT_NARRATION_PRESET, is_valid_narration_preset
 
@@ -195,6 +204,8 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             clean.pop("agent_run_auto_images_max_concurrency", None)
     if "agent_run_abort_on_auto_video_failure" in clean:
         clean["agent_run_abort_on_auto_video_failure"] = bool(clean["agent_run_abort_on_auto_video_failure"])
+    if "agent_run_auto_scene_coverage_clips" in clean:
+        clean["agent_run_auto_scene_coverage_clips"] = bool(clean["agent_run_auto_scene_coverage_clips"])
     if "agent_run_pipeline_speed" in clean:
         v = str(clean["agent_run_pipeline_speed"]).strip().lower()
         clean["agent_run_pipeline_speed"] = v if v in ("demo_fast", "production_heavy") else "standard"
@@ -297,6 +308,9 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             "xai_api_key",
             "grok_api_key",
             "tavily_api_key",
+            "pexels_api_key",
+            "storyblocks_public_key",
+            "storyblocks_private_key",
             "gemini_api_key",
             "elevenlabs_api_key",
             "comfyui_api_key",
@@ -346,6 +360,9 @@ PLATFORM_CREDENTIAL_SETTING_KEYS = frozenset(
         "xai_api_key",
         "grok_api_key",
         "tavily_api_key",
+        "pexels_api_key",
+        "storyblocks_public_key",
+        "storyblocks_private_key",
         "gemini_api_key",
         "elevenlabs_api_key",
         "comfyui_api_key",

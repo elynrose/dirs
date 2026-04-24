@@ -1,0 +1,101 @@
+================================================================================
+                         DIRECTELY PROPRIETARY SOFTWARE LICENSE
+================================================================================
+
+Copyright (c) 2026 Directely. All rights reserved.
+
+This document governs use of the Directely software (including the desktop
+application, web studio, API server components, and related materials) that
+Directely or its authorized distributors provide to you. You remain
+responsible for compliance with third-party licenses that apply to components
+you install, configure, or distribute alongside the Software; see
+THIRD_PARTY_NOTICES.md.
+
+--------------------------------------------------------------------------------
+1. GRANT
+--------------------------------------------------------------------------------
+
+Subject to payment of applicable fees and compliance with this license,
+Directely grants you a limited, non-exclusive, non-transferable, revocable
+license to install and run the number of copies of the Software for which you
+have obtained valid entitlements, solely for your internal business or personal
+documentary production purposes (or as otherwise stated in your order form or
+written agreement).
+
+--------------------------------------------------------------------------------
+2. RESTRICTIONS
+--------------------------------------------------------------------------------
+
+You may not, except where applicable law expressly overrides:
+
+  - copy, modify, adapt, merge, or create derivative works of the Software,
+    except configuration files explicitly intended for editing (for example
+    .env from .env.example);
+  - reverse engineer, decompile, or disassemble the Software, except to the
+    minimum extent mandated by law;
+  - rent, lease, lend, sell, sublicense, distribute, or publicly host the
+    Software (including its source or build artifacts) to third parties
+    except as permitted in a separate written reseller or OEM agreement with
+    Directely;
+  - remove or alter proprietary notices, branding, or attribution in the
+    Software or documentation;
+  - use the Software to build a competing product or training dataset that
+    reproduces Directely's product expression, except insubstantial
+    interoperability;
+  - bypass technical limits, metering, or license enforcement where present.
+
+Open-source and third-party components bundled with or used by the Software
+remain under their respective licenses. See THIRD_PARTY_NOTICES.md in this
+distribution.
+
+--------------------------------------------------------------------------------
+3. OWNERSHIP
+--------------------------------------------------------------------------------
+
+Directely and its licensors retain all right, title, and interest in the
+Software and related intellectual property. No rights are granted except as
+expressly stated.
+
+--------------------------------------------------------------------------------
+4. WARRANTY DISCLAIMER
+--------------------------------------------------------------------------------
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NON-INFRINGEMENT. Some jurisdictions do not allow certain disclaimers; in
+those cases, disclaimers apply to the fullest extent permitted.
+
+--------------------------------------------------------------------------------
+5. LIMITATION OF LIABILITY
+--------------------------------------------------------------------------------
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, DIRECTELY SHALL NOT BE LIABLE FOR ANY
+INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR LOSS OF
+PROFITS, DATA, OR GOODWILL, ARISING FROM USE OF THE SOFTWARE. DIRECTELY'S
+AGGREGATE LIABILITY FOR DIRECT DAMAGES SHALL NOT EXCEED THE FEES YOU PAID FOR
+THE SOFTWARE IN THE TWELVE (12) MONTHS PRECEDING THE CLAIM (OR, IF NONE, ONE
+HUNDRED U.S. DOLLARS).
+
+--------------------------------------------------------------------------------
+6. TERMINATION
+--------------------------------------------------------------------------------
+
+This license ends automatically if you breach it. Upon termination, you must
+cease use and destroy copies in your control, except copies required for legal
+or reasonable backup policy, which must not be used operationally.
+
+--------------------------------------------------------------------------------
+7. GENERAL
+--------------------------------------------------------------------------------
+
+Governing law: Unless your separate written agreement with Directely says
+otherwise, this license is governed by the laws of the State of Delaware, USA,
+without regard to conflict-of-law rules.
+
+Entire agreement: This file plus your order form or master agreement (if any)
+constitute the entire license grant regarding the Software.
+
+Updates: Directely may issue updated Software; continued use after notice may
+constitute acceptance of reasonable updated terms for that release.
+
+Contact: support@directely.com

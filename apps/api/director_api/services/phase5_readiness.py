@@ -309,13 +309,6 @@ def scenes_spoken_narration_coverage(db: Session, project_id: UUID) -> tuple[int
     return need, ok
 
 
-def export_preflight_requires_scene_narration_tracks(
-    db: Session, project_id: UUID, timeline_json: dict[str, Any]
-) -> bool:
-    """Always True — final cut exclusively uses scene-level narration."""
-    return True
-
-
 def chapters_narration_need_ok(db: Session, project_id: UUID) -> tuple[int, int]:
     """Chapters that need chapter-level narration vs those that have a DB row with audio_url."""
     chapters = list(
@@ -407,7 +400,7 @@ def _project_structural_issues(
     storage_root: Path | None,
     export_stage: ExportStage | None = None,
     allow_unapproved_media: bool = False,
-    require_scene_narration_tracks: bool = True,
+    require_scene_narration_tracks: bool = False,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     scenes_tot, scenes_img, _vid, scenes_appr_img = scene_image_video_counts(db, project_id)
@@ -442,8 +435,8 @@ def _project_structural_issues(
             },
         )
 
-    if not skip_narration_preflight and require_scene_narration_tracks:
-        if sn_need > 0 and sn_ok < sn_need:
+    if not skip_narration_preflight:
+        if require_scene_narration_tracks and sn_need > 0 and sn_ok < sn_need:
             issues.append(
                 {
                     "code": "missing_scene_narration",
@@ -451,7 +444,6 @@ def _project_structural_issues(
                     "detail": {"scenes_with_audio": sn_ok, "scenes_needing_scene_vo": sn_need},
                 }
             )
-
         if storage_root is not None:
             issues.extend(_scene_narration_disk_issues(db, project_id, storage_root))
 
@@ -655,6 +647,7 @@ def compute_phase5_readiness(
     storage_root: str | Path | None = None,
     export_stage: ExportStage | None = None,
     allow_unapproved_media: bool = False,
+    require_scene_narration_tracks: bool = False,
 ) -> dict[str, Any]:
     """
     Deterministic preflight for Phase 5 exports.
@@ -666,6 +659,8 @@ def compute_phase5_readiness(
       requires ``rough_cut.mp4``; ``final_cut`` requires ``rough_cut.mp4`` or ``fine_cut.mp4``.
     - ``allow_unapproved_media``: relax approval gates (Hands-off / unattended). Scene gate requires a
       succeeded **image or video** per scene (not only stills). Timeline clips still need readable files.
+    - ``require_scene_narration_tracks``: when True, block if scenes with ``narration_text`` lack scene TTS.
+      Default False — missing VO is mixed as silence for the clip duration (final mux).
     """
     p = db.get(Project, project_id)
     if not p or p.tenant_id != tenant_id:
@@ -679,15 +674,6 @@ def compute_phase5_readiness(
         }
 
     root: Path | None = Path(storage_root).resolve() if storage_root is not None else None
-
-    require_scene_narration_tracks = True
-    if export_stage in ("fine_cut", "final_cut") and timeline_version_id is not None:
-        tv_n = db.get(TimelineVersion, timeline_version_id)
-        if tv_n and tv_n.tenant_id == tenant_id and tv_n.project_id == project_id:
-            tjx = tv_n.timeline_json if isinstance(tv_n.timeline_json, dict) else {}
-            require_scene_narration_tracks = export_preflight_requires_scene_narration_tracks(
-                db, project_id, tjx
-            )
 
     issues = _project_structural_issues(
         db,
@@ -767,4 +753,5 @@ def compute_phase5_readiness(
         "scenes_with_approved_visual": scenes_appr_visual,
         "scenes_needing_narration": sn_need,
         "scenes_with_narration_audio": sn_ok,
+        "require_scene_narration_tracks": require_scene_narration_tracks,
     }

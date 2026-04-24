@@ -69,6 +69,7 @@ celery_app.conf.update(
         "director.run_phase5_job": {"queue": "compile"},
         "director.reap_stale_jobs": {"queue": "text"},
         "director.reap_stale_agent_runs": {"queue": "text"},
+        "director.process_due_idea_schedules": {"queue": "text"},
     },
 
     **({"worker_pool": _worker_pool} if _worker_pool else {}),
@@ -86,6 +87,10 @@ celery_app.conf.beat_schedule = {
     "reap-stale-agent-runs": {
         "task": "director.reap_stale_agent_runs",
         "schedule": crontab(minute="*/15"),
+    },
+    "process-due-idea-schedules": {
+        "task": "director.process_due_idea_schedules",
+        "schedule": crontab(minute="*"),
     },
 }
 

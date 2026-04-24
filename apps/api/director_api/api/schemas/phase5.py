@@ -66,6 +66,11 @@ class RoughCutBody(BaseModel):
         default=False,
         description="When true (Hands-off / unattended), use succeeded timeline media even if not approved.",
     )
+    require_scene_narration_tracks: bool = Field(
+        default=False,
+        description="When true, block export if any scene has narration_text but no scene TTS file. "
+        "Default false: missing VO is mixed as silence for that clip (final mux).",
+    )
 
 
 class FineCutBody(BaseModel):

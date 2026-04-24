@@ -55,20 +55,20 @@ $ErrorActionPreference = "Stop"
 
 function Write-Step([string]$msg) {
     Write-Host ""
-    Write-Host "▶  $msg" -ForegroundColor Cyan
+    Write-Host ">> $msg" -ForegroundColor Cyan
 }
 
 function Write-Ok([string]$msg) {
-    Write-Host "   ✓ $msg" -ForegroundColor Green
+    Write-Host "   [ok] $msg" -ForegroundColor Green
 }
 
 function Write-Warn([string]$msg) {
-    Write-Host "   ⚠ $msg" -ForegroundColor Yellow
+    Write-Host "   [!] $msg" -ForegroundColor Yellow
 }
 
 function Fail([string]$msg) {
     Write-Host ""
-    Write-Host "✗  $msg" -ForegroundColor Red
+    Write-Host "[X] $msg" -ForegroundColor Red
     exit 1
 }
 
@@ -104,7 +104,7 @@ if ($nodeMajor -lt 18) {
 }
 Write-Ok "Node.js v$nodeMajor"
 
-Require-Command "npm" "npm is bundled with Node.js — reinstall Node."
+Require-Command "npm" "npm is bundled with Node.js - reinstall Node."
 
 if ($Sign) {
     if (-not $env:CSC_LINK) {
@@ -146,9 +146,9 @@ if (-not $SkipWebBuild) {
         Pop-Location
     }
     if (-not (Test-Path (Join-Path $webDist "index.html"))) {
-        Fail "Vite build completed but dist/index.html not found — check Vite config."
+        Fail "Vite build completed but dist/index.html not found - check Vite config."
     }
-    Write-Ok "Frontend built → $webDist"
+    Write-Ok "Frontend built: $webDist"
 } else {
     if (-not (Test-Path (Join-Path $webDist "index.html"))) {
         Fail "dist/index.html not found and -SkipWebBuild is set. Run without -SkipWebBuild first."
@@ -192,12 +192,12 @@ try {
 # ── 6. Report output ──────────────────────────────────────────────────────────
 
 Write-Step "Build complete"
-$exeFiles = Get-ChildItem -Path $releaseDir -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue |
+$exeFiles = @(Get-ChildItem -Path $releaseDir -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -notlike "*unpack*" } |
-    Sort-Object LastWriteTime -Descending
+    Sort-Object LastWriteTime -Descending)
 
 if ($exeFiles.Count -eq 0) {
-    Write-Warn "No .exe found in $releaseDir — check electron-builder output above."
+    Write-Warn "No .exe found in $releaseDir - check electron-builder output above."
 } else {
     foreach ($f in $exeFiles) {
         $sizeMb = [math]::Round($f.Length / 1MB, 1)
@@ -205,9 +205,21 @@ if ($exeFiles.Count -eq 0) {
     }
 }
 
+$zipFiles = @(Get-ChildItem -Path $releaseDir -Filter "*.zip" -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending)
+if ($zipFiles.Count -eq 0) {
+    Write-Warn "No .zip portable bundle in $releaseDir - win.target should include `"zip`" in apps/electron/package.json."
+} else {
+    Write-Host "Portable ZIP (no installer; extract and run):" -ForegroundColor White
+    foreach ($f in $zipFiles) {
+        $sizeMb = [math]::Round($f.Length / 1MB, 1)
+        Write-Ok "$($f.FullName)  ($sizeMb MB)"
+    }
+}
+
 Write-Host ""
 Write-Host "Runtime requirements for end users:" -ForegroundColor White
-Write-Host "  • Docker Desktop  https://www.docker.com/products/docker-desktop/" -ForegroundColor Gray
-Write-Host "  • FFmpeg on PATH  https://ffmpeg.org/download.html  (or set FFMPEG_BIN in .env)" -ForegroundColor Gray
-Write-Host "  • Python 3.11+    https://www.python.org/downloads/" -ForegroundColor Gray
+Write-Host "  - Docker Desktop  https://www.docker.com/products/docker-desktop/" -ForegroundColor Gray
+Write-Host "  - FFmpeg on PATH  https://ffmpeg.org/download.html  (or set FFMPEG_BIN in .env)" -ForegroundColor Gray
+Write-Host "  - Python 3.11+    https://www.python.org/downloads/" -ForegroundColor Gray
 Write-Host ""

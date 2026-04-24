@@ -91,12 +91,14 @@ from director_api.services.phase5_readiness import (
     raise_phase5_gate,
     get_timeline_asset_for_project,
 )
+from director_api.services.scene_coverage import coverage_visual_slots_needed, pick_coverage_payload
 from director_api.services.scene_timeline_duration import (
     effective_scene_visual_budget_sec,
-    get_scene_narration_audio_duration_sec,
+    get_export_narration_budget_sec_for_scene,
     scene_vo_tail_padding_sec_from_settings,
 )
 from director_api.services.timeline_manifest_prefetch import manifest_prefetch_asset_hierarchy
+from director_api.services.pexels_scene_fill import maybe_fill_pexels_for_project_scenes
 from director_api.services.timeline_image_repair import list_export_ready_scene_visuals_ordered
 from director_api.style_presets import effective_narration_style, effective_visual_style
 from director_api.services.runtime_settings import resolve_runtime_settings
@@ -122,11 +124,12 @@ from director_api.validation.phase2_schemas import (
 )
 from director_api.validation.phase3_schemas import validate_scene_plan_batch
 from director_api.validation.timeline_schema import validate_timeline_document
+from director_api.timeline_mix_levels import mix_music_volume_from_timeline, mix_narration_volume_from_timeline
 
 from director_api.services.subtitles_vtt import assemble_project_subtitle_markdown, script_to_webvtt
 
 from ffmpeg_pipelines.audio_concat import concat_audio_files
-from ffmpeg_pipelines.audio_slot import normalize_audio_to_duration
+from ffmpeg_pipelines.audio_slot import normalize_audio_segment_to_duration
 from ffmpeg_pipelines.errors import FFmpegCompileError
 from ffmpeg_pipelines.probe import ffprobe_duration_seconds
 from ffmpeg_pipelines.export_manifest import build_export_manifest
@@ -432,7 +435,7 @@ def _expand_manifest_and_slots_for_full_narration(
             voice_used.add(voice_sid)
         new_dur = float(clip_dur)
         if voice_sid is not None:
-            narr = get_scene_narration_audio_duration_sec(
+            narr = get_export_narration_budget_sec_for_scene(
                 db,
                 project_id=project_id,
                 scene_id=voice_sid,
@@ -466,6 +469,31 @@ def _count_scene_narration_tracks(db: Any, project_id: uuid.UUID) -> int:
     )
 
 
+def _latest_chapter_narration_audio_path(
+    db: Any,
+    project_id: uuid.UUID,
+    chapter_id: uuid.UUID,
+    storage_root: Path,
+) -> Path | None:
+    """Local path for chapter-level TTS (``scene_id`` is NULL), or None."""
+    nt = db.scalar(
+        select(NarrationTrack)
+        .where(
+            NarrationTrack.project_id == project_id,
+            NarrationTrack.chapter_id == chapter_id,
+            NarrationTrack.scene_id.is_(None),
+            NarrationTrack.audio_url.isnot(None),
+        )
+        .order_by(NarrationTrack.created_at.desc())
+    )
+    if not nt:
+        return None
+    np = path_from_storage_url((nt.audio_url or "").strip(), storage_root=storage_root)
+    if np is not None and path_is_readable_file(np):
+        return np
+    return None
+
+
 def _build_scene_timeline_narration_stem(
     db: Any,
     project_id: uuid.UUID,
@@ -475,19 +503,35 @@ def _build_scene_timeline_narration_stem(
     ffmpeg_bin: str,
     timeout_sec: float,
     storage_root: Path,
+    ffprobe_bin: str = "ffprobe",
 ) -> tuple[Path | None, list[Path]]:
     """Concat silence + per-scene narration segments to one AAC track; returns (merged_path, paths_to_delete).
 
     Slot durations should already include **at least** spoken VO + configured tail padding for the
     first timeline clip of each scene (see ``_expand_manifest_and_slots_for_full_narration``) so
-    ``normalize_audio_to_duration`` pads rather than trims narration.
+    padding/trims align with the visual edit.
 
-    If the same ``scene_id`` appears in multiple timeline clips, narration is only placed on the
-    **first** clip for that scene; later clips get silence on the VO bus (music still mixes).
+    When the same ``scene_id`` appears in **multiple** consecutive timeline clips (multi-clip beats),
+    narration is **sliced sequentially**: clip 1 gets seconds [0, slot_dur), clip 2 gets
+    [slot_dur, 2*slot_dur), and so on, so the full VO plays across the concatenated visuals.
+
+    If there is no per-scene VO file but the chapter has **chapter-level** TTS (one
+    ``NarrationTrack`` with ``scene_id`` NULL), that file is walked in timeline order so every
+    chapter still speaks in the export.
     """
     parts: list[Path] = []
     cleanup: list[Path] = []
-    voice_used_for_scene: set[uuid.UUID] = set()
+    scene_voice_offset_sec: dict[uuid.UUID, float] = {}
+    chapter_stream_offset: dict[uuid.UUID, float] = {}
+    chapter_path_cache: dict[uuid.UUID, Path | None] = {}
+
+    def _chapter_audio_path(ch_id: uuid.UUID) -> Path | None:
+        if ch_id not in chapter_path_cache:
+            chapter_path_cache[ch_id] = _latest_chapter_narration_audio_path(
+                db, project_id, ch_id, storage_root
+            )
+        return chapter_path_cache[ch_id]
+
     for slot_dur, sid in slots:
         if slot_dur <= 0:
             continue
@@ -502,44 +546,40 @@ def _build_scene_timeline_narration_stem(
             parts.append(sp)
             cleanup.append(sp)
             continue
-        voice_sid: uuid.UUID | None = sid if sid not in voice_used_for_scene else None
-        if voice_sid is not None:
-            voice_used_for_scene.add(voice_sid)
-        if voice_sid is None:
-            sp = out_dir / f"_sil_{uuid.uuid4().hex}.aac"
-            write_silence_aac(
-                sp,
-                duration_sec=slot_dur,
-                ffmpeg_bin=ffmpeg_bin,
-                timeout_sec=min(timeout_sec, 600.0),
-            )
-            parts.append(sp)
-            cleanup.append(sp)
-            continue
+
+        sc_row = db.get(Scene, sid)
+        ch_id: uuid.UUID | None = sc_row.chapter_id if sc_row else None
+
         nt = db.scalar(
             select(NarrationTrack)
             .where(
                 NarrationTrack.project_id == project_id,
-                NarrationTrack.scene_id == voice_sid,
+                NarrationTrack.scene_id == sid,
                 NarrationTrack.audio_url.isnot(None),
             )
             .order_by(NarrationTrack.created_at.desc())
         )
         np = path_from_storage_url((nt.audio_url or "") if nt else "", storage_root=storage_root)
-        if nt and np is not None and path_is_readable_file(np):
+        used_scene = bool(nt and np is not None and path_is_readable_file(np))
+
+        filled = False
+        if used_scene:
+            off = float(scene_voice_offset_sec.get(sid, 0.0))
             seg = out_dir / f"_seg_{uuid.uuid4().hex}.m4a"
             try:
-                normalize_audio_to_duration(
+                normalize_audio_segment_to_duration(
                     np,
                     seg,
                     slot_dur,
+                    start_offset_sec=off,
                     ffmpeg_bin=ffmpeg_bin,
+                    ffprobe_bin=ffprobe_bin,
                     timeout_sec=min(timeout_sec, 600.0),
                 )
             except FFmpegCompileError as _narr_enc_err:
                 log.warning(
                     "scene_timeline_narration_encode_failed_substituting_silence",
-                    scene_id=str(voice_sid),
+                    scene_id=str(sid),
                     slot_dur_sec=slot_dur,
                     error=str(_narr_enc_err)[:300],
                 )
@@ -554,13 +594,72 @@ def _build_scene_timeline_narration_stem(
                 )
                 parts.append(sp)
                 cleanup.append(sp)
+                filled = True
             else:
+                scene_voice_offset_sec[sid] = off + float(slot_dur)
                 parts.append(seg)
                 cleanup.append(seg)
-        else:
+                filled = True
+
+        if not filled and ch_id is not None:
+            chp = _chapter_audio_path(ch_id)
+            if chp is not None:
+                off_ch = float(chapter_stream_offset.get(ch_id, 0.0))
+                seg = out_dir / f"_seg_{uuid.uuid4().hex}.m4a"
+                try:
+                    normalize_audio_segment_to_duration(
+                        chp,
+                        seg,
+                        slot_dur,
+                        start_offset_sec=off_ch,
+                        ffmpeg_bin=ffmpeg_bin,
+                        ffprobe_bin=ffprobe_bin,
+                        timeout_sec=min(timeout_sec, 600.0),
+                    )
+                except FFmpegCompileError as _narr_enc_err:
+                    log.warning(
+                        "chapter_timeline_narration_encode_failed_substituting_silence",
+                        scene_id=str(sid),
+                        chapter_id=str(ch_id),
+                        slot_dur_sec=slot_dur,
+                        error=str(_narr_enc_err)[:300],
+                    )
+                    if path_is_readable_file(seg):
+                        seg.unlink(missing_ok=True)
+                    sp = out_dir / f"_sil_{uuid.uuid4().hex}.aac"
+                    write_silence_aac(
+                        sp,
+                        duration_sec=slot_dur,
+                        ffmpeg_bin=ffmpeg_bin,
+                        timeout_sec=min(timeout_sec, 600.0),
+                    )
+                    parts.append(sp)
+                    cleanup.append(sp)
+                else:
+                    parts.append(seg)
+                    cleanup.append(seg)
+            else:
+                log.warning(
+                    "scene_timeline_narration_missing_substituting_silence",
+                    scene_id=str(sid),
+                    slot_dur_sec=slot_dur,
+                    has_track=nt is not None,
+                    has_path=np is not None,
+                    path_readable=bool(np is not None and path_is_readable_file(np)),
+                )
+                sp = out_dir / f"_sil_{uuid.uuid4().hex}.aac"
+                write_silence_aac(
+                    sp,
+                    duration_sec=slot_dur,
+                    ffmpeg_bin=ffmpeg_bin,
+                    timeout_sec=min(timeout_sec, 600.0),
+                )
+                parts.append(sp)
+                cleanup.append(sp)
+        elif not filled:
             log.warning(
                 "scene_timeline_narration_missing_substituting_silence",
-                scene_id=str(voice_sid),
+                scene_id=str(sid),
                 slot_dur_sec=slot_dur,
                 has_track=nt is not None,
                 has_path=np is not None,
@@ -575,6 +674,9 @@ def _build_scene_timeline_narration_stem(
             )
             parts.append(sp)
             cleanup.append(sp)
+
+        if ch_id is not None and _chapter_audio_path(ch_id) is not None:
+            chapter_stream_offset[ch_id] = chapter_stream_offset.get(ch_id, 0.0) + float(slot_dur)
     if not parts:
         return None, cleanup
     merged = out_dir / f"_narr_scene_{uuid.uuid4().hex}.m4a"
@@ -1785,6 +1887,130 @@ def _scene_has_succeeded_video(db, scene_id: uuid.UUID) -> bool:
     return int(n or 0) > 0
 
 
+def _auto_scene_coverage_pass(
+    db,
+    settings: Any,
+    *,
+    project_id: uuid.UUID,
+    tenant_id: str,
+    all_scenes: list[Scene],
+    agent_run_uuid: uuid.UUID,
+    automation_character_prefix: str | None,
+) -> bool | None:
+    """When ``agent_run_auto_scene_coverage_clips`` is on, enqueue extra image/video takes until each scene has enough clips vs VO.
+
+    Returns ``None`` if the user stopped the run; ``True`` otherwise.
+    """
+    if not bool(getattr(settings, "agent_run_auto_scene_coverage_clips", False)):
+        return True
+    storage_root = Path(settings.local_storage_root).resolve()
+    ffprobe_bin = (getattr(settings, "ffprobe_bin", None) or "ffprobe").strip() or "ffprobe"
+    timeout_tl = float(settings.ffmpeg_timeout_sec)
+    clip_sec = float(_scene_clip_duration_sec(settings))
+    prefer_video = bool(getattr(settings, "agent_run_auto_generate_scene_videos", False))
+    extra_total = 0
+    for sc in all_scenes:
+        if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+            return None
+        budget = effective_scene_visual_budget_sec(
+            db,
+            scene=sc,
+            project_id=project_id,
+            base_clip_sec=clip_sec,
+            storage_root=storage_root,
+            ffprobe_bin=ffprobe_bin,
+            timeout_sec=timeout_tl,
+            tail_padding_sec=_scene_vo_tail_padding_sec(settings),
+        )
+        need = coverage_visual_slots_needed(budget_sec=budget, clip_sec=clip_sec)
+        have = _scene_succeeded_image_count(db, sc.id) + _scene_succeeded_video_count(db, sc.id)
+        deficit = max(0, need - have)
+        for i in range(deficit):
+            if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                return None
+            cov = pick_coverage_payload(take_index=have + i + int(sc.order_index or 0) * 97)
+            # WAN / image-to-video: do not run coverage video until at least one scene still exists.
+            use_video = prefer_video and _scene_has_succeeded_image(db, sc.id)
+            if use_video:
+                payload_v: dict[str, Any] = {
+                    "scene_id": str(sc.id),
+                    "tenant_id": tenant_id,
+                    "generation_tier": "preview",
+                    "agent_run_id": str(agent_run_uuid),
+                    "video_prompt_override": cov["video_prompt_override"],
+                    "exclude_character_bible": bool(cov.get("exclude_character_bible")),
+                }
+                if automation_character_prefix:
+                    payload_v["_automation_character_prefix"] = automation_character_prefix
+                jv = _synthetic_job(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    jtype="scene_generate_video",
+                    payload=payload_v,
+                )
+                try:
+                    vout = _phase3_video_generate(db, jv)
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "auto_scene_coverage_video_failed",
+                        scene_id=str(sc.id),
+                        error=str(e)[:500],
+                    )
+                    db.rollback()
+                    continue
+                if isinstance(vout, dict) and vout.get("stopped"):
+                    return None
+                if isinstance(vout, dict) and vout.get("ok") is True:
+                    aid_s = vout.get("asset_id")
+                    if aid_s:
+                        ast = db.get(Asset, uuid.UUID(str(aid_s)))
+                        if ast and ast.status == "succeeded" and ast.approved_at is None:
+                            ast.approved_at = datetime.now(timezone.utc)
+                    extra_total += 1
+                db.commit()
+            else:
+                payload_i: dict[str, Any] = {
+                    "scene_id": str(sc.id),
+                    "tenant_id": tenant_id,
+                    "generation_tier": "preview",
+                    "agent_run_id": str(agent_run_uuid),
+                    "image_prompt_override": cov["image_prompt_override"],
+                    "exclude_character_bible": bool(cov.get("exclude_character_bible")),
+                }
+                if automation_character_prefix:
+                    payload_i["_automation_character_prefix"] = automation_character_prefix
+                j_img = _synthetic_job(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    jtype="scene_generate_image",
+                    payload=payload_i,
+                )
+                try:
+                    out = _phase3_image_generate(db, j_img)
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "auto_scene_coverage_image_failed",
+                        scene_id=str(sc.id),
+                        error=str(e)[:500],
+                    )
+                    db.rollback()
+                    continue
+                if isinstance(out, dict) and out.get("stopped"):
+                    return None
+                if not _phase3_scene_still_job_succeeded(out, db):
+                    db.commit()
+                    continue
+                aid_s = out.get("asset_id") if isinstance(out, dict) else None
+                if aid_s:
+                    ast = db.get(Asset, uuid.UUID(str(aid_s)))
+                    if ast and ast.status == "succeeded" and ast.approved_at is None:
+                        ast.approved_at = datetime.now(timezone.utc)
+                extra_total += 1
+                db.commit()
+    log.info("auto_scene_coverage_pass_done", project_id=str(project_id), extra_assets=extra_total)
+    return True
+
+
 def _scene_has_visual_media_for_auto(db, scene_id: uuid.UUID) -> bool:
     """True if the scene already has a succeeded image or video (auto pipeline should not add more stills)."""
     return _scene_has_succeeded_image(db, scene_id) or _scene_has_succeeded_video(db, scene_id)
@@ -2037,8 +2263,8 @@ def _run_agent_full_pipeline_tail(
 
     # Character bible (LLM) — image/video prompts use consistency prefixes from ProjectCharacter rows.
     # Run when oversight allows this tail slot, or whenever we still have no ProjectCharacter rows — do not
-    # require ``tail_should_run(auto_images)``: LLM oversight can suggest resuming at auto_narration while image
-    # work is still pending, which previously skipped bible generation entirely.
+    # require ``tail_should_run(auto_images)`` only: oversight may point past ``auto_characters`` while work is
+    # still pending, which would otherwise skip bible generation entirely.
     char_tail_ok = pipeline_oversight_svc.tail_should_run_with_force("auto_characters", tr, fs)
     need_character_gen = force_regen_characters or not _project_has_character_rows(db, pid)
     if char_tail_ok or need_character_gen:
@@ -2080,6 +2306,116 @@ def _run_agent_full_pipeline_tail(
 
     # One read per tail pass — reused for every automation scene_generate_image (sequential + parallel threads).
     automation_tail_character_prefix = character_consistency_prefix(db, pid, max_chars=2000)
+
+    if pipeline_oversight_svc.tail_should_run_with_force("auto_narration", tr, fs):
+        all_scenes_narr = _ordered_scenes_for_project(db, pid)
+        narr_scene_targets: list[Scene] = []
+        for sc in all_scenes_narr:
+            if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                return False
+            if len((sc.narration_text or "").strip()) < 2:
+                continue
+            if _scene_has_scene_narration_audio(db, sc.id) and not force_regen_narration:
+                continue
+            narr_scene_targets.append(sc)
+
+        run = db.get(AgentRun, agent_run_uuid)
+        if run:
+            run.current_step = "auto_narration"
+            _append_event(
+                run,
+                "auto_narration",
+                "running",
+                scene_narration_targets=len(narr_scene_targets),
+            )
+        db.commit()
+
+        def _auto_scene_narration_pass(target_scenes: list[Scene]) -> list[uuid.UUID] | None:
+            failed_s: list[uuid.UUID] = []
+            n_targets = len(target_scenes)
+            for si, sc in enumerate(target_scenes):
+                if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+                    return None
+                if _scene_has_scene_narration_audio(db, sc.id) and not force_regen_narration:
+                    continue
+                # Per-scene heartbeat for Studio (same idea as ``scenes`` chapter progress): auto narration
+                # runs inline without Celery Job rows, so ``updated_at`` + progress events must advance during TTS.
+                run_hb = db.get(AgentRun, agent_run_uuid)
+                if run_hb:
+                    _append_event(
+                        run_hb,
+                        "auto_narration",
+                        "progress",
+                        scene_index=int(si + 1),
+                        scenes_total=int(n_targets),
+                    )
+                    db.commit()
+                js = _synthetic_job(
+                    tenant_id=tenant_id,
+                    project_id=pid,
+                    jtype="narration_generate_scene",
+                    payload={
+                        "scene_id": str(sc.id),
+                        "tenant_id": tenant_id,
+                        "agent_run_id": str(agent_run_uuid),
+                    },
+                )
+                try:
+                    ns_out = _narration_generate_scene(db, js, settings)
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "auto_pipeline_narration_scene_failed",
+                        scene_id=str(sc.id),
+                        error=str(e)[:800],
+                    )
+                    failed_s.append(sc.id)
+                    db.commit()
+                    continue
+                if isinstance(ns_out, dict) and ns_out.get("stopped"):
+                    return None
+                db.commit()
+            return failed_s
+
+        narr_failed_scenes = _auto_scene_narration_pass(narr_scene_targets)
+        if narr_failed_scenes is None:
+            return False
+        if narr_failed_scenes:
+            log.warning(
+                "auto_pipeline_narration_scene_retry",
+                project_id=str(pid),
+                failed_scene_count=len(narr_failed_scenes),
+            )
+            run = db.get(AgentRun, agent_run_uuid)
+            if run:
+                _append_event(
+                    run,
+                    "auto_narration",
+                    "retry",
+                    failed_scene_count=len(narr_failed_scenes),
+                    failed_scene_ids=[str(x) for x in narr_failed_scenes[:64]],
+                )
+                db.commit()
+            retry_scenes = [s for s in narr_scene_targets if s.id in set(narr_failed_scenes)]
+            narr_failed_scenes2 = _auto_scene_narration_pass(retry_scenes)
+            if narr_failed_scenes2 is None:
+                return False
+            if narr_failed_scenes2:
+                raise ValueError(
+                    "AUTO_NARRATION_FAILED_SCENES_AFTER_RETRY: "
+                    + ",".join(str(x) for x in narr_failed_scenes2[:32])
+                )
+        run = db.get(AgentRun, agent_run_uuid)
+        if run:
+            _append_event(run, "auto_narration", "succeeded", narration_granularity="scene")
+        db.commit()
+    else:
+        run = db.get(AgentRun, agent_run_uuid)
+        if run:
+            _append_event(run, "auto_narration", "skipped", reason="oversight_tail_resume")
+        db.commit()
+
+    if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+        return False
 
     # Initial pass + several retries so flaky providers are less likely to leave scenes without images.
     _AUTO_SCENE_MEDIA_MAX_PASSES = 5
@@ -2305,7 +2641,36 @@ def _run_agent_full_pipeline_tail(
             db.commit()
         return failed_ids_p
 
-    if pipeline_oversight_svc.tail_should_run_with_force("auto_images", tr, fs) and auto_scene_images_pre:
+    run_tail_images = pipeline_oversight_svc.tail_should_run_with_force("auto_images", tr, fs) and auto_scene_images_pre
+    tail_auto_images_runs = run_tail_images
+    run_tail_videos_m = pipeline_oversight_svc.tail_should_run_with_force("auto_videos", tr, fs) and (
+        auto_scene_videos_pre or force_regen_videos
+    )
+    if bool(getattr(settings, "agent_run_auto_scene_coverage_clips", False)) and (
+        run_tail_images or run_tail_videos_m
+    ):
+        run_cov = db.get(AgentRun, agent_run_uuid)
+        if run_cov:
+            run_cov.current_step = "auto_scene_coverage"
+            _append_event(run_cov, "auto_scene_coverage", "running")
+        db.commit()
+        cov_ok = _auto_scene_coverage_pass(
+            db,
+            settings,
+            project_id=pid,
+            tenant_id=tenant_id,
+            all_scenes=all_scenes,
+            agent_run_uuid=agent_run_uuid,
+            automation_character_prefix=automation_tail_character_prefix,
+        )
+        if cov_ok is None:
+            return False
+        run_cov2 = db.get(AgentRun, agent_run_uuid)
+        if run_cov2:
+            _append_event(run_cov2, "auto_scene_coverage", "succeeded")
+        db.commit()
+
+    if tail_auto_images_runs:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
             run.current_step = "auto_images"
@@ -2319,6 +2684,12 @@ def _run_agent_full_pipeline_tail(
                 auto_images_max_concurrency=auto_images_max_concurrency,
             )
         db.commit()
+        if bool(getattr(settings, "agent_run_use_pexels_for_scenes", False)):
+            pm = str(getattr(settings, "agent_run_pexels_scene_media_mode", "photos") or "photos").strip().lower()
+            if pm not in ("photos", "videos", "both"):
+                pm = "photos"
+            if pm in ("photos", "both"):
+                maybe_fill_pexels_for_project_scenes(db, settings, project)
         img_failed = _auto_image_pass(all_scenes)
         if img_failed is None:
             return False
@@ -2384,6 +2755,12 @@ def _run_agent_full_pipeline_tail(
                 media_retry_passes_cap=_AUTO_SCENE_MEDIA_MAX_PASSES,
             )
         db.commit()
+        if bool(getattr(settings, "agent_run_use_pexels_for_scenes", False)):
+            pm = str(getattr(settings, "agent_run_pexels_scene_media_mode", "photos") or "photos").strip().lower()
+            if pm not in ("photos", "videos", "both"):
+                pm = "photos"
+            if pm == "videos" or (pm == "both" and not tail_auto_images_runs):
+                maybe_fill_pexels_for_project_scenes(db, settings, project)
         had_video_at_start = {sc.id for sc in all_scenes if _scene_has_succeeded_video(db, sc.id)}
 
         def _auto_video_pass(target_scenes: list[Scene]) -> list[uuid.UUID] | None:
@@ -2506,7 +2883,7 @@ def _run_agent_full_pipeline_tail(
                     failed_scene_count=len(vid_failed),
                     failed_scene_ids=[str(x) for x in vid_failed[:64]],
                     note=(
-                        "Some scenes still lack enough succeeded video assets after retries; continuing to narration and timeline. "
+                        "Some scenes still lack enough succeeded video assets after retries; continuing to timeline and export. "
                         "Re-generate failed clips in Studio, or set agent_run_abort_on_auto_video_failure (or pipeline_options.abort_on_auto_video_failure) to stop the run on this condition."
                     ),
                 )
@@ -2531,113 +2908,6 @@ def _run_agent_full_pipeline_tail(
             _append_event(run, "auto_videos", "skipped", reason=skip_reason)
         db.commit()
 
-    if pipeline_oversight_svc.tail_should_run_with_force("auto_narration", tr, fs):
-        all_scenes_narr = _ordered_scenes_for_project(db, pid)
-        narr_scene_targets: list[Scene] = []
-        for sc in all_scenes_narr:
-            if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
-                return False
-            if len((sc.narration_text or "").strip()) < 2:
-                continue
-            if _scene_has_scene_narration_audio(db, sc.id) and not force_regen_narration:
-                continue
-            narr_scene_targets.append(sc)
-
-        run = db.get(AgentRun, agent_run_uuid)
-        if run:
-            run.current_step = "auto_narration"
-            _append_event(
-                run,
-                "auto_narration",
-                "running",
-                scene_narration_targets=len(narr_scene_targets),
-            )
-        db.commit()
-
-        def _auto_scene_narration_pass(target_scenes: list[Scene]) -> list[uuid.UUID] | None:
-            failed_s: list[uuid.UUID] = []
-            n_targets = len(target_scenes)
-            for si, sc in enumerate(target_scenes):
-                if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
-                    return None
-                if _scene_has_scene_narration_audio(db, sc.id) and not force_regen_narration:
-                    continue
-                # Per-scene heartbeat for Studio (same idea as ``scenes`` chapter progress): auto narration
-                # runs inline without Celery Job rows, so ``updated_at`` + progress events must advance during TTS.
-                run_hb = db.get(AgentRun, agent_run_uuid)
-                if run_hb:
-                    _append_event(
-                        run_hb,
-                        "auto_narration",
-                        "progress",
-                        scene_index=int(si + 1),
-                        scenes_total=int(n_targets),
-                    )
-                    db.commit()
-                js = _synthetic_job(
-                    tenant_id=tenant_id,
-                    project_id=pid,
-                    jtype="narration_generate_scene",
-                    payload={
-                        "scene_id": str(sc.id),
-                        "tenant_id": tenant_id,
-                        "agent_run_id": str(agent_run_uuid),
-                    },
-                )
-                try:
-                    ns_out = _narration_generate_scene(db, js, settings)
-                except Exception as e:  # noqa: BLE001
-                    log.warning(
-                        "auto_pipeline_narration_scene_failed",
-                        scene_id=str(sc.id),
-                        error=str(e)[:800],
-                    )
-                    failed_s.append(sc.id)
-                    db.commit()
-                    continue
-                if isinstance(ns_out, dict) and ns_out.get("stopped"):
-                    return None
-                db.commit()
-            return failed_s
-
-        narr_failed_scenes = _auto_scene_narration_pass(narr_scene_targets)
-        if narr_failed_scenes is None:
-            return False
-        if narr_failed_scenes:
-            log.warning(
-                "auto_pipeline_narration_scene_retry",
-                project_id=str(pid),
-                failed_scene_count=len(narr_failed_scenes),
-            )
-            run = db.get(AgentRun, agent_run_uuid)
-            if run:
-                _append_event(
-                    run,
-                    "auto_narration",
-                    "retry",
-                    failed_scene_count=len(narr_failed_scenes),
-                    failed_scene_ids=[str(x) for x in narr_failed_scenes[:64]],
-                )
-                db.commit()
-            retry_scenes = [s for s in narr_scene_targets if s.id in set(narr_failed_scenes)]
-            narr_failed_scenes2 = _auto_scene_narration_pass(retry_scenes)
-            if narr_failed_scenes2 is None:
-                return False
-            if narr_failed_scenes2:
-                raise ValueError(
-                    "AUTO_NARRATION_FAILED_SCENES_AFTER_RETRY: "
-                    + ",".join(str(x) for x in narr_failed_scenes2[:32])
-                )
-        run = db.get(AgentRun, agent_run_uuid)
-        if run:
-            _append_event(run, "auto_narration", "succeeded", narration_granularity="scene")
-        db.commit()
-    else:
-        run = db.get(AgentRun, agent_run_uuid)
-        if run:
-            _append_event(run, "auto_narration", "skipped", reason="oversight_tail_resume")
-        db.commit()
-
     if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
         return False
     run = db.get(AgentRun, agent_run_uuid)
@@ -2648,8 +2918,9 @@ def _run_agent_full_pipeline_tail(
     clips: list[dict[str, Any]] = []
     clip_order = 0
     proj_for_timeline = db.get(Project, pid)
-    use_all_approved = bool(
-        proj_for_timeline and getattr(proj_for_timeline, "use_all_approved_scene_media", False)
+    use_all_approved = bool(proj_for_timeline and getattr(proj_for_timeline, "use_all_approved_scene_media", False)) or (
+        bool(getattr(settings, "agent_run_auto_scene_coverage_clips", False))
+        and pipeline_oversight_svc.tail_should_run_with_force("auto_timeline", tr, fs)
     )
     storage_root_tl = Path(settings.local_storage_root).resolve()
     ffprobe_bin_tl = (getattr(settings, "ffprobe_bin", None) or "ffprobe").strip() or "ffprobe"
@@ -3948,6 +4219,7 @@ def _phase3_scenes_plan_for_chapter(
         for pref_key in ("preferred_image_provider", "preferred_video_provider"):
             if item.get(pref_key):
                 pp[f"_{pref_key}"] = str(item[pref_key])[:64]
+        phase3_svc.merge_stock_search_terms_from_plan_row(item, pp)
         ct = item.get("continuity_tags_json")
         if not isinstance(ct, list):
             ct = []
@@ -4094,6 +4366,7 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
     for pref_key in ("preferred_image_provider", "preferred_video_provider"):
         if item.get(pref_key):
             pp[f"_{pref_key}"] = str(item[pref_key])[:64]
+    phase3_svc.merge_stock_search_terms_from_plan_row(item, pp)
     ct = item.get("continuity_tags_json")
     if not isinstance(ct, list):
         ct = []
@@ -4554,8 +4827,10 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         selected_video_provider = "fal"
     if selected_video_provider in ("grok", "xai", "gemini", "google", "local_ltx", "local_wan"):
         selected_video_provider = "fal"
+    # Placeholder / budget mode: avoid paid cloud video (fal). Local ComfyUI WAN is OSS on your machine —
+    # keep comfyui_wan so it matches scripts/test_comfyui_wan_video.py and real WAN jobs.
     if bool(getattr(settings, "director_placeholder_media", False)):
-        if selected_video_provider in ("fal", "comfyui_wan"):
+        if selected_video_provider == "fal":
             selected_video_provider = "local_ffmpeg"
     if selected_video_provider not in (
         "local_ffmpeg",
@@ -6203,6 +6478,7 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         storage_root=storage_root,
         export_stage="final_cut",
         allow_unapproved_media=allow_unapproved,
+        require_scene_narration_tracks=bool((payload or {}).get("require_scene_narration_tracks")),
     )
     if not readiness.get("ready"):
         raise_phase5_gate(readiness)
@@ -6237,16 +6513,8 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
                 has_row=mb is not None,
             )
 
-    try:
-        mix_mv = float(tj.get("mix_music_volume", 0.28) or 0.28)
-    except (TypeError, ValueError):
-        mix_mv = 0.28
-    try:
-        mix_nv = float(tj.get("mix_narration_volume", 1.0) or 1.0)
-    except (TypeError, ValueError):
-        mix_nv = 1.0
-    mix_mv = max(0.0, min(mix_mv, 1.0))
-    mix_nv = max(0.0, min(mix_nv, 4.0))
+    mix_mv = mix_music_volume_from_timeline(tj)
+    mix_nv = mix_narration_volume_from_timeline(tj)
 
     out_final = storage_root / "exports" / str(project_id) / str(tv_id) / "final_cut.mp4"
     mkdir_parent(out_final)
@@ -6337,6 +6605,7 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
             ffmpeg_bin=ffmpeg_bin,
             timeout_sec=float(settings.ffmpeg_timeout_sec),
             storage_root=storage_root,
+            ffprobe_bin=(getattr(settings, "ffprobe_bin", None) or "ffprobe").strip() or "ffprobe",
         )
         if narr_merged is None:
             log.warning(
@@ -6543,6 +6812,7 @@ def _rough_cut(
         storage_root=storage_root,
         export_stage="rough_cut",
         allow_unapproved_media=allow_unapproved,
+        require_scene_narration_tracks=bool((payload or {}).get("require_scene_narration_tracks")),
     )
     if not readiness.get("ready"):
         raise_phase5_gate(readiness)
@@ -6777,6 +7047,7 @@ def _fine_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         storage_root=storage_root,
         export_stage="fine_cut",
         allow_unapproved_media=allow_unapproved,
+        require_scene_narration_tracks=bool((payload or {}).get("require_scene_narration_tracks")),
     )
     if not readiness.get("ready"):
         raise_phase5_gate(readiness)

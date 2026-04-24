@@ -12,6 +12,101 @@ from director_api.services.research_service import sanitize_jsonb_text
 # Match HTTP + worker gates to ``build_scene_plan_batch`` (script preferred, else summary).
 MIN_CHARS_FOR_SCENE_PLANNING = 12
 
+_STOCK_QUERY_STOPWORDS = frozenset(
+    {
+        "that",
+        "this",
+        "with",
+        "from",
+        "they",
+        "have",
+        "been",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "there",
+        "their",
+        "them",
+        "then",
+        "than",
+        "into",
+        "about",
+        "after",
+        "before",
+        "other",
+        "some",
+        "such",
+        "would",
+        "could",
+        "should",
+        "because",
+        "while",
+        "during",
+        "each",
+        "every",
+        "also",
+        "only",
+        "just",
+    }
+)
+
+
+def infer_stock_search_terms_for_scene(
+    *,
+    purpose: str,
+    narration_text: str,
+    chapter_title: str,
+    project_topic: str,
+) -> list[str]:
+    """Short phrases for stock-media search (e.g. Pexels); deterministic seed when the LLM omits the field."""
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(phrase: str) -> None:
+        p = sanitize_jsonb_text(phrase, 80).strip()
+        if len(p) < 2:
+            return
+        low = p.lower()
+        if low in seen:
+            return
+        seen.add(low)
+        terms.append(p)
+
+    for chunk in (
+        (chapter_title or "").strip(),
+        (purpose or "").strip()[:160],
+        (project_topic or "").strip()[:160],
+    ):
+        if chunk:
+            add(chunk)
+
+    words = [w.strip(".,;:\"'()[]—–") for w in (narration_text or "").split()[:100]]
+    for w in words:
+        wl = w.lower()
+        if len(w) < 4 or wl in _STOCK_QUERY_STOPWORDS or w.isdigit():
+            continue
+        add(w)
+        if len(terms) >= 8:
+            break
+    return terms[:8]
+
+
+def merge_stock_search_terms_from_plan_row(item: dict[str, Any], pp: dict[str, Any]) -> None:
+    """Copy ``stock_search_terms`` from a validated plan row (or nested package) into ``prompt_package_json``."""
+    raw = item.get("stock_search_terms")
+    cleaned: list[str] | None = None
+    if isinstance(raw, list):
+        cleaned = [str(x)[:80].strip() for x in raw if x is not None and str(x).strip()][:8]
+    elif isinstance(raw, str) and raw.strip():
+        cleaned = [raw.strip()[:80]]
+    nested = pp.get("stock_search_terms") if isinstance(pp.get("stock_search_terms"), list) else None
+    if cleaned:
+        pp["stock_search_terms"] = cleaned
+    elif nested:
+        pp["stock_search_terms"] = [str(x)[:80].strip() for x in nested if x is not None and str(x).strip()][:8]
+
 
 def is_producer_only_chapter_summary_for_vo(text: str) -> bool:
     """
@@ -373,6 +468,14 @@ def build_scene_plan_batch(
             row["preferred_image_provider"] = img_p
         if vid_p:
             row["preferred_video_provider"] = vid_p
+        st = infer_stock_search_terms_for_scene(
+            purpose=purpose,
+            narration_text=narr_clean,
+            chapter_title=chapter.title or "",
+            project_topic=project.topic or "",
+        )
+        if st:
+            row["stock_search_terms"] = st
         scenes.append(row)
 
     return {"schema_id": "scene-plan-batch/v1", "scenes": scenes}
@@ -456,6 +559,14 @@ def build_extend_scene_deterministic(
         row["preferred_image_provider"] = img_p
     if vid_p:
         row["preferred_video_provider"] = vid_p
+    st = infer_stock_search_terms_for_scene(
+        purpose=purpose,
+        narration_text=new_narr,
+        chapter_title=chapter.title or "",
+        project_topic=project.topic or "",
+    )
+    if st:
+        row["stock_search_terms"] = st
     return {"schema_id": "scene-plan-batch/v1", "scenes": [row]}
 
 

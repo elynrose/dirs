@@ -27,10 +27,10 @@ class AgentRunCreate(BaseModel):
     # (overrides workspace default for this run if set).
     # rerun_from_step: optional canonical phase to re-execute (implies continue_from_existing); merges with oversight so earlier
     # structural gaps still run first. Values: director, research, outline, chapters, scenes,
-    # auto_characters, auto_images, auto_videos, auto_narration, auto_timeline, auto_rough_cut, auto_final_cut. Tail steps need through: full_video.
+    # auto_characters, auto_narration, auto_images, auto_videos, auto_timeline, auto_rough_cut, auto_final_cut. Tail steps need through: full_video.
     # narration_granularity: "scene" (default for full_video) runs per-scene TTS in the automation tail; "chapter" keeps one file per chapter.
     # force_pipeline_steps: list of canonical steps to execute even when continue_from_existing would fast-skip (e.g. full restart).
-    # Include "scenes" to replan scenes; tail steps auto_characters / auto_images / auto_videos / auto_narration also regenerate existing assets when listed.
+    # Include "scenes" to replan scenes; tail steps auto_characters / auto_narration / auto_images / auto_videos also regenerate existing assets when listed.
     # With through: full_video, timeline + rough + final cut still run after the media tail (not individually skippable yet).
     # rerun_web_research: optional bool. False = skip the Tavily/web research step when a dossier already exists (overrides oversight for that
     # step unless "research" is in force_pipeline_steps). True = always execute research. Omitted = default skip rules + oversight only.

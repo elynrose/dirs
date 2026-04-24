@@ -64,6 +64,14 @@ def coerce_scene_plan_batch(instance: dict[str, Any]) -> None:
         except (KeyError, TypeError, ValueError):
             pd = 5
         row["planned_duration_sec"] = max(3, min(600, pd))
+        st_raw = s.get("stock_search_terms")
+        cleaned_terms: list[str] | None = None
+        if isinstance(st_raw, list):
+            cleaned_terms = [str(x)[:80].strip() for x in st_raw if x is not None and str(x).strip()][:8]
+        elif isinstance(st_raw, str) and st_raw.strip():
+            cleaned_terms = [st_raw.strip()[:80]]
+        if cleaned_terms:
+            row["stock_search_terms"] = cleaned_terms
         scenes.append(row)
     scenes.sort(key=lambda x: int(x.get("order_index") or 0))
     for i, row in enumerate(scenes):

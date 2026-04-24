@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 FrameAspectRatio = Literal["16:9", "9:16"]
+ClipFrameFit = Literal["center_crop", "letterbox"]
 
 
 class ProjectCreate(BaseModel):
@@ -26,6 +27,10 @@ class ProjectCreate(BaseModel):
     frame_aspect_ratio: FrameAspectRatio | None = Field(
         default="16:9",
         description='Delivery frame: "16:9" landscape or "9:16" portrait (shorts).',
+    )
+    clip_frame_fit: ClipFrameFit | None = Field(
+        default="center_crop",
+        description='Stock/import fit: "center_crop" fills the frame (may crop edges) or "letterbox" scales inside the frame with padding.',
     )
 
     def brief_dict(self) -> dict[str, Any]:
@@ -52,6 +57,7 @@ class ProjectPatch(BaseModel):
     critic_policy_json: dict[str, Any] | None = None
     use_all_approved_scene_media: bool | None = None
     frame_aspect_ratio: FrameAspectRatio | None = None
+    clip_frame_fit: ClipFrameFit | None = None
     include_spoken_dialogue_in_video_prompt: bool | None = Field(
         default=None,
         description="Append optional per-scene video_character_dialogue to generative video prompts (e.g. Veo).",
@@ -84,6 +90,7 @@ class ProjectOut(BaseModel):
     critic_policy_json: dict[str, Any] | None = None
     use_all_approved_scene_media: bool = False
     frame_aspect_ratio: str = "16:9"
+    clip_frame_fit: str = "center_crop"
     include_spoken_dialogue_in_video_prompt: bool = False
     created_at: datetime
     updated_at: datetime
@@ -103,6 +110,13 @@ class ProjectOut(BaseModel):
     def frame_aspect_default(cls, v: Any) -> Any:
         if v is None or v == "":
             return "16:9"
+        return v
+
+    @field_validator("clip_frame_fit", mode="before")
+    @classmethod
+    def clip_frame_fit_default(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return "center_crop"
         return v
 
     @field_validator("director_output_json", "critic_policy_json", mode="before")

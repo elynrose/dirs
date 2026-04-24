@@ -50,6 +50,7 @@ def test_effective_resume_skip() -> None:
 
 def test_tail_steps_order_characters_before_images() -> None:
     assert po.TAIL_STEPS.index("auto_characters") < po.TAIL_STEPS.index("auto_images")
+    assert po.TAIL_STEPS.index("auto_narration") < po.TAIL_STEPS.index("auto_images")
     assert po.tail_step_index("auto_characters") == 0
 
 
@@ -59,18 +60,20 @@ def test_tail_should_run() -> None:
     assert po.tail_should_run("auto_characters", "auto_images") is False
     assert po.tail_should_run("auto_images", None) is True
     assert po.tail_should_run("auto_images", "auto_images") is True
-    assert po.tail_should_run("auto_images", "auto_narration") is False
+    # Tail order: narration → images → videos; resuming at narration re-runs images afterward.
+    assert po.tail_should_run("auto_images", "auto_narration") is True
+    assert po.tail_should_run("auto_narration", "auto_images") is False
     assert po.tail_should_run("auto_narration", "auto_narration") is True
 
 
 def test_normalize_tail_resume_skips_video_when_disabled() -> None:
-    assert po.normalize_tail_resume("auto_videos", auto_scene_videos=False) == "auto_narration"
+    assert po.normalize_tail_resume("auto_videos", auto_scene_videos=False) == "auto_timeline"
     assert po.normalize_tail_resume("auto_videos", auto_scene_videos=True) == "auto_videos"
 
 
 def test_normalize_tail_resume_skips_images_when_disabled() -> None:
     assert po.normalize_tail_resume("auto_images", auto_scene_videos=True, auto_scene_images=False) == "auto_videos"
-    assert po.normalize_tail_resume("auto_images", auto_scene_videos=False, auto_scene_images=False) == "auto_narration"
+    assert po.normalize_tail_resume("auto_images", auto_scene_videos=False, auto_scene_images=False) == "auto_timeline"
 
 
 def test_tail_resume_from_oversight_includes_auto_characters() -> None:

@@ -41,7 +41,14 @@
             "maxItems": 32
           },
           "preferred_image_provider": { "type": "string", "maxLength": 64 },
-          "preferred_video_provider": { "type": "string", "maxLength": 64 }
+          "preferred_video_provider": { "type": "string", "maxLength": 64 },
+          "stock_search_terms": {
+            "type": "array",
+            "description": "When present: short phrases for stock-media search (e.g. Pexels), derived from the beat—not full image prompts.",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+          }
         }
       }
     }

@@ -958,6 +958,7 @@ def rough_cut(
             "project_id": str(project_id),
             "tenant_id": settings.default_tenant_id,
             "allow_unapproved_media": body.allow_unapproved_media,
+            "require_scene_narration_tracks": body.require_scene_narration_tracks,
         },
         project_id=project_id,
     )
@@ -1021,6 +1022,7 @@ def fine_cut(
             "project_id": str(project_id),
             "tenant_id": settings.default_tenant_id,
             "allow_unapproved_media": body.allow_unapproved_media,
+            "require_scene_narration_tracks": body.require_scene_narration_tracks,
         },
         project_id=project_id,
     )
@@ -1130,6 +1132,7 @@ def final_cut(
             "tenant_id": settings.default_tenant_id,
             "allow_unapproved_media": body.allow_unapproved_media,
             "burn_subtitles_into_video": body.burn_subtitles_into_video,
+            "require_scene_narration_tracks": body.require_scene_narration_tracks,
         },
         project_id=project_id,
     )

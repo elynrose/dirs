@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from director_api.db.models import NarrationTrack, Scene
@@ -91,6 +91,88 @@ def get_scene_narration_audio_duration_sec(
         ffprobe_bin=ffprobe_bin,
         timeout_sec=timeout_sec,
     )
+
+
+def _latest_chapter_narration_total_sec(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    chapter_id: uuid.UUID,
+    storage_root: Path,
+    ffprobe_bin: str,
+    timeout_sec: float,
+) -> float | None:
+    """Total duration of the latest chapter-level VO (``scene_id`` is NULL), or None."""
+    nt = db.scalar(
+        select(NarrationTrack)
+        .where(
+            NarrationTrack.project_id == project_id,
+            NarrationTrack.chapter_id == chapter_id,
+            NarrationTrack.scene_id.is_(None),
+            NarrationTrack.audio_url.isnot(None),
+        )
+        .order_by(NarrationTrack.created_at.desc())
+    )
+    if not nt:
+        return None
+    if nt.duration_sec is not None:
+        try:
+            d = float(nt.duration_sec)
+            if d > 0:
+                return d
+        except (TypeError, ValueError):
+            pass
+    p = path_from_storage_url(nt.audio_url or "", storage_root=storage_root)
+    if p is None or not path_is_readable_file(p):
+        return None
+    d = float(ffprobe_duration_seconds(p, ffprobe_bin=ffprobe_bin, timeout_sec=min(timeout_sec, 120.0)))
+    return d if d > 0 else None
+
+
+def get_export_narration_budget_sec_for_scene(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    scene_id: uuid.UUID,
+    storage_root: Path,
+    ffprobe_bin: str,
+    timeout_sec: float,
+) -> float | None:
+    """Seconds to budget for a scene's first timeline clip when expanding export visuals.
+
+    Prefer per-scene VO. If missing, use an equal split of the chapter-level VO across scenes in
+    that chapter (chapter TTS stores one file on ``NarrationTrack`` with ``scene_id`` NULL).
+    """
+    per_scene = _latest_scene_narration_duration_sec(
+        db,
+        project_id=project_id,
+        scene_id=scene_id,
+        storage_root=storage_root,
+        ffprobe_bin=ffprobe_bin,
+        timeout_sec=timeout_sec,
+    )
+    if per_scene is not None:
+        return per_scene
+    sc = db.get(Scene, scene_id)
+    if not sc or not sc.chapter_id:
+        return None
+    ch_id = sc.chapter_id
+    n_scenes = int(
+        db.scalar(select(func.count()).select_from(Scene).where(Scene.chapter_id == ch_id)) or 0
+    )
+    if n_scenes <= 0:
+        return None
+    total = _latest_chapter_narration_total_sec(
+        db,
+        project_id=project_id,
+        chapter_id=ch_id,
+        storage_root=storage_root,
+        ffprobe_bin=ffprobe_bin,
+        timeout_sec=timeout_sec,
+    )
+    if total is None or total <= 0:
+        return None
+    return float(total) / float(n_scenes)
 
 
 def effective_scene_visual_budget_sec(

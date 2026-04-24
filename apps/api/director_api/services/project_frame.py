@@ -6,7 +6,10 @@ from typing import Literal
 
 FrameAspectRatio = Literal["16:9", "9:16"]
 
+ClipFrameFit = Literal["center_crop", "letterbox"]
+
 _VALID = frozenset({"16:9", "9:16"})
+_VALID_CLIP_FIT = frozenset({"center_crop", "letterbox"})
 
 
 def coerce_frame_aspect_ratio(raw: str | None) -> FrameAspectRatio:
@@ -14,6 +17,14 @@ def coerce_frame_aspect_ratio(raw: str | None) -> FrameAspectRatio:
     if s in _VALID:
         return s  # type: ignore[return-value]
     return "16:9"
+
+
+def coerce_clip_frame_fit(raw: str | None) -> ClipFrameFit:
+    """How stills / Pexels clips are fitted to the project frame before export."""
+    s = (raw or "").strip().lower()
+    if s in _VALID_CLIP_FIT:
+        return s  # type: ignore[return-value]
+    return "center_crop"
 
 
 def frame_pixel_size(aspect: str | None) -> tuple[int, int]:

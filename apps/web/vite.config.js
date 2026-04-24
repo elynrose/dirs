@@ -1,10 +1,5 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
-
-/** Dev/preview only: Node on this host proxies /v1 → local API. Browsers still use same-origin `/v1`. */
-const apiProxy = {
-  "/v1": { target: "http://127.0.0.1:8000", changeOrigin: true },
-};
+import { defineConfig, loadEnv } from "vite";
 
 /**
  * If the shell or a stale .env exports `VITE_API_BASE_URL=http://127.0.0.1:8000`, Vite would bake that into
@@ -25,11 +20,26 @@ function shouldStripLoopbackApiBase(mode, raw) {
 }
 
 export default defineConfig(({ mode }) => {
-  const rawBase = process.env.VITE_API_BASE_URL;
+  const env = loadEnv(mode, process.cwd(), "");
+  const rawBase = env.VITE_API_BASE_URL;
   const stripLoopback = shouldStripLoopbackApiBase(mode, rawBase);
+  /** Dev/preview only: Node on this host proxies /v1 → local API. Browsers still use same-origin `/v1`. */
+  const apiProxyPort = env.VITE_API_PROXY_PORT || "8000";
+  const apiProxy = {
+    "/v1": { target: `http://127.0.0.1:${apiProxyPort}`, changeOrigin: true },
+  };
 
   return {
   plugins: [react()],
+  // Dev-only: stale `node_modules/.vite` can make Vite return HTTP 504 ("Outdated Optimize Dep") for
+  // `/node_modules/.vite/deps/*.js` — the app script never runs and the browser shows a blank `#root`.
+  ...(mode === "development"
+    ? {
+        optimizeDeps: {
+          force: true,
+        },
+      }
+    : {}),
   ...(stripLoopback
     ? {
         define: {
@@ -38,7 +48,7 @@ export default defineConfig(({ mode }) => {
       }
     : {}),
   server: {
-    port: 5173,
+    port: Number(env.VITE_LOCAL_DEV_PORT || 5173),
     // Fail fast if something else (e.g. an old Vite) is on 5173 — avoids “wrong UI” on a surprise port.
     strictPort: true,
     // Remote dev (VPS): browsers often use the server IP; a fixed list misses it and Vite rejects the host.

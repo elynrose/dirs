@@ -27,6 +27,7 @@ from director_api.services.chatterbox_voice_ref import (
     voice_ref_storage_key,
 )
 from director_api.services.runtime_settings import (
+    PLATFORM_CREDENTIAL_SETTING_KEYS,
     get_or_create_app_settings,
     invalidate_runtime_settings_cache_after_tenant_config_persisted,
     merge_app_settings_config_patch,
@@ -53,6 +54,16 @@ log = structlog.get_logger(__name__)
 _CHATTERBOX_REF_MAX_BYTES = 25 * 1024 * 1024
 
 
+def _merge_env_credential_presence(cred_present: dict[str, bool], base_env: Settings) -> None:
+    """Mark ``credential_keys_present`` for secrets set only in process env (not in ``app_settings`` JSON)."""
+    for sk in PLATFORM_CREDENTIAL_SETTING_KEYS:
+        if cred_present.get(sk):
+            continue
+        v = getattr(base_env, sk, None)
+        if isinstance(v, str) and v.strip():
+            cred_present[sk] = True
+
+
 @router.get("")
 def get_settings_row(
     db: Session = Depends(get_db),
@@ -75,6 +86,7 @@ def get_settings_row(
     client_cfg, cred_present = redact_settings_config_for_api(saved)
     for k in inherited:
         cred_present[k] = True
+    _merge_env_credential_presence(cred_present, base_env)
     return {
         "data": AppSettingsOut(
             id=row.id,
@@ -117,6 +129,7 @@ def patch_settings_row(
     client_cfg, cred_present = redact_settings_config_for_api(saved)
     for k in inherited:
         cred_present[k] = True
+    _merge_env_credential_presence(cred_present, base_env)
     return {
         "data": AppSettingsOut(
             id=row.id,

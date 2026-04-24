@@ -24,7 +24,10 @@
         "properties": {
           "label": { "type": "string", "minLength": 1 },
           "notes": { "type": "string" },
-          "approx_year": { "type": ["integer", "null"] }
+          "approx_year": {
+            "description": "Single calendar year (integer), unknown (null), or approximate era as text (e.g. decade string).",
+            "type": ["integer", "string", "null"]
+          }
         }
       }
     },

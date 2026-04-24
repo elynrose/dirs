@@ -3,6 +3,8 @@ name = "ffmpeg-pipelines"
 version = "0.1.0"
 description = "FFmpeg filter graphs and compile helpers for Directely exports"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
 
@@ -21,6 +23,11 @@ ignore-vcs = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["ffmpeg_pipelines"]
+# Hatch occasionally omitted these modules from the wheel; keep them explicit.
+[tool.hatch.build.targets.wheel.force-include]
+"ffmpeg_pipelines/audio_slot.py" = "ffmpeg_pipelines/audio_slot.py"
+"ffmpeg_pipelines/nt_staging.py" = "ffmpeg_pipelines/nt_staging.py"
+"ffmpeg_pipelines/video_to_duration.py" = "ffmpeg_pipelines/video_to_duration.py"
 
 [tool.ruff]
 line-length = 100

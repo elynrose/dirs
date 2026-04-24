@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Tuple, Type
+from typing import Any, Literal, Tuple, Type
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
@@ -220,6 +220,41 @@ class Settings(BaseSettings):
     grok_api_key: str | None = None
     fal_key: str | None = None
     tavily_api_key: str | None = None
+    pexels_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("pexels_api_key", "PEXELS_API_KEY"),
+    )
+
+    storyblocks_public_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "storyblocks_public_key",
+            "STORYBLOCKS_PUBLIC_KEY",
+            "STORYBLOCKS_API_PUBLIC_KEY",
+        ),
+    )
+    storyblocks_private_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "storyblocks_private_key",
+            "STORYBLOCKS_PRIVATE_KEY",
+            "STORYBLOCKS_API_PRIVATE_KEY",
+        ),
+    )
+    storyblocks_video_api_base: str = Field(
+        default="https://api.videoblocks.com",
+        validation_alias=AliasChoices(
+            "storyblocks_video_api_base",
+            "STORYBLOCKS_VIDEO_API_BASE",
+        ),
+    )
+    storyblocks_image_api_base: str = Field(
+        default="https://api.graphicstock.com",
+        validation_alias=AliasChoices(
+            "storyblocks_image_api_base",
+            "STORYBLOCKS_IMAGE_API_BASE",
+        ),
+    )
 
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     xai_base_url: str = "https://api.x.ai/v1"
@@ -451,6 +486,18 @@ class Settings(BaseSettings):
     agent_run_scene_repair_max_rounds: int = Field(default=2, ge=0, le=8)
     agent_run_chapter_repair_max_rounds: int = Field(default=1, ge=0, le=5)
     agent_run_auto_generate_scene_videos: bool = False
+    # Full-video tail: during auto_images / auto_videos, search Pexels per scene and import the first hit (requires PEXELS_API_KEY).
+    agent_run_use_pexels_for_scenes: bool = False
+    agent_run_pexels_scene_media_mode: Literal["photos", "videos", "both"] = Field(
+        default="photos",
+        description="Automation Pexels stock: photos, videos, or both (photos first when both).",
+    )
+    agent_run_pexels_scene_search_interval_sec: float = Field(
+        default=2.0,
+        ge=0.0,
+        le=120.0,
+        description="Seconds to wait between Pexels search/import calls during automated scene fill.",
+    )
     agent_run_auto_generate_scene_images: bool = True
     agent_run_min_scene_images: int = Field(default=1, ge=1, le=10)
     agent_run_min_scene_videos: int = Field(default=1, ge=1, le=10)
@@ -466,6 +513,8 @@ class Settings(BaseSettings):
     )
     # When false (default), automated scene video failures after retries do not abort the agent run — narration and timeline continue.
     agent_run_abort_on_auto_video_failure: bool = False
+    # Auto / hands-off: generate extra scene clips (varied prompts) so visual runway matches VO length (many clips vs looping one).
+    agent_run_auto_scene_coverage_clips: bool = False
     # Merged server-side into pipeline_options on full-video tails (demo_fast / production_heavy).
     agent_run_pipeline_speed: str = Field(
         default="standard",

@@ -31,6 +31,9 @@ class Project(Base):
     # Picture geometry for all generated stills, scene clips, and exports: "16:9" (default) or "9:16".
     frame_aspect_ratio: Mapped[str] = mapped_column(String(16), default="16:9", server_default="16:9")
 
+    # Stock / import fit: center_crop (fill frame, may cut edges) vs letterbox (scale to fit + pad).
+    clip_frame_fit: Mapped[str] = mapped_column(String(24), default="center_crop", server_default="center_crop")
+
     preferred_text_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preferred_image_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preferred_video_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -63,6 +66,48 @@ class Project(Base):
     characters: Mapped[list["ProjectCharacter"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+
+
+class ProjectIdea(Base):
+    """Saved documentary concept (title + description) generated from a topic, before a project exists."""
+
+    __tablename__ = "project_ideas"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_topic: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    scheduled_runs: Mapped[list["IdeaScheduledRun"]] = relationship(
+        back_populates="idea", cascade="all, delete-orphan"
+    )
+
+
+class IdeaScheduledRun(Base):
+    """Run an idea through the agent pipeline at ``scheduled_at`` (processed by Celery beat)."""
+
+    __tablename__ = "idea_scheduled_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    idea_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("project_ideas.id", ondelete="CASCADE"), index=True
+    )
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    idea: Mapped["ProjectIdea"] = relationship(back_populates="scheduled_runs")
 
 
 class AppSetting(Base):

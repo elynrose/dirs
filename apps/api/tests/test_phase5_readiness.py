@@ -84,8 +84,8 @@ def test_build_phase5_gate_payload_truncates_issues():
     assert len(p["issues"]) == 64
 
 
-def test_structural_issues_scene_narration_required():
-    """Scene-level NarrationTrack rows are always required now."""
+def test_structural_issues_scene_narration_required_when_opt_in():
+    """With require_scene_narration_tracks=True, spoken scenes without scene TTS are blocked."""
     pid = uuid4()
     db = MagicMock()
     with (
@@ -95,6 +95,7 @@ def test_structural_issues_scene_narration_required():
             "director_api.services.phase5_readiness.scenes_spoken_narration_coverage",
             return_value=(3, 0),
         ),
+        patch("director_api.services.phase5_readiness._scene_narration_disk_issues", return_value=[]),
     ):
         issues = _project_structural_issues(
             db,
@@ -104,6 +105,29 @@ def test_structural_issues_scene_narration_required():
             require_scene_narration_tracks=True,
         )
     assert any(i.get("code") == "missing_scene_narration" for i in issues)
+
+
+def test_structural_issues_missing_scene_narration_ok_when_optional():
+    """Default: scenes can have narration_text but no TTS — export uses silence for those beats."""
+    pid = uuid4()
+    db = MagicMock()
+    with (
+        patch("director_api.services.phase5_readiness.scene_image_video_counts", return_value=(2, 2, 0, 2)),
+        patch("director_api.services.phase5_readiness.scene_visual_gate_counts", return_value=(2, 2, 2)),
+        patch(
+            "director_api.services.phase5_readiness.scenes_spoken_narration_coverage",
+            return_value=(3, 0),
+        ),
+        patch("director_api.services.phase5_readiness._scene_narration_disk_issues", return_value=[]),
+    ):
+        issues = _project_structural_issues(
+            db,
+            project_id=pid,
+            storage_root=MagicMock(),
+            export_stage="final_cut",
+            require_scene_narration_tracks=False,
+        )
+    assert not any(i.get("code") == "missing_scene_narration" for i in issues)
 
 
 def test_rough_cut_structural_skips_narration_checks():

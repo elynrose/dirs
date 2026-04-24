@@ -616,7 +616,7 @@ export function InspectorPipelinePanel({ p }) {
                 </div>
                 <p className="subtle">
                   Stop sets a flag the worker checks between steps and before long provider calls (research, story review, character
-                  bible, images, video, narration). A single request already in flight to an external API may still complete; the pipeline exits
+                  bible, narration, images, video). A single request already in flight to an external API may still complete; the pipeline exits
                   as soon as the worker observes the stop.
                 </p>
                 <div className="subtle" style={{ marginTop: 6 }}>

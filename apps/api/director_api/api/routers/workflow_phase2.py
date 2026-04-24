@@ -43,8 +43,7 @@ from director_api.db.session import get_db
 from director_api.services import phase2 as phase2_svc
 from director_api.services.llm_prompt_runtime import llm_prompt_map_scope
 from director_api.services.llm_prompt_service import build_resolved_prompt_map
-from director_api.tasks.job_enqueue import enqueue_job_task
-from director_api.tasks.worker_tasks import run_phase2_job
+from director_api.tasks.job_enqueue import enqueue_run_phase2_job
 from director_api.validation.phase2_schemas import validate_director_pack, validate_research_dossier_body
 
 router = APIRouter(tags=["phase2"])
@@ -208,7 +207,7 @@ def research_run(
     p.workflow_phase = "research_running"
     db.commit()
     db.refresh(job)
-    enqueue_job_task(run_phase2_job, job.id)
+    enqueue_run_phase2_job(job.id)
 
     response_body = {
         "job": {"id": str(job.id), "status": job.status, "poll_url": f"/v1/jobs/{job.id}"},
@@ -411,7 +410,7 @@ def script_generate_outline(
     db.add(job)
     db.commit()
     db.refresh(job)
-    enqueue_job_task(run_phase2_job, job.id)
+    enqueue_run_phase2_job(job.id)
     response_body = {
         "job": {"id": str(job.id), "status": job.status, "poll_url": f"/v1/jobs/{job.id}"},
         "meta": meta,
@@ -458,7 +457,7 @@ def script_generate_chapters(
     db.add(job)
     db.commit()
     db.refresh(job)
-    enqueue_job_task(run_phase2_job, job.id)
+    enqueue_run_phase2_job(job.id)
     response_body = {
         "job": {"id": str(job.id), "status": job.status, "poll_url": f"/v1/jobs/{job.id}"},
         "meta": meta,
@@ -597,7 +596,7 @@ def chapter_script_regenerate(
     db.add(job)
     db.commit()
     db.refresh(job)
-    enqueue_job_task(run_phase2_job, job.id)
+    enqueue_run_phase2_job(job.id)
     response_body = {
         "job": {"id": str(job.id), "status": job.status, "poll_url": f"/v1/jobs/{job.id}"},
         "meta": meta,

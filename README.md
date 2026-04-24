@@ -66,3 +66,17 @@ Install **FFmpeg** on the worker host for compile jobs. Web studio: `apps/web` (
 | `./Launch.sh` (repo root) | **macOS / Linux:** same stack in background + logs under `.run/` + opens browser |
 
 **Phase 1:** after `make up`, run `make migrate`, then `make api` and `make worker` in separate terminals. See [`apps/api/README.md`](apps/api/README.md) and [`docs/ADAPTER_SMOKE.md`](docs/ADAPTER_SMOKE.md).
+
+## Distribution (desktop installer)
+
+For a **production Windows installer** (bundled web build + API sources + Docker Compose template for Postgres/Redis/MinIO), from the repo root on Windows with Node 18+ and Docker available:
+
+```powershell
+.\scripts\build-exe.ps1
+```
+
+Output in `apps/electron/release/`: **`Directely Setup <version>.exe`** (NSIS installer) and **`Directely-<version>-win-x64.zip`** (portable extract-and-run bundle). Version comes from `apps/electron/package.json` → `version`. The app expects **Docker Desktop** at runtime and **FFmpeg** on `PATH` (or `FFMPEG_BIN` in `.env`). macOS DMG/ZIP targets are configured in `apps/electron/package.json` under `build.mac` — run `npm run dist` from `apps/electron` after `npm run build:web`.
+
+Strip secrets before sharing any workspace: use `.env.example` as the template only; never ship a real `.env` or Firebase service-account JSON.
+
+**Legal / compliance:** proprietary terms in [`LICENSE`](LICENSE), OSS and runtime notes in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), and a pre-ship checklist in [`docs/COMMERCIAL_RELEASE.md`](docs/COMMERCIAL_RELEASE.md). Bump aligned versions with `.\scripts\sync-release-version.ps1 -Version x.y.z` (needs Python on `PATH`; calls `scripts/sync_release_version.py`).

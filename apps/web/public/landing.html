@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Directely — AI documentary studio for YouTube. Research, script, scenes, narration, and export in one local-first workflow."
+    />
+    <title>Directely — AI studio for long-form YouTube videos</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #070708;
+        --bg-card: #101014;
+        --bg-elevated: #16161c;
+        --text: #f4f4f5;
+        --muted: #a1a1aa;
+        --border: rgba(255, 255, 255, 0.08);
+        --accent: #f59e0b;
+        --accent-dim: #d97706;
+        --link: #93c5fd;
+        --radius: 12px;
+        --max: 1080px;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        font-family: Inter, system-ui, -apple-system, sans-serif;
+        color: var(--text);
+        background: var(--bg);
+        background-image: radial-gradient(ellipse 120% 80% at 50% -20%, #1c1917 0%, transparent 50%),
+          radial-gradient(circle at 100% 50%, rgba(245, 158, 11, 0.06) 0%, transparent 40%);
+        line-height: 1.6;
+        font-size: 16px;
+      }
+
+      a {
+        color: var(--link);
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .wrap {
+        max-width: var(--max);
+        margin: 0 auto;
+        padding: 0 1.25rem;
+      }
+
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        border-bottom: 1px solid var(--border);
+        background: rgba(7, 7, 8, 0.85);
+        backdrop-filter: blur(12px);
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.85rem 0;
+      }
+
+      .brand {
+        font-weight: 700;
+        font-size: 1.125rem;
+        letter-spacing: -0.02em;
+        color: var(--text);
+        text-decoration: none;
+      }
+
+      .brand:hover {
+        text-decoration: none;
+        color: var(--accent);
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 1.25rem;
+        flex-wrap: wrap;
+      }
+
+      .nav-links a {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 0.9rem;
+        font-weight: 500;
+      }
+
+      .nav-links a:hover {
+        color: var(--text);
+        text-decoration: none;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        padding: 0.65rem 1.25rem;
+        border-radius: 10px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        text-decoration: none;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+      }
+
+      .btn:hover {
+        text-decoration: none;
+      }
+
+      .btn:active {
+        transform: scale(0.98);
+      }
+
+      .btn-primary {
+        background: linear-gradient(180deg, #fbbf24 0%, var(--accent) 100%);
+        color: #1c1917;
+        border-color: rgba(251, 191, 36, 0.5);
+      }
+
+      .btn-primary:hover {
+        background: linear-gradient(180deg, #fcd34d 0%, #fbbf24 100%);
+        color: #0c0a09;
+      }
+
+      .btn-secondary {
+        background: var(--bg-elevated);
+        color: var(--text);
+        border-color: var(--border);
+      }
+
+      .btn-secondary:hover {
+        border-color: rgba(255, 255, 255, 0.18);
+        background: #1c1c22;
+      }
+
+      .btn-block {
+        width: 100%;
+      }
+
+      .hero {
+        padding: 3.5rem 0 4rem;
+        text-align: center;
+      }
+
+      .hero-badge {
+        display: inline-block;
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--accent);
+        border: 1px solid rgba(245, 158, 11, 0.35);
+        padding: 0.35rem 0.75rem;
+        border-radius: 999px;
+        margin-bottom: 1.25rem;
+      }
+
+      h1 {
+        font-size: clamp(2rem, 5vw, 2.85rem);
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        line-height: 1.15;
+        margin: 0 0 1rem;
+        max-width: 18ch;
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      .hero-lead {
+        font-size: 1.125rem;
+        color: var(--muted);
+        max-width: 42rem;
+        margin: 0 auto 2rem;
+      }
+
+      .hero-cta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        justify-content: center;
+        margin-bottom: 2rem;
+      }
+
+      .hero-note {
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+
+      section {
+        padding: 3rem 0;
+        border-top: 1px solid var(--border);
+      }
+
+      h2 {
+        font-size: 1.65rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0 0 0.5rem;
+      }
+
+      .section-intro {
+        color: var(--muted);
+        margin: 0 0 2rem;
+        max-width: 52ch;
+      }
+
+      .grid-3 {
+        display: grid;
+        gap: 1.25rem;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      }
+
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1.35rem 1.5rem;
+      }
+
+      .card h3 {
+        margin: 0 0 0.5rem;
+        font-size: 1.05rem;
+        font-weight: 600;
+      }
+
+      .card p {
+        margin: 0;
+        font-size: 0.95rem;
+        color: var(--muted);
+      }
+
+      .pricing {
+        display: grid;
+        gap: 1.25rem;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        align-items: stretch;
+      }
+
+      .price-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1.75rem;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .price-card.featured {
+        border-color: rgba(245, 158, 11, 0.45);
+        box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.12);
+      }
+
+      .price-card .tier {
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--accent);
+        margin-bottom: 0.35rem;
+      }
+
+      .price-card h3 {
+        margin: 0 0 0.25rem;
+        font-size: 1.35rem;
+      }
+
+      .price {
+        font-size: 2rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0.5rem 0 1rem;
+      }
+
+      .price small {
+        font-size: 1rem;
+        font-weight: 500;
+        color: var(--muted);
+      }
+
+      .price-card ul {
+        margin: 0 0 1.5rem;
+        padding: 0;
+        list-style: none;
+        flex: 1;
+      }
+
+      .price-card li {
+        position: relative;
+        padding-left: 1.35rem;
+        margin-bottom: 0.65rem;
+        font-size: 0.95rem;
+        color: var(--muted);
+      }
+
+      .price-card li::before {
+        content: "✓";
+        position: absolute;
+        left: 0;
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      .setup-steps {
+        counter-reset: step;
+      }
+
+      .setup-step {
+        position: relative;
+        padding: 1.25rem 1.25rem 1.25rem 3.25rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        margin-bottom: 1rem;
+      }
+
+      .setup-step::before {
+        counter-increment: step;
+        content: counter(step);
+        position: absolute;
+        left: 1rem;
+        top: 1.15rem;
+        width: 1.75rem;
+        height: 1.75rem;
+        border-radius: 8px;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 0.85rem;
+        color: var(--accent);
+      }
+
+      .setup-step h3 {
+        margin: 0 0 0.35rem;
+        font-size: 1.05rem;
+      }
+
+      .setup-step p,
+      .setup-step li {
+        margin: 0;
+        font-size: 0.92rem;
+        color: var(--muted);
+      }
+
+      .setup-step ul {
+        margin: 0.5rem 0 0;
+        padding-left: 1.2rem;
+        color: var(--muted);
+      }
+
+      code,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.86em;
+        background: var(--bg-elevated);
+        padding: 0.15rem 0.45rem;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+      }
+
+      pre.mono-block {
+        margin: 0.75rem 0 0;
+        padding: 1rem;
+        border-radius: var(--radius);
+        background: #0c0c0f;
+        border: 1px solid var(--border);
+        overflow-x: auto;
+        font-size: 0.82rem;
+        line-height: 1.5;
+      }
+
+      footer {
+        padding: 2.5rem 0;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      footer a {
+        color: var(--muted);
+      }
+
+      footer a:hover {
+        color: var(--text);
+      }
+
+      .legal {
+        margin-top: 1rem;
+        line-height: 1.7;
+      }
+
+      @media (max-width: 640px) {
+        .nav-links {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="wrap nav">
+        <a class="brand" href="#">Directely</a>
+        <nav class="nav-links" aria-label="Primary">
+          <a href="#features">Features</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#download">Download</a>
+          <a href="#setup">Setup</a>
+          <a href="mailto:support@directely.com">Support</a>
+        </nav>
+        <a class="btn btn-primary" href="#pricing">Get Directely</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" style="border: none; padding-bottom: 2rem">
+        <div class="wrap">
+          <span class="hero-badge">Local-first · YouTube-ready exports</span>
+          <h1>Turn a topic into a real long-form YouTube video</h1>
+          <p class="hero-lead">
+            Directely is an <strong style="color: var(--text)">AI documentary studio</strong>: research, chaptered script,
+            scene-by-scene visuals and narration, quality checks, then a compiled export—without juggling five different
+            tools.
+          </p>
+          <div class="hero-cta">
+            <a class="btn btn-primary" href="#pricing">Buy Directely</a>
+            <a class="btn btn-secondary" data-download="zip" href="#download">Download ZIP</a>
+            <a class="btn btn-secondary" href="#setup">Setup guide</a>
+          </div>
+          <p class="hero-note">
+            Runs on your PC with Docker. You bring API keys for AI and stock where you use those features. Your
+            purchase includes proprietary software terms—see <span class="mono">LICENSE</span> and
+            <span class="mono">THIRD_PARTY_NOTICES.md</span> in the distribution.
+          </p>
+        </div>
+      </section>
+
+      <section id="features">
+        <div class="wrap">
+          <h2>Built for depth, not disposable clips</h2>
+          <p class="section-intro">
+            Best for explainers, essays, and documentary-style channels. The pipeline keeps structure, scenes, and
+            exports tied together so you can revise without starting over.
+          </p>
+          <div class="grid-3">
+            <div class="card">
+              <h3>Research → script</h3>
+              <p>
+                Organized dossier and chaptered writing with runtime in mind—so your video has a backbone before you
+                spend on media.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Scenes & visuals</h3>
+              <p>
+                Break the script into scenes, generate or source visuals per beat, and keep continuity in view as you
+                build B-roll and illustrations.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Export you can upload</h3>
+              <p>
+                Narration, timing, subtitles, and a final muxed file—so you are closer to “upload to YouTube” than a
+                folder of loose assets.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="pricing">
+        <div class="wrap">
+          <h2>Simple pricing</h2>
+          <p class="section-intro">
+            Replace the checkout URLs below with your Stripe Payment Links (or Lemon Squeezy / Paddle). Until then,
+            buttons open email to <a href="mailto:support@directely.com">support@directely.com</a> so you never lose a
+            lead.
+          </p>
+          <div class="pricing">
+            <div class="price-card">
+              <span class="tier">Creator</span>
+              <h3>Directely Studio</h3>
+              <p class="price">$99 <small>/ seat / year</small></p>
+              <ul>
+                <li>Desktop + local stack (Docker)</li>
+                <li>Full studio workflow &amp; exports</li>
+                <li>Email support</li>
+              </ul>
+              <a class="btn btn-secondary btn-block" data-buy="standard" href="#">Buy Creator</a>
+            </div>
+            <div class="price-card featured">
+              <span class="tier">Pro</span>
+              <h3>Studio + priority</h3>
+              <p class="price">$199 <small>/ seat / year</small></p>
+              <ul>
+                <li>Everything in Creator</li>
+                <li>Priority onboarding help</li>
+                <li>Commercial terms in LICENSE</li>
+              </ul>
+              <a class="btn btn-primary btn-block" data-buy="pro" href="#">Buy Pro</a>
+            </div>
+          </div>
+          <p style="margin-top: 1.5rem; font-size: 0.85rem; color: var(--muted)">
+            Prices are placeholders—set your real SKUs and payment provider. Taxes and refunds follow your merchant
+            policy.
+          </p>
+        </div>
+      </section>
+
+      <section id="download">
+        <div class="wrap">
+          <h2>Download the app</h2>
+          <p class="section-intro">
+            Windows builds from this repo produce both an <strong style="color: var(--text)">installer</strong> and a
+            <strong style="color: var(--text)">portable ZIP</strong> (extract and run—no setup wizard). Host those files
+            on your CDN, S3, or GitHub Releases, then paste the HTTPS URLs into the script at the bottom of this page.
+          </p>
+          <div class="card" style="max-width: 36rem; margin-bottom: 1.5rem">
+            <h3>Build artifacts (after <span class="mono">.\scripts\build-exe.ps1</span>)</h3>
+            <p style="margin-bottom: 0.75rem">
+              Look in <span class="mono">apps\electron\release\</span>:
+            </p>
+            <ul style="margin: 0; padding-left: 1.2rem; color: var(--muted); font-size: 0.95rem">
+              <li><span class="mono">Directely Setup &lt;version&gt;.exe</span> — NSIS installer</li>
+              <li><span class="mono">Directely-&lt;version&gt;-win-x64.zip</span> — portable folder (same app)</li>
+            </ul>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 0.75rem">
+            <a class="btn btn-primary" data-download="zip" href="#download">Download portable ZIP</a>
+            <a class="btn btn-secondary" data-download="exe" href="#download">Download installer (.exe)</a>
+          </div>
+          <p style="margin-top: 1.25rem; font-size: 0.85rem; color: var(--muted)">
+            If the buttons open email, set <span class="mono">DIRECTELY_DOWNLOAD.zip</span> and
+            <span class="mono">DIRECTELY_DOWNLOAD.exe</span> in this file’s <span class="mono">&lt;script&gt;</span> block.
+          </p>
+        </div>
+      </section>
+
+      <section id="setup">
+        <div class="wrap">
+          <h2>Setup instructions</h2>
+          <p class="section-intro">
+            Directely is built as a <strong style="color: var(--text)">local-first</strong> application: a web studio
+            talks to a Python API and background workers. The smoothest path on Windows is the launcher script after
+            Docker is running.
+          </p>
+
+          <div class="setup-steps">
+            <div class="setup-step">
+              <h3>Prerequisites</h3>
+              <p>Install the following on the machine that will run the studio:</p>
+              <ul>
+                <li><strong>Windows 10/11</strong> (or follow <code>INSTALLATION.md</code> for Linux server installs)</li>
+                <li>
+                  <strong>Docker Desktop</strong> — Postgres, Redis, and optional MinIO run in containers (<code
+                    >docker compose</code
+                  >).
+                </li>
+                <li><strong>Node.js 18+</strong> — for the web UI and Electron packaging.</li>
+                <li><strong>Python 3.11+</strong> — for the API and Celery workers.</li>
+                <li>
+                  <strong>FFmpeg</strong> on <code>PATH</code> (or set <code>FFMPEG_BIN</code> in your environment) for
+                  compile / export jobs.
+                </li>
+              </ul>
+            </div>
+
+            <div class="setup-step">
+              <h3>1. Get the software</h3>
+              <p>
+                After purchase you receive a download or installer (e.g. <strong>Directely Setup</strong> from the
+                Electron build) plus license terms. Keep your <code>.env</code> out of any bundle you share publicly.
+              </p>
+            </div>
+
+            <div class="setup-step">
+              <h3>2. Configure environment</h3>
+              <p>
+                Copy <span class="mono">.env.example</span> to <span class="mono">.env</span> at the project root. Set
+                database URL, Redis URL, and any AI or stock API keys your workflow needs. Default storage is the
+                filesystem under your data directory—see <span class="mono">LOCAL_STORAGE_ROOT</span> in the example
+                file.
+              </p>
+            </div>
+
+            <div class="setup-step">
+              <h3>3. Start Docker services</h3>
+              <p>From the repository root:</p>
+              <pre class="mono-block">docker compose up -d</pre>
+              <p style="margin-top: 0.75rem">
+                Then run database migrations (from <span class="mono">apps/api</span> with your venv active):
+              </p>
+              <pre class="mono-block">alembic upgrade head</pre>
+            </div>
+
+            <div class="setup-step">
+              <h3>4. Run API, worker, and beat</h3>
+              <p>
+                You need three processes: the FastAPI server, a Celery worker (queues <span class="mono">text</span>,
+                <span class="mono">media</span>, <span class="mono">compile</span>), and Celery beat for scheduled
+                tasks like stale-job reaping.
+              </p>
+              <pre class="mono-block"># Terminal A (apps/api)
+python -m director_api
+
+# Terminal B
+celery -A director_api.tasks.celery_app worker -Q text,media,compile -l info
+
+# Terminal C
+celery -A director_api.tasks.celery_app beat -l info</pre>
+            </div>
+
+            <div class="setup-step">
+              <h3>5. Windows one-shot launch</h3>
+              <p>
+                From the repo root, after Docker is up and <span class="mono">.env</span> exists, you can use the
+                bundled launcher (starts stack pieces and opens the browser—see script for exact behavior):
+              </p>
+              <pre class="mono-block">.\Launch.ps1</pre>
+              <p style="margin-top: 0.75rem">
+                Alternatively use <span class="mono">Launch.cmd</span> or the <span class="mono">restart-local.ps1</span>
+                helper if your team provides it.
+              </p>
+            </div>
+
+            <div class="setup-step">
+              <h3>6. Open the studio</h3>
+              <p>
+                Development UI: from <span class="mono">apps/web</span> run <span class="mono">npm install</span> then
+                <span class="mono">npm run dev</span> and open the URL Vite prints (API is usually proxied to
+                <span class="mono">/v1</span>). Production: use the built static files or the installed Electron app per
+                your distribution README.
+              </p>
+            </div>
+
+            <div class="setup-step">
+              <h3>Stuck?</h3>
+              <p>
+                Email <a href="mailto:support@directely.com">support@directely.com</a> with your OS version and where
+                the install failed (Docker, migrations, worker, or browser).
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <p><strong>Directely</strong> — AI documentary studio</p>
+        <p class="legal">
+          Proprietary software; terms in <span class="mono">LICENSE</span>. Open-source and runtime components are
+          summarized in <span class="mono">THIRD_PARTY_NOTICES.md</span>. This page is marketing copy only and does not
+          amend your license or Terms of Service.
+        </p>
+        <p style="margin-top: 1rem">
+          <a href="mailto:support@directely.com">support@directely.com</a>
+        </p>
+      </div>
+    </footer>
+
+    <script>
+      /**
+       * Replace with your real checkout URLs (Stripe Payment Links, Lemon Squeezy, etc.).
+       * Leave empty or keep "REPLACE" to fall back to email.
+       */
+      var DIRECTELY_CHECKOUT = {
+        standard: "REPLACE_STRIPE_PAYMENT_LINK_CREATOR",
+        pro: "REPLACE_STRIPE_PAYMENT_LINK_PRO",
+      };
+
+      /**
+       * Hosted HTTPS URLs for Windows builds (upload files from apps/electron/release/ after build-exe.ps1).
+       * Leave REPLACE_… values to fall back to email for a manual download link.
+       */
+      var DIRECTELY_DOWNLOAD = {
+        zip: "REPLACE_HTTPS_URL_PORTABLE_ZIP",
+        exe: "REPLACE_HTTPS_URL_NSIS_INSTALLER",
+      };
+
+      (function () {
+        function hrefFor(tier) {
+          var url = DIRECTELY_CHECKOUT[tier] || "";
+          if (url && url.indexOf("REPLACE") === -1 && /^https?:\/\//i.test(url)) return url;
+          var plan = tier === "pro" ? "Pro" : "Creator";
+          return (
+            "mailto:support@directely.com?subject=" +
+            encodeURIComponent("Directely purchase — " + plan) +
+            "&body=" +
+            encodeURIComponent(
+              "Hi — I'd like to buy Directely (" + plan + ").\n\nOS:\nWhere I got stuck (if any):\n"
+            )
+          );
+        }
+
+        document.querySelectorAll("[data-buy]").forEach(function (el) {
+          var tier = el.getAttribute("data-buy");
+          var href = hrefFor(tier);
+          el.setAttribute("href", href);
+          if (href.indexOf("mailto:") === 0) {
+            el.setAttribute("title", "Opens email — set DIRECTELY_CHECKOUT in this page to use Stripe");
+          }
+        });
+
+        var mailDl =
+          "mailto:support@directely.com?subject=" +
+          encodeURIComponent("Directely download link") +
+          "&body=" +
+          encodeURIComponent("Hi — please send a download link for Directely (ZIP and/or installer).\n\n");
+
+        function hrefForDownload(kind) {
+          var url = (DIRECTELY_DOWNLOAD && DIRECTELY_DOWNLOAD[kind]) || "";
+          if (url && url.indexOf("REPLACE") === -1 && /^https?:\/\//i.test(url)) return url;
+          return mailDl;
+        }
+
+        document.querySelectorAll("[data-download]").forEach(function (el) {
+          var kind = el.getAttribute("data-download");
+          if (kind !== "zip" && kind !== "exe") return;
+          var href = hrefForDownload(kind);
+          el.setAttribute("href", href);
+          if (href.indexOf("mailto:") === 0) {
+            el.setAttribute(
+              "title",
+              "Opens email — set DIRECTELY_DOWNLOAD." + kind + " to your hosted file URL"
+            );
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

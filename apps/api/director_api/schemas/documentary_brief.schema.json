@@ -24,6 +24,11 @@
     "preferred_speech_provider": { "type": "string" },
     "research_min_sources": { "type": "integer", "minimum": 1, "maximum": 100 },
     "budget_limit": { "type": "number" },
-    "frame_aspect_ratio": { "type": "string", "enum": ["16:9", "9:16"] }
+    "frame_aspect_ratio": { "type": "string", "enum": ["16:9", "9:16"] },
+    "clip_frame_fit": {
+      "type": "string",
+      "enum": ["center_crop", "letterbox"],
+      "description": "How Pexels / imported stills are fitted to the project frame: center_crop fills and may cut edges; letterbox pads with black bars."
+    }
   }
 }
