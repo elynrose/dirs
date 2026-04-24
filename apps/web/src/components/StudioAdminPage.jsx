@@ -6,6 +6,7 @@ import { adminFetch, getAdminKey, setAdminKey } from "../lib/adminApi.js";
 const TABS = [
   { id: "dashboard", label: "Dashboard" },
   { id: "tools", label: "Tools" },
+  { id: "database", label: "Database" },
   { id: "users", label: "Users" },
   { id: "tenants", label: "Workspaces" },
   { id: "memberships", label: "Permissions" },
@@ -400,6 +401,13 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
   const [budgetRunStatuses, setBudgetRunStatuses] = useState({});
   const [budgetRowBusy, setBudgetRowBusy] = useState("");
 
+  const [dbStatus, setDbStatus] = useState(null);
+  const [dbBusy, setDbBusy] = useState(false);
+  const [dbErr, setDbErr] = useState("");
+  const [dbMsg, setDbMsg] = useState("");
+  const [restoreConfirm, setRestoreConfirm] = useState("");
+  const [restoreFile, setRestoreFile] = useState(null);
+
   useEffect(() => {
     if (!unlocked) return;
     void (async () => {
@@ -548,6 +556,78 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
     }
   }, [keyInput, showToast]);
 
+  const runDbBackup = useCallback(async () => {
+    setDbErr("");
+    setDbMsg("");
+    setDbBusy(true);
+    try {
+      const r = await adminFetch("/v1/admin/db/backup");
+      if (!r.ok) {
+        const body = await parseJson(r).catch(() => ({}));
+        setDbErr(apiErrorMessage(body) || `HTTP ${r.status}`);
+        return;
+      }
+      const blob = await r.blob();
+      const cd = r.headers.get("Content-Disposition") || "";
+      let name = "director_backup.sql";
+      const m = /filename="([^"]+)"/.exec(cd);
+      if (m) name = m[1];
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+      setDbMsg(`Downloaded ${name} (${(blob.size / (1024 * 1024)).toFixed(2)} MiB).`);
+      showToast?.("Backup downloaded", { type: "success" });
+    } catch (e) {
+      setDbErr(formatUserFacingError(e));
+    } finally {
+      setDbBusy(false);
+    }
+  }, [showToast]);
+
+  const runDbRestore = useCallback(async () => {
+    setDbErr("");
+    setDbMsg("");
+    if (!restoreFile) {
+      setDbErr("Choose a .sql dump file first.");
+      return;
+    }
+    if (
+      !window.confirm(
+        "This will run the SQL file against the live database the API is using. Data can be overwritten or corrupted. Stop other writers and take a backup first. Continue?",
+      )
+    ) {
+      return;
+    }
+    setDbBusy(true);
+    try {
+      const fd = new FormData();
+      fd.set("confirm", restoreConfirm);
+      fd.set("dump", restoreFile, restoreFile.name || "dump.sql");
+      const r = await adminFetch("/v1/admin/db/restore", { method: "POST", body: fd });
+      const body = await parseJson(r).catch(() => ({}));
+      if (!r.ok) {
+        setDbErr(apiErrorMessage(body) || `HTTP ${r.status}`);
+        return;
+      }
+      setDbMsg("Restore completed successfully.");
+      showToast?.("Database restore completed", { type: "success" });
+      setRestoreFile(null);
+      try {
+        const el = document.querySelector('input[type="file"][data-director-db-restore-file="1"]');
+        if (el) el.value = "";
+      } catch {
+        /* ignore */
+      }
+    } catch (e) {
+      setDbErr(formatUserFacingError(e));
+    } finally {
+      setDbBusy(false);
+    }
+  }, [restoreConfirm, restoreFile, showToast]);
+
   useEffect(() => {
     if (getAdminKey().trim()) {
       void (async () => {
@@ -564,6 +644,26 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
   const loadTab = useCallback(async () => {
     if (!unlocked) return;
     setErr("");
+    if (tab === "database") {
+      setDbErr("");
+      setDbMsg("");
+      setBusy(true);
+      setDbStatus(null);
+      try {
+        const r = await adminFetch("/v1/admin/db/status");
+        const body = await parseJson(r);
+        if (!r.ok) {
+          setErr(apiErrorMessage(body) || "Request failed");
+          return;
+        }
+        setDbStatus(body.data);
+      } catch (e) {
+        setErr(formatUserFacingError(e));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (tab === "tools") {
       setBusy(false);
       return;
@@ -1107,7 +1207,11 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
             </div>
           )}
 
-          {tab !== "dashboard" && tab !== "plans" && tab !== "stripe" && tab !== "tools" ? (
+          {tab !== "dashboard" &&
+          tab !== "plans" &&
+          tab !== "stripe" &&
+          tab !== "tools" &&
+          tab !== "database" ? (
             <div className="action-row" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8, alignItems: "center" }}>
               <button type="button" className="secondary" disabled={!canPrev} onClick={() => setOffset((o) => Math.max(0, o - LIMIT))}>
                 Previous page
@@ -1396,6 +1500,93 @@ export function StudioAdminPage({ showToast, workspaceTenantId = "" }) {
                         })}
                     </ul>
                   </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {tab === "database" ? (
+            <div className="panel" style={{ padding: 14, marginBottom: 12, maxWidth: 760 }}>
+              <h3 style={{ margin: "0 0 8px", fontSize: "1rem" }}>PostgreSQL backup &amp; restore</h3>
+              <p className="subtle" style={{ margin: "0 0 12px", fontSize: "0.88rem", lineHeight: 1.45 }}>
+                Uses <code className="mono">pg_dump</code> / <code className="mono">psql</code> on the API host against{" "}
+                <code className="mono">DATABASE_URL</code>. Backup and restore require{" "}
+                <strong>
+                  <code className="mono">X-Director-Admin-Key</code>
+                </strong>{" "}
+                (the same value as <code className="mono">DIRECTOR_ADMIN_API_KEY</code> in the server env) — paste it in
+                the admin key field above. Operators enable features with env flags (see <code className="mono">.env.example</code>
+                ).
+              </p>
+              {dbStatus ? (
+                <ul className="subtle" style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: "0.85rem" }}>
+                  <li>Backup enabled: {dbStatus.backup_enabled ? "yes" : "no"}</li>
+                  <li>Restore enabled: {dbStatus.restore_enabled ? "yes" : "no"}</li>
+                  <li>Restore confirm configured: {dbStatus.restore_confirm_configured ? "yes" : "no"}</li>
+                  <li>
+                    <code className="mono">pg_dump</code> on PATH: {dbStatus.pg_dump_available ? "yes" : "no"}
+                  </li>
+                  <li>
+                    <code className="mono">psql</code> on PATH: {dbStatus.psql_available ? "yes" : "no"}
+                  </li>
+                  <li>
+                    Max restore upload: {(dbStatus.restore_max_bytes / (1024 * 1024)).toFixed(0)} MiB
+                  </li>
+                </ul>
+              ) : (
+                <p className="subtle">Loading status…</p>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div className="action-row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <button type="button" disabled={dbBusy || !dbStatus?.backup_enabled} onClick={() => void runDbBackup()}>
+                    {dbBusy ? "Working…" : "Download SQL backup"}
+                  </button>
+                  <span className="subtle" style={{ fontSize: "0.82rem" }}>
+                    Plain SQL; may take several minutes for large databases.
+                  </span>
+                </div>
+                <hr style={{ border: 0, borderTop: "1px solid var(--border-subtle, #333)", margin: "4px 0" }} />
+                <p className="subtle" style={{ margin: 0, fontSize: "0.85rem", lineHeight: 1.45 }}>
+                  <strong>Restore</strong> runs <code className="mono">psql -v ON_ERROR_STOP=1 -f</code> against the live DB.
+                  Stop traffic and take a backup first. Paste the exact <code className="mono">DIRECTOR_ADMIN_DB_RESTORE_CONFIRM</code>{" "}
+                  phrase from the server environment.
+                </p>
+                <label className="subtle" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  Confirmation phrase
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={restoreConfirm}
+                    onChange={(e) => setRestoreConfirm(e.target.value)}
+                    placeholder="matches DIRECTOR_ADMIN_DB_RESTORE_CONFIRM"
+                    style={{ maxWidth: 480, marginTop: 4 }}
+                  />
+                </label>
+                <label className="subtle" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  SQL dump file
+                  <input
+                    data-director-db-restore-file="1"
+                    type="file"
+                    accept=".sql,text/plain"
+                    onChange={(e) => setRestoreFile(e.target.files?.[0] ?? null)}
+                    style={{ marginTop: 4 }}
+                  />
+                </label>
+                <div className="action-row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={dbBusy || !dbStatus?.restore_enabled || !dbStatus?.restore_confirm_configured}
+                    onClick={() => void runDbRestore()}
+                  >
+                    {dbBusy ? "Working…" : "Run restore from file"}
+                  </button>
+                </div>
+                {dbErr ? <p className="err">{dbErr}</p> : null}
+                {dbMsg ? (
+                  <p className="subtle" style={{ margin: 0, color: "var(--ok, #8fd694)" }}>
+                    {dbMsg}
+                  </p>
                 ) : null}
               </div>
             </div>

@@ -822,6 +822,40 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("director_admin_api_key", "DIRECTOR_ADMIN_API_KEY"),
         description="Platform admin API + UI: require X-Director-Admin-Key matching this value.",
     )
+    # Database backup/restore (Admin → Database). Requires pg_dump/psql on the API host PATH.
+    # Backup/restore routes additionally require X-Director-Admin-Key (session-only workspace admin is rejected).
+    director_admin_db_backup_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "director_admin_db_backup_enabled",
+            "DIRECTOR_ADMIN_DB_BACKUP_ENABLED",
+        ),
+    )
+    director_admin_db_restore_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "director_admin_db_restore_enabled",
+            "DIRECTOR_ADMIN_DB_RESTORE_ENABLED",
+        ),
+    )
+    director_admin_db_restore_confirm: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "director_admin_db_restore_confirm",
+            "DIRECTOR_ADMIN_DB_RESTORE_CONFIRM",
+        ),
+        description="Exact phrase required in the restore form (in addition to env flags). Use a long random value.",
+    )
+    director_admin_db_restore_max_bytes: int = Field(
+        default=256 * 1024 * 1024,
+        ge=1,
+        le=2 * 1024 * 1024 * 1024,
+        validation_alias=AliasChoices(
+            "director_admin_db_restore_max_bytes",
+            "DIRECTOR_ADMIN_DB_RESTORE_MAX_BYTES",
+        ),
+        description="Max uploaded SQL dump size for POST /v1/admin/db/restore (bytes).",
+    )
 
     director_expose_openapi: bool = Field(
         default=True,

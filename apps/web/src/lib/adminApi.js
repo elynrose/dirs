@@ -24,8 +24,9 @@ export function setAdminKey(key) {
 export function adminFetch(path, opts = {}) {
   const k = getAdminKey().trim();
   const method = String(opts.method || "GET").toUpperCase();
+  const isFormData = typeof FormData !== "undefined" && opts.body instanceof FormData;
   const baseHeaders =
-    method === "GET" || method === "HEAD" ? {} : { "Content-Type": "application/json" };
+    method === "GET" || method === "HEAD" || isFormData ? {} : { "Content-Type": "application/json" };
   const auth = directorAuthHeaders();
   return fetch(apiPath(path), {
     ...opts,

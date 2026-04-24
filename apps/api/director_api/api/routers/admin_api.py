@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Iterable, Literal
+from pathlib import Path
+from typing import Any, Iterable, Iterator, Literal
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -45,6 +47,7 @@ from director_api.storage.project_storage_cleanup import remove_generated_projec
 from director_api.services.billing_plans_seed import ensure_default_subscription_plans
 from director_api.services.platform_stripe_settings import get_or_create_platform_stripe, resolve_effective_stripe_settings
 from director_api.services.tenant_entitlements import entitlement_definitions_public
+from director_api.services import db_backup_restore as db_backup_restore_svc
 
 log = structlog.get_logger(__name__)
 
@@ -56,6 +59,29 @@ def admin_auth_dep(request: Request, db: Session = Depends(get_db)) -> None:
 
 
 AdminDep = Depends(admin_auth_dep)
+
+
+def _assert_director_admin_api_key_only(request: Request) -> None:
+    """Database backup/restore: require shared admin key (not session-only workspace admin)."""
+    settings = get_settings()
+    expected = (settings.director_admin_api_key or "").strip()
+    got = (request.headers.get("x-director-admin-key") or request.headers.get("X-Director-Admin-Key") or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "ADMIN_KEY_NOT_CONFIGURED",
+                "message": "Set DIRECTOR_ADMIN_API_KEY before using database backup or restore",
+            },
+        )
+    if got != expected:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "ADMIN_KEY_REQUIRED",
+                "message": "Database backup and restore require X-Director-Admin-Key matching DIRECTOR_ADMIN_API_KEY",
+            },
+        )
 
 
 def _meta(**extra: Any) -> dict[str, Any]:
@@ -1589,4 +1615,128 @@ def admin_list_jobs(
         _job_out(j, tenant_name=name_by_tid.get(str(j.tenant_id)) if j.tenant_id else None) for j in rows
     ]
     return {"data": {"jobs": jobs_out, "total_count": total}, "meta": {}}
+
+
+# ---------------------------------------------------------------------------
+# Database backup / restore (PostgreSQL via pg_dump / psql on API host)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/db/status")
+def admin_db_maintenance_status(_: None = AdminDep) -> dict[str, Any]:
+    """Whether backup/restore are enabled in config and client tools exist on PATH."""
+    settings = get_settings()
+    return {
+        "data": {
+            "backup_enabled": bool(settings.director_admin_db_backup_enabled),
+            "restore_enabled": bool(settings.director_admin_db_restore_enabled),
+            "restore_confirm_configured": bool((settings.director_admin_db_restore_confirm or "").strip()),
+            "pg_dump_available": bool(db_backup_restore_svc.pg_dump_on_path()),
+            "psql_available": bool(db_backup_restore_svc.psql_on_path()),
+            "restore_max_bytes": int(settings.director_admin_db_restore_max_bytes),
+        },
+        "meta": {},
+    }
+
+
+@router.get("/db/backup")
+def admin_db_backup(request: Request, _: None = AdminDep) -> StreamingResponse:
+    """Download a plain-SQL pg_dump of DATABASE_URL (same DB the API uses)."""
+    _assert_director_admin_api_key_only(request)
+    settings = get_settings()
+    if not settings.director_admin_db_backup_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": "database backup is disabled (set DIRECTOR_ADMIN_DB_BACKUP_ENABLED=1)"},
+        )
+    try:
+        path = db_backup_restore_svc.run_pg_dump_to_tempfile(settings.database_url)
+    except RuntimeError as e:
+        log.warning("admin_db_backup_failed", error=str(e))
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "BACKUP_FAILED", "message": str(e)},
+        ) from e
+
+    fn = db_backup_restore_svc.backup_filename_stem(db_backup_restore_svc.database_name_from_url(settings.database_url))
+
+    def stream() -> Iterator[bytes]:
+        yield from db_backup_restore_svc.iter_file_chunks_then_delete(path)
+
+    return StreamingResponse(
+        stream(),
+        media_type="application/sql",
+        headers={"Content-Disposition": f'attachment; filename="{fn}.sql"'},
+    )
+
+
+@router.post("/db/restore")
+async def admin_db_restore(
+    request: Request,
+    confirm: str = Form(""),
+    dump: UploadFile = File(...),
+    _: None = AdminDep,
+) -> dict[str, Any]:
+    """Restore DATABASE_URL from an uploaded plain-SQL dump (psql -v ON_ERROR_STOP=1). Destructive."""
+    _assert_director_admin_api_key_only(request)
+    settings = get_settings()
+    if not settings.director_admin_db_restore_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": "database restore is disabled (set DIRECTOR_ADMIN_DB_RESTORE_ENABLED=1)"},
+        )
+    token = (settings.director_admin_db_restore_confirm or "").strip()
+    if not token:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "RESTORE_CONFIRM_NOT_CONFIGURED",
+                "message": "Set DIRECTOR_ADMIN_DB_RESTORE_CONFIRM to a long random phrase before enabling restore",
+            },
+        )
+    if (confirm or "").strip() != token:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "RESTORE_CONFIRM_MISMATCH", "message": "confirmation phrase does not match DIRECTOR_ADMIN_DB_RESTORE_CONFIRM"},
+        )
+
+    max_b = int(settings.director_admin_db_restore_max_bytes)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        piece = await dump.read(1024 * 1024)
+        if not piece:
+            break
+        total += len(piece)
+        if total > max_b:
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "DUMP_TOO_LARGE", "message": f"upload exceeds DIRECTOR_ADMIN_DB_RESTORE_MAX_BYTES ({max_b})"},
+            )
+        chunks.append(piece)
+    raw = b"".join(chunks)
+    if len(raw) < 16:
+        raise HTTPException(status_code=400, detail={"code": "EMPTY_DUMP", "message": "uploaded file is empty or too small"})
+
+    tmp_path: Path | None = None
+    try:
+        tmp_path = db_backup_restore_svc.write_upload_to_temp(raw, max_bytes=max_b)
+        await run_in_threadpool(db_backup_restore_svc.run_psql_restore_file, settings.database_url, tmp_path)
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail={"code": "DUMP_TOO_LARGE", "message": str(e)}) from e
+    except RuntimeError as e:
+        log.error("admin_db_restore_failed", error=str(e))
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "RESTORE_FAILED", "message": str(e)},
+        ) from e
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    log.warning("admin_db_restore_completed", bytes=len(raw))
+    return {"data": {"ok": True, "bytes_applied": len(raw)}, "meta": {}}
 
