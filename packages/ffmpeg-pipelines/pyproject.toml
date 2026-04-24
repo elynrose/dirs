@@ -1,6 +1,6 @@
 [project]
 name = "ffmpeg-pipelines"
-version = "0.1.0"
+version = "0.1.1"
 description = "FFmpeg filter graphs and compile helpers for Directely exports"
 readme = "README.md"
 license = "MIT"
