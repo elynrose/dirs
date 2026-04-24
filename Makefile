@@ -1,4 +1,4 @@
-.PHONY: up down ps logs migrate api worker kill-api restart-local web-dev web-deploy electron electron-pack
+.PHONY: up down ps logs migrate api worker kill-api restart-local web-dev web-deploy tenant-admin electron electron-pack
 
 SHELL := /bin/bash
 
@@ -54,6 +54,12 @@ web-deploy:
 	rsync -a --delete "$(WEB_DIR)/dist/" "$(WEB_DEPLOY_ROOT)/"
 	nginx -s reload
 	@echo "web-deploy: synced dist/ → $(WEB_DEPLOY_ROOT) (nginx reloaded)"
+
+# Grant Studio / admin API workspace admin: make tenant-admin EMAIL=user@host
+# Optional: TENANT_ID=<uuid> DRY_RUN=1
+tenant-admin:
+	@test -n "$(EMAIL)" || { echo "usage: make tenant-admin EMAIL=user@example.com [TENANT_ID=uuid] [DRY_RUN=1]"; exit 1; }
+	cd "$(API_DIR)" && $(REPO_ENV) && .venv/bin/python "$(ROOT)/scripts/make_tenant_admin.py" "$(EMAIL)"$(if $(TENANT_ID), --tenant-id $(TENANT_ID),)$(if $(DRY_RUN), --dry-run,)
 
 ELECTRON_DIR := $(ROOT)/apps/electron
 
