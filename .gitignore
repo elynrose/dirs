@@ -1,5 +1,8 @@
 .env
 .env.*.local
+# Copies of .env for local reference (often contain secrets)
+.env.backup*
+.env.director-local-reference
 !.env.example
 # Firebase / Google service accounts (paths often appear in .env)
 *firebase-adminsdk*.json
