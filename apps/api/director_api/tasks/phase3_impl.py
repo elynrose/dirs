@@ -34,11 +34,13 @@ from director_api.services import phase3 as phase3_svc
 from director_api.services import agent_resume as agent_resume_svc
 from director_api.services.narration_bracket_visual import (
     base_image_prompt_from_scene_fields,
+    maybe_prepend_topic_setting_anchor,
     append_video_character_dialogue_to_prompt,
     video_text_prompt_from_scene_fields,
 )
 from director_api.services.prompt_enhance import refine_bracket_visual_prompt_llm
 from director_api.services.research_service import sanitize_jsonb_text
+from director_api.services.clip_duration import clip_seconds_for_scene
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.style_presets import effective_narration_style, effective_visual_style
 from director_api.validation.phase3_schemas import validate_scene_plan_batch
@@ -204,16 +206,17 @@ def _package_negative_prompt(pp: Any) -> str | None:
 def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, settings: Any) -> str:
     """Same prompt recipe as scene image generation (Flux / Comfy still), without job payload overrides."""
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
+    vis_style = effective_visual_style(project.visual_style, settings)
     prompt, _, _ = base_image_prompt_from_scene_fields(
         narration_text=scene.narration_text,
         prompt_package_json=pp,
         image_prompt_override=None,
+        visual_style_effective=vis_style,
     )
     prefix = character_consistency_prefix(db, project.id, max_chars=2000)
     if prefix and not prompt_already_has_character_prefix(prompt, prefix):
         room = max(400, 4000 - len(prefix) - 3)
         prompt = f"{prefix}\n\n{str(prompt)[:room]}"
-    vis_style = effective_visual_style(project.visual_style, settings)
     if vis_style:
         vs = vis_style.strip()
         if vs:
@@ -222,7 +225,7 @@ def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, setti
                 room_vs = max(0, 4000 - len(prompt) - 24)
                 if room_vs > 80:
                     prompt = f"{prompt}\n\nVisual style: {vs[:room_vs]}"
-    return str(prompt)
+    return str(maybe_prepend_topic_setting_anchor(prompt, project.topic, max_total=4000))
 
 def _resolve_phase3_video_text_prompt(
     scene: Scene,
@@ -230,18 +233,23 @@ def _resolve_phase3_video_text_prompt(
     *,
     override: Any = None,
     project: Project | None = None,
+    settings: Any | None = None,
 ) -> str:
     """Text sent to generative video models; optional job override, else package, else ``[bracket]`` hints, else VO/purpose.
 
     When ``project.include_spoken_dialogue_in_video_prompt`` and ``pp["video_character_dialogue"]`` are set, appends a
     ``saying: "…"`` fragment for native video+audio models (e.g. Veo).
     """
+    vis_eff: str | None = None
+    if project is not None and settings is not None:
+        vis_eff = effective_visual_style(project.visual_style, settings)
     base = video_text_prompt_from_scene_fields(
         narration_text=scene.narration_text,
         purpose=scene.purpose,
         visual_type=scene.visual_type,
         prompt_package_json=pp if isinstance(pp, dict) else {},
         video_prompt_override=override if isinstance(override, str) else None,
+        visual_style_effective=vis_eff,
     )
     if project is None:
         return base
@@ -302,12 +310,21 @@ def _phase3_scenes_plan_for_chapter(
     *,
     cached_character_consistency_prefix: str | None = None,
     cached_character_bible_for_llm: str | None = None,
+    confirm_erase_assets: bool = False,
 ) -> None:
     """Agentic scene planning (same as scene_generate job body)."""
     if not phase3_svc.chapter_eligible_for_scene_planning(chapter):
         raise ValueError(
             "chapter needs script_text or a substantive summary (12+ chars) before scene planning"
         )
+    # Defence-in-depth erase gate: the loop near the bottom does
+    # ``db.delete(sc)`` for every existing scene, which cascades to all
+    # image/video Asset rows under that chapter. Refuse without explicit
+    # consent. See :mod:`director_api.services.erase_consent` for the full
+    # rationale and the matching API-side check.
+    from director_api.services.erase_consent import assert_chapter_replan_erase_consent
+
+    assert_chapter_replan_erase_consent(chapter, consent=confirm_erase_assets)
 
     vis_prompt = effective_visual_style(project.visual_style, settings)
     if cached_character_consistency_prefix is None:
@@ -353,7 +370,9 @@ def _phase3_scenes_plan_for_chapter(
             target_duration_sec=chapter.target_duration_sec,
             character_bible=char_ctx or None,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+            visual_style_resolved=vis_prompt,
             usage_sink=llm_u,
+            no_narration=bool(getattr(project, "no_narration", False)),
         )
     _wt()._flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
     if refined:
@@ -389,6 +408,9 @@ def _phase3_scenes_plan_for_chapter(
         if not isinstance(ct, list):
             ct = []
         ct = [str(x)[:256] for x in ct if x is not None][:32]
+        narr_out = str(item["narration_text"])
+        if getattr(project, "no_narration", False):
+            narr_out = phase3_svc.NO_NARRATION_SCENE_TEXT
         db.add(
             Scene(
                 id=uuid.uuid4(),
@@ -396,7 +418,7 @@ def _phase3_scenes_plan_for_chapter(
                 order_index=int(item["order_index"]),
                 purpose=sanitize_jsonb_text(str(item["purpose"]), 2000),
                 planned_duration_sec=int(item["planned_duration_sec"]),
-                narration_text=sanitize_jsonb_text(str(item["narration_text"]), 12_000),
+                narration_text=sanitize_jsonb_text(narr_out, 12_000),
                 visual_type=str(item["visual_type"])[:64],
                 prompt_package_json=pp,
                 continuity_tags_json=ct,
@@ -422,7 +444,13 @@ def _phase3_scenes_generate(db, job: Job) -> None:
     if project.tenant_id != job.tenant_id:
         raise ValueError("job tenant does not match project")
     settings = _wt()._worker_runtime_for_job(db, job)
-    _phase3_scenes_plan_for_chapter(db, chapter, project, settings)
+    _phase3_scenes_plan_for_chapter(
+        db,
+        chapter,
+        project,
+        settings,
+        confirm_erase_assets=bool(payload.get("confirm_erase_assets")),
+    )
 
 
 def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
@@ -504,6 +532,7 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
             scene_clip_sec=clip,
             character_bible=char_ctx or None,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+            visual_style_resolved=vis_prompt,
             usage_sink=llm_u,
         )
     if not batch:
@@ -536,6 +565,9 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
     if not isinstance(ct, list):
         ct = []
     ct = [str(x)[:256] for x in ct if x is not None][:32]
+    narr_out = str(item["narration_text"])
+    if getattr(project, "no_narration", False):
+        narr_out = phase3_svc.NO_NARRATION_SCENE_TEXT
     new_id = uuid.uuid4()
     db.add(
         Scene(
@@ -544,7 +576,7 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
             order_index=int(item["order_index"]),
             purpose=sanitize_jsonb_text(str(item["purpose"]), 2000),
             planned_duration_sec=int(item["planned_duration_sec"]),
-            narration_text=sanitize_jsonb_text(str(item["narration_text"]), 12_000),
+            narration_text=sanitize_jsonb_text(narr_out, 12_000),
             visual_type=str(item["visual_type"])[:64],
             prompt_package_json=pp,
             continuity_tags_json=ct,
@@ -615,10 +647,16 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
 
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
     override = payload.get("image_prompt_override")
+    # See ``services.scene_coverage.pick_coverage_payload`` — suffix is
+    # appended (coverage variant), override replaces (explicit user edit).
+    suffix = payload.get("image_prompt_suffix")
+    vis_style = effective_visual_style(project.visual_style, settings)
     prompt, used_brackets, bracket_phrases = base_image_prompt_from_scene_fields(
         narration_text=scene.narration_text,
         prompt_package_json=pp,
         image_prompt_override=override if isinstance(override, str) else None,
+        visual_style_effective=vis_style,
+        image_prompt_suffix=suffix if isinstance(suffix, str) else None,
     )
     bracket_llm_refined = False
     want_refine = bool(payload.get("refine_bracket_visual_with_llm"))
@@ -662,7 +700,6 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             room = max(400, 4000 - len(prefix) - 3)
             prompt = f"{prefix}\n\n{str(prompt)[:room]}"
 
-    vis_style = effective_visual_style(project.visual_style, settings)
     if vis_style:
         vs = vis_style.strip()
         if vs:
@@ -671,6 +708,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
                 room_vs = max(0, 4000 - len(prompt) - 24)
                 if room_vs > 80:
                     prompt = f"{prompt}\n\nVisual style: {vs[:room_vs]}"
+    prompt = maybe_prepend_topic_setting_anchor(prompt, project.topic, max_total=4000)
 
     scene_neg = _package_negative_prompt(pp)
 
@@ -690,8 +728,6 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         req_l = "fal"
     if req_l in ("openai", "grok", "xai", "gemini", "google"):
         req_l = "fal"
-    if bool(getattr(settings, "director_placeholder_media", False)):
-        req_l = "placeholder"
 
     if req_l == "placeholder":
         from director_api.providers.media_placeholder import render_placeholder_scene_png_bytes
@@ -974,7 +1010,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
 
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
     base_video_text_prompt = _resolve_phase3_video_text_prompt(
-        scene, pp, override=payload.get("video_prompt_override"), project=project
+        scene, pp, override=payload.get("video_prompt_override"), project=project, settings=settings
     )
     payload_override = payload.get("video_provider")
     if isinstance(payload_override, str) and payload_override.strip():
@@ -992,11 +1028,11 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         selected_video_provider = "fal"
     if selected_video_provider in ("grok", "xai", "gemini", "google", "local_ltx", "local_wan"):
         selected_video_provider = "fal"
-    # Placeholder / budget mode: avoid paid cloud video (fal). Local ComfyUI WAN is OSS on your machine —
-    # keep comfyui_wan so it matches scripts/test_comfyui_wan_video.py and real WAN jobs.
-    if bool(getattr(settings, "director_placeholder_media", False)):
-        if selected_video_provider == "fal":
-            selected_video_provider = "local_ffmpeg"
+    # Stock libraries are valid workspace defaults for browse/import flows, but they are
+    # not direct generators. When selected for generation jobs, use the configured
+    # local still->video path so scene jobs remain runnable.
+    if selected_video_provider in ("pexels", "storyblocks"):
+        selected_video_provider = "local_ffmpeg"
     if selected_video_provider not in (
         "local_ffmpeg",
         "fal",
@@ -1018,12 +1054,19 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             room_vs = max(0, 4000 - len(prompt) - 24)
             if room_vs > 80:
                 prompt = f"{prompt}\n\nVisual style: {vis_style.strip()[:room_vs]}"
-        duration_sec = max(1.0, min(_wt()._scene_clip_duration_sec(settings), 30.0))
+        prompt = maybe_prepend_topic_setting_anchor(prompt, project.topic, max_total=3000)
         fal_video_override = payload.get("fal_video_model")
         if not isinstance(fal_video_override, str) or not fal_video_override.strip():
             fal_video_override = None
         else:
             fal_video_override = fal_video_override.strip().lstrip("/")
+        # Honor scene.planned_duration_sec, clamped to the active provider's safe cap.
+        duration_sec = clip_seconds_for_scene(
+            settings,
+            scene,
+            provider=selected_video_provider,
+            fal_model=fal_video_override or getattr(settings, "fal_video_model", None),
+        )
 
         scene_comfy_path: Path | None = None
         prereq_image_asset_id: str | None = None
@@ -1248,7 +1291,11 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             "prompt_used": prompt,
             "video_prompt_base": base_video_text_prompt[:3000],
             "planned_duration_sec": duration_sec,
-            "duration_source": "runtime_setting:scene_clip_duration_sec",
+            "duration_source": (
+                "scene.planned_duration_sec"
+                if scene.planned_duration_sec
+                else "runtime_setting:scene_clip_duration_sec"
+            ),
             "routing_audit": {
                 "requested_provider": requested,
                 "resolved_provider": resolved_provider,
@@ -1503,7 +1550,10 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
     use_slideshow = len(resolved_paths) > 1
     model_name = "image_slideshow_mp4" if use_slideshow else "still_to_mp4"
     per_slide_sec = duration_sec / len(resolved_paths) if use_slideshow else duration_sec
-    slow_zoom_ff, kb_dir, slide_motion = _local_ffmpeg_motion_from_video_prompt(base_video_text_prompt)
+    video_text_for_motion = maybe_prepend_topic_setting_anchor(
+        base_video_text_prompt, project.topic, max_total=3000
+    )
+    slow_zoom_ff, kb_dir, slide_motion = _local_ffmpeg_motion_from_video_prompt(video_text_for_motion)
 
     params_json: dict[str, Any] = {
         "continuity_tags_json": scene.continuity_tags_json,
@@ -1520,7 +1570,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             "resolved_provider": "local_ffmpeg",
         },
         "notes": str(notes)[:2000] if notes else None,
-        "video_prompt_resolved": base_video_text_prompt[:3000],
+        "video_prompt_resolved": video_text_for_motion[:3000],
         "ffmpeg_motion_hint": slide_motion,
         "slow_zoom": slow_zoom_ff,
         "ken_burns_direction": kb_dir,

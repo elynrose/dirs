@@ -6,15 +6,16 @@ This file is intentionally being broken into per-phase modules.  The target
 layout (in progress — move one section at a time to avoid import breakage):
 
   tasks/maintenance_tasks.py  — reap_stale_jobs  ✅ DONE
-  tasks/phase2_tasks.py       — run_phase2_job + _phase2_* helpers
-  tasks/phase3_tasks.py       — run_phase3_job + _phase3_* helpers
-  tasks/phase4_tasks.py       — run_phase4_job + _phase4_* helpers
-  tasks/phase5_tasks.py       — run_phase5_job + _phase5_* helpers
-  tasks/agent_tasks.py        — run_agent_run + _run_agent_* helpers
-  tasks/smoke_tasks.py        — run_adapter_smoke_task
+  tasks/phase2_impl.py        — _phase2_* + _characters_generate_core  ✅ DONE
+  tasks/phase3_impl.py        — _phase3_image_generate / _phase3_video_generate / scene-plan  ✅ DONE
+  tasks/phase4_impl.py        — _phase4_*critique* / _persist_revision_issues  ✅ DONE
+  tasks/agent_run_control.py  — _agent_run_checkpoint / _append_event / exceptions  ✅ DONE
+  tasks/phase5_impl.py        — _rough_cut / _final_cut / _fine_cut / _export_bundle  (TODO)
+  tasks/agent_tasks.py        — run_agent_run + _run_agent_* helpers  (TODO)
+  tasks/smoke_tasks.py        — run_adapter_smoke_task  (TODO)
 
-Section boundaries in this file are marked with  # === SECTION: <name> ===
-to guide future extraction.  Do NOT add new top-level logic here — put it in
+The ``run_*_job`` Celery task decorators remain here so task routing and beat
+schedules stay in one place.  Do NOT add new top-level logic here — put it in
 the appropriate target module instead.
 """
 
@@ -25,15 +26,17 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from celery.exceptions import SoftTimeLimitExceeded
-from sqlalchemy import delete, desc, func, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -55,10 +58,8 @@ from director_api.db.models import (
     NarrationTrack,
     Project,
     ProjectCharacter,
-    ResearchClaim,
     ResearchDossier,
     ResearchSource,
-    RevisionIssue,
     Scene,
     TimelineVersion,
     UsageRecord,
@@ -75,7 +76,9 @@ from director_api.providers.media_fal import (
 )
 from director_api.services.character_prompt import (
     character_bible_for_llm_context,
-    character_consistency_prefix,
+    character_consistency_prefix_for_scene,
+    character_short_prefix_for_scene,
+    load_project_character_bible_chunks,
     prompt_already_has_character_prefix,
 )
 from director_api.services import phase2 as phase2_svc
@@ -84,6 +87,10 @@ from director_api.services import phase3 as phase3_svc
 from director_api.services import critic_policy as critic_policy_svc
 from director_api.services import phase4 as phase4_svc
 from director_api.services import agent_resume as agent_resume_svc
+from director_api.services.erase_consent import (
+    EraseConfirmationRequired,
+    options_grant_erase_consent,
+)
 from director_api.services import pipeline_oversight as pipeline_oversight_svc
 from director_api.services.phase5_readiness import (
     Phase5GateError,
@@ -92,6 +99,7 @@ from director_api.services.phase5_readiness import (
     get_timeline_asset_for_project,
 )
 from director_api.services.scene_coverage import coverage_visual_slots_needed, pick_coverage_payload
+from director_api.services.clip_duration import clip_seconds_for_scene
 from director_api.services.scene_timeline_duration import (
     effective_scene_visual_budget_sec,
     get_export_narration_budget_sec_for_scene,
@@ -100,7 +108,11 @@ from director_api.services.scene_timeline_duration import (
 from director_api.services.timeline_manifest_prefetch import manifest_prefetch_asset_hierarchy
 from director_api.services.pexels_scene_fill import maybe_fill_pexels_for_project_scenes
 from director_api.services.timeline_image_repair import list_export_ready_scene_visuals_ordered
-from director_api.style_presets import effective_narration_style, effective_visual_style
+from director_api.style_presets import (
+    effective_narration_style,
+    effective_video_visual_style,
+    effective_visual_style,
+)
 from director_api.services.runtime_settings import resolve_runtime_settings
 from director_api.services.job_worker_gate import acquire_job_for_work
 from director_api.services.llm_prompt_runtime import llm_prompt_map_scope
@@ -115,12 +127,8 @@ from director_api.services.prompt_enhance import refine_bracket_visual_prompt_ll
 from director_api.services.research_service import sanitize_jsonb_text
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.tasks.celery_app import celery_app
-from director_api.validation.character_schema import validate_character_bible_batch
 from director_api.validation.phase2_schemas import (
-    validate_chapter_outline_batch,
-    validate_chapter_scripts_batch,
     validate_director_pack,
-    validate_research_dossier_body,
 )
 from director_api.validation.phase3_schemas import validate_scene_plan_batch
 from director_api.validation.timeline_schema import validate_timeline_document
@@ -138,20 +146,34 @@ from ffmpeg_pipelines.mux_master import mux_video_with_narration_and_music
 from ffmpeg_pipelines.silence_audio import write_silence_aac
 from ffmpeg_pipelines.overlay_video import burn_overlays_on_video
 from ffmpeg_pipelines.paths import mkdir_parent, path_from_storage_url, path_is_readable_file, path_stat
+from ffmpeg_pipelines.ffmpeg_tracked import ExportFfmpegRegistry
 from ffmpeg_pipelines.slideshow import compile_image_slideshow
 from ffmpeg_pipelines.still_to_video import encode_image_to_mp4
 
 
-class AgentRunStopRequested(Exception):
-    """Raised to exit long synchronous phase work after ``_agent_run_checkpoint`` marks the run cancelled."""
-
-
-class AgentRunPausedYield(BaseException):
-    """Pause uses re-queue instead of ``time.sleep`` so ``--pool=solo`` workers stay available.
-
-    Subclass of ``BaseException`` (not ``Exception``) so nested ``except Exception`` blocks
-    in ``run_agent_run`` do not swallow the yield.
-    """
+from director_api.tasks.agent_run_control import (
+    AgentRunBlocked,
+    AgentRunPausedYield,
+    AgentRunStopRequested,
+    agent_run_checkpoint as _agent_run_checkpoint,
+    append_event as _append_event,
+    payload_agent_run_uuid as _payload_agent_run_uuid,
+    pipeline_control_dict as _pipeline_control_dict,
+)
+from director_api.tasks.phase2_impl import (
+    _characters_generate_core,
+    _phase2_chapter_script_regenerate_core,
+    _phase2_chapters_core,
+    _phase2_outline_core,
+    _phase2_research_core,
+)
+from director_api.tasks.phase4_impl import (
+    _phase4_chapter_critique,
+    _phase4_scene_critique,
+    _phase4_scene_critique_core,
+    _phase4_scene_critic_revision,
+    _scene_critic_revision_apply_from_latest_report,
+)
 
 
 # On Windows ``--pool=solo``, Celery's *hard* time limit can terminate the whole worker, not just the task.
@@ -240,12 +262,54 @@ def _scene_vo_tail_padding_sec(settings: Any) -> float:
 
 
 def _scene_clip_duration_sec(settings: Any) -> float:
-    """Runtime clip length (5 or 10 s) for scene video generation and still→video; must match Settings.scene_clip_duration_sec."""
+    """Workspace-default video clip length in seconds (fallback when
+    ``scene.planned_duration_sec`` is unset). Honors the full ``3..30``
+    range now allowed by ``Settings.scene_clip_duration_sec`` since the
+    fixed ``{5, 10}`` validator was lifted.
+    """
     try:
-        v = int(getattr(settings, "scene_clip_duration_sec", 10) or 10)
+        v = float(getattr(settings, "scene_clip_duration_sec", 10) or 10)
     except (TypeError, ValueError):
-        v = 10
-    return 5.0 if v == 5 else 10.0
+        v = 10.0
+    return max(1.0, min(v, 60.0))
+
+
+def _notify_phase(
+    db: Any,
+    settings: Any,
+    run: AgentRun | None,
+    step: str,
+    **extra: Any,
+) -> None:
+    """Best-effort Telegram notification for ONE pipeline-phase boundary.
+
+    Called once per ``_append_event(run, "<step>", "succeeded", ...)`` after
+    its companion ``db.commit()``. Never raises — Telegram outages must not
+    fail the worker. Reads ``settings.telegram_notify_phase_completions`` to
+    let workspace owners silence per-phase messages while keeping the
+    terminal-run notification.
+    """
+    if run is None:
+        return
+    try:
+        from director_api.services.telegram_notify import telegram_notify_phase_complete
+
+        project = db.get(Project, run.project_id)
+        title = (project.title if project else "Project").strip() or "Project"
+        telegram_notify_phase_complete(
+            settings,
+            project_title=title,
+            agent_run_id=str(run.id),
+            step=step,
+            **extra,
+        )
+    except Exception as exc:  # noqa: BLE001 — notify must never fail the worker
+        log.warning(
+            "telegram_notify_phase_complete_failed",
+            step=step,
+            run_id=str(run.id),
+            error=str(exc)[:500],
+        )
 
 
 def _next_timeline_sequence_for_scene(db, scene_id: uuid.UUID) -> int:
@@ -786,15 +850,6 @@ def _rough_cut_video_segment_tuple(
     return ("video", lp, None)
 
 
-class AgentRunBlocked(Exception):
-    """Strict gate failure — persist as agent_run.status = blocked."""
-
-    def __init__(self, code: str, message: str, detail: dict[str, Any] | None = None) -> None:
-        self.code = code
-        self.message = message
-        self.detail = detail or {}
-
-
 def _bind_asset_local_file(asset: Asset, url: str, storage_key: str) -> None:
     """Set storage URLs and a stable relative key so the API can resolve files if file:// parsing drifts."""
     asset.storage_url = url
@@ -954,19 +1009,433 @@ def _package_negative_prompt(pp: Any) -> str | None:
     return sanitize_jsonb_text(n.strip(), 1200)
 
 
+# ---------------------------------------------------------------------------
+# Framing safety
+# ---------------------------------------------------------------------------
+# Flux / SDXL / Fal models routinely clip the top of a subject's head on tight
+# shots — especially golden-hour close-ups and torch-lit portraits — when the
+# prompt doesn't explicitly anchor the subject inside the frame. We address it
+# in three places:
+#   1. The scene-level default negative_prompt
+#      (``_DEFAULT_SCENE_NEGATIVE_PROMPT`` in services/phase3.py) lists the
+#      failure modes by name so the sampler steers away from them.
+#   2. The runtime assembler ALWAYS merges this short anti-crop addendum into
+#      the negative_prompt before calling the provider, in case the LLM rewrote
+#      ``prompt_package_json.negative_prompt`` and dropped the framing tokens.
+#   3. When a character bible was injected (= a human subject is expected),
+#      we append a positive framing-safety clause to the prompt that tells the
+#      model explicitly to keep the whole head and shoulders inside the image
+#      with breathing room above the hairline. We skip this clause for [ECU]
+#      / [INSERT] / [BROLL] tags where cropping IS the intent.
+_FRAMING_SAFETY_NEG = (
+    "cropped head, cropped face, head out of frame, face cut off, decapitated subject, "
+    "headless figure, head touching upper frame edge, top of head clipped, hairline clipped, "
+    "partial face, partial subject, subject too close to edge, awkward crop, off-center crop"
+)
+
+_FRAMING_SAFETY_POS = (
+    "Composition safety: keep the subject's full head and shoulders inside the frame with "
+    "breathing room above the crown; the top of the head must sit well below the upper edge "
+    "of the image; do not crop the face."
+)
+
+# Tags that explicitly mean "no human in this composition". Used both to
+# suppress the framing-safety positive (no head to protect) AND to suppress
+# the character bible (otherwise the bible commands a human into a shot
+# that's supposed to be empty — the leading cause of "cropped head" bugs:
+# bible adds a person, framing-safety stays off because of the tag, model
+# draws a half-figure with the head out of frame).
+_FRAMING_TAGS_NO_HUMAN_HEAD = {"[ECU]", "[INSERT]", "[BROLL]"}
+
+# Phrases in the image_prompt that explicitly declare "no people". Conservative
+# list — we only short-circuit when the LLM was unambiguous, not on every
+# scene that happens to mention "alone" or "empty".
+_NO_PEOPLE_PHRASES = (
+    "no people",
+    "no humans",
+    "no human",
+    "no figures",
+    "no person",
+    "no characters",
+    "without people",
+    "without humans",
+    "empty street",
+    "empty room",
+    "empty courtyard",
+)
+
+
+def _prompt_leading_shot_tag(prompt: str | None) -> str | None:
+    """Return the bracketed SHOT_TAG at the very start of ``prompt`` (e.g. ``[CU]``), or ``None``."""
+    if not prompt:
+        return None
+    s = prompt.lstrip()
+    if not s.startswith("["):
+        return None
+    end = s.find("]")
+    if end <= 1 or end > 12:
+        return None
+    return s[: end + 1].upper()
+
+
+def _prompt_declares_no_humans(prompt: str | None) -> bool:
+    """True when the image prompt is explicitly people-free.
+
+    Triggers when:
+      - the leading SHOT_TAG is ``[ECU]``, ``[INSERT]``, or ``[BROLL]`` (these
+        are object / detail / environmental shots by definition), OR
+      - any of the ``_NO_PEOPLE_PHRASES`` strings is present.
+
+    Used to suppress BOTH the character-bible prefix and the framing-safety
+    positive tail. The bible is keyed off narration text (which often mentions
+    "Moses" even for a brick-pile B-roll), so without this guard the bible
+    would silently turn a "no people" scene into a half-figure portrait —
+    which is exactly the "head cropped off" failure mode we keep hitting.
+    """
+    if not prompt:
+        return False
+    if _prompt_leading_shot_tag(prompt) in _FRAMING_TAGS_NO_HUMAN_HEAD:
+        return True
+    lowered = prompt.lower()
+    return any(phrase in lowered for phrase in _NO_PEOPLE_PHRASES)
+
+
+def _should_append_framing_safety_positive(prompt: str, *, character_prefix_injected: bool) -> bool:
+    """Only nudge framing on shots that actually contain a human subject.
+
+    - If the leading SHOT_TAG is one where cropping is the intent ([ECU] / [INSERT] /
+      [BROLL]) OR the prompt explicitly says "no people", skip — the safety tail
+      would contradict the deliberate framing.
+    - Otherwise, if the character bible was injected for THIS scene (match_keys fired
+      = a named person is in this scene), append the tail.
+    - For legacy prompts without a SHOT_TAG, only append when the bible was injected.
+    """
+    if _prompt_declares_no_humans(prompt):
+        return False
+    return bool(character_prefix_injected)
+
+
+# ---------------------------------------------------------------------------
+# Stop signal plumbing for provider polling loops
+# ---------------------------------------------------------------------------
+# Background: ``_agent_run_checkpoint`` is only consulted *between* scenes in the
+# auto-image / auto-video / auto-narration loops. Once the worker is inside a
+# provider poll (e.g. ``generate_scene_video_comfyui`` waiting on Comfy's
+# ``/history/{id}``), it spins for up to ``comfyui_video_timeout_sec`` (~900 s)
+# regardless of any stop request from the UI. The factory below builds a small
+# rate-limited callable that the provider polls each iteration. When the user
+# clicks Stop in Studio the next provider tick observes ``stop_requested=True``,
+# POSTs ``/interrupt`` to Comfy (so the GPU work actually halts), and returns
+# ``stopped=True`` up the stack.
+#
+# Three signal sources are checked, ANY one of them triggers stop:
+#   1. ``AgentRun.pipeline_control_json.stop_requested`` — auto-pipeline Stop
+#      button on the agent run.
+#   2. ``Job.status`` in ('cancelled','failed') OR ``Job.payload.stop_requested``
+#      — per-job Stop button (``/v1/jobs/{id}/cancel``). This is what covers
+#      manual single-scene image / video generation that has no agent_run link.
+#   3. Cascade: if the project's currently-active agent_run signals stop, all
+#      in-flight jobs for that project honor it too. This makes Stop "stop
+#      everything" rather than "stop just this run".
+
+
+def _payload_stop_requested(payload: Any) -> bool:
+    """True when a job payload carries ``stop_requested=True`` (set by /cancel)."""
+    if not isinstance(payload, dict):
+        return False
+    return bool(payload.get("stop_requested"))
+
+
+def _make_job_stop_signal(
+    *,
+    agent_run_uuid: uuid.UUID | None,
+    job_uuid: uuid.UUID | None,
+    project_uuid: uuid.UUID | None = None,
+    min_interval_sec: float = 2.0,
+):
+    """Return a composite ``() -> bool`` stop callback.
+
+    Polls all of:
+      - ``AgentRun.pipeline_control_json.stop_requested`` (when ``agent_run_uuid``)
+      - ``Job.status`` terminal OR ``Job.payload.stop_requested`` (when ``job_uuid``)
+      - any *running* ``AgentRun`` for ``project_uuid`` with ``stop_requested``
+        (cascade — the user pressed Stop on the project's auto run but this job
+        is a manual scene gen that has no agent_run_id of its own)
+
+    Returns a no-op ``False`` callable when no identifiers are supplied (smoke
+    tests, ad-hoc scripts) so the provider path matches the pre-callback path.
+    Rate-limited to one DB sweep per ``min_interval_sec`` so a 1 s poll loop
+    doesn't hammer Postgres.
+    """
+    if agent_run_uuid is None and job_uuid is None and project_uuid is None:
+        def _noop() -> bool:
+            return False
+
+        return _noop
+
+    state = {"last_check": 0.0, "last_result": False}
+
+    def _check() -> bool:
+        now = time.monotonic()
+        if state["last_result"]:
+            return True
+        if (now - state["last_check"]) < min_interval_sec:
+            return state["last_result"]
+        state["last_check"] = now
+        try:
+            with SessionLocal() as db_local:
+                if agent_run_uuid is not None:
+                    r = db_local.get(AgentRun, agent_run_uuid)
+                    if r is None:
+                        state["last_result"] = True
+                        return True
+                    ctrl = r.pipeline_control_json if isinstance(r.pipeline_control_json, dict) else {}
+                    if bool(ctrl.get("stop_requested")) or r.status in ("cancelled", "failed"):
+                        state["last_result"] = True
+                        return True
+
+                if job_uuid is not None:
+                    j = db_local.get(Job, job_uuid)
+                    # CRITICAL: a missing Job row is NOT a stop signal. The
+                    # auto-pipeline (`_gen_one_image` / `_gen_one_video`)
+                    # builds *synthetic* in-memory ``Job`` objects via
+                    # ``_synthetic_job`` and passes them directly to
+                    # ``_phase3_image_generate`` without ever calling
+                    # ``db.add()``. Those rows are by design absent from the
+                    # ``jobs`` table — treating "absent" as "stop" was the
+                    # cause of the 2026-05-26 image-generation hang where
+                    # every dispatch immediately bailed with ``stopped=True``.
+                    # Only persisted-and-then-deleted jobs (rare) or
+                    # explicit ``cancelled``/``failed`` + payload flags
+                    # signal stop.
+                    if j is not None:
+                        if j.status in ("cancelled", "failed"):
+                            state["last_result"] = True
+                            return True
+                        if _payload_stop_requested(j.payload):
+                            state["last_result"] = True
+                            return True
+
+                if project_uuid is not None:
+                    # Cascade: any active agent run on this project whose user
+                    # pressed Stop should kill in-flight project work, even when
+                    # the in-flight job itself has no ``agent_run_id`` (manual
+                    # /generate-image / /generate-video).
+                    pending = db_local.execute(
+                        select(AgentRun.pipeline_control_json, AgentRun.status).where(
+                            AgentRun.project_id == project_uuid,
+                            AgentRun.status.in_(("running", "paused", "queued")),
+                        )
+                    ).all()
+                    for ctrl_json, _status in pending:
+                        if not isinstance(ctrl_json, dict):
+                            continue
+                        if bool(ctrl_json.get("stop_requested")):
+                            state["last_result"] = True
+                            return True
+
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+
+    return _check
+
+
+def _make_agent_run_stop_signal(
+    agent_run_uuid: uuid.UUID | None, *, min_interval_sec: float = 2.0
+):
+    """Back-compat wrapper around :func:`_make_job_stop_signal`."""
+    return _make_job_stop_signal(
+        agent_run_uuid=agent_run_uuid,
+        job_uuid=None,
+        project_uuid=None,
+        min_interval_sec=min_interval_sec,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Asset-running guard
+# ---------------------------------------------------------------------------
+# Image / video generation jobs create an ``Asset`` row with ``status='running'``
+# BEFORE the long provider call (so the row is visible in Studio while work is
+# in flight). If the provider call raises an uncaught exception, the row is
+# left orphaned at ``running`` forever — the auto-loop's ``except`` block just
+# logs and returns ``fail``, never rolling the session back, so the orphan
+# commits alongside the next scene's success.
+#
+# This context manager wraps the provider call and (only on exception) flips
+# the asset to ``failed`` with a worker_failure marker BEFORE re-raising. The
+# normal success path falls through untouched.
+from contextlib import contextmanager
+
+
+@contextmanager
+def _asset_running_guard(
+    db: Any,
+    asset: Asset,
+    *,
+    service_type: str,
+    tenant_id: str,
+    project_id: uuid.UUID,
+    scene_id: uuid.UUID,
+):
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001
+        try:
+            asset.status = "failed"
+            asset.error_message = f"worker_failure: {type(exc).__name__}: {exc}"[:8000]
+            db.flush()
+            _record_usage(
+                db,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                scene_id=scene_id,
+                asset_id=asset.id,
+                provider=str(getattr(asset, "provider", None) or "unknown"),
+                service_type=service_type,
+                meta={
+                    "ok": False,
+                    "error": str(exc)[:500],
+                    "tier": str(getattr(asset, "generation_tier", None) or "preview"),
+                    "crash": True,
+                },
+            )
+            db.flush()
+        except Exception:  # noqa: BLE001
+            # Best-effort finaliser — never let a follow-up DB error mask the
+            # original exception from the provider call.
+            pass
+        raise
+
+
+def _merge_framing_safety_negative(scene_neg: str | None) -> str | None:
+    """Always tack the anti-crop tokens onto whatever scene-level negative_prompt is set."""
+    base = (scene_neg or "").strip()
+    if not base:
+        return sanitize_jsonb_text(_FRAMING_SAFETY_NEG, 1200)
+    # Avoid trivial double-tagging if the LLM already includes the same phrase.
+    probe = "cropped head"
+    if probe in base.lower():
+        return sanitize_jsonb_text(base, 1200)
+    return sanitize_jsonb_text(f"{base}, {_FRAMING_SAFETY_NEG}", 1200)
+
+
+def _scene_era_anchor(
+    scene: Scene,
+    chapter: Chapter | None,
+    project: Project | None,
+    *,
+    max_chars: int = 160,
+) -> str:
+    """Return a short ``"Set in <era / place>."`` clause for video prompts.
+
+    Prefers chapter title (always concrete in our pipeline) over ``project.title``;
+    explicitly avoids ``project.topic`` because that's the user's full LLM brief
+    (hundreds of chars) which used to truncate mid-word and inject the same
+    leaked sentence on every scene. Returns ``""`` when neither title is
+    meaningful — that's the signal to skip the anchor entirely.
+    """
+    pieces: list[str] = []
+    ch_title = (chapter.title or "").strip() if chapter is not None else ""
+    pj_title = (project.title or "").strip() if project is not None else ""
+    if ch_title and ch_title.lower() != pj_title.lower():
+        pieces.append(ch_title)
+    if pj_title:
+        pieces.append(pj_title)
+    if not pieces:
+        return ""
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for p in pieces:
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(p)
+    clause = " — ".join(uniq)
+    if len(clause) > max_chars:
+        clause = clause[: max_chars - 1].rstrip(" ,;:.—-") + "…"
+    return f"Set in: {clause}."
+
+
+def _scene_text_for_character_match(db: Any, scene: Scene) -> str:
+    """Concatenate scene narration + purpose + chapter title for per-scene bible filtering.
+
+    The character bible is only prepended when one of these fields actually
+    mentions a character name; otherwise the scene gets no character text and
+    the image/video model is free to render the beat without forcing the cast in.
+    """
+    parts: list[str] = []
+    n = (scene.narration_text or "").strip()
+    if n:
+        parts.append(n)
+    p = (scene.purpose or "").strip()
+    if p:
+        parts.append(p)
+    try:
+        ch = db.get(Chapter, scene.chapter_id) if scene.chapter_id else None
+    except Exception:  # noqa: BLE001
+        ch = None
+    if ch is not None:
+        t = (ch.title or "").strip()
+        if t:
+            parts.append(t)
+    return " ".join(parts)
+
+
 def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, settings: Any) -> str:
-    """Same prompt recipe as scene image generation (Flux / Comfy still), without job payload overrides."""
+    """Same prompt recipe as scene image generation (Flux / Comfy still), without job payload overrides.
+
+    Mirrors ``_phase3_image_generate`` ordering exactly so the I2V seed still
+    is composed with: scene direction first, character bible appended only when
+    match_keys fire, chapter/project era anchor appended, still-flavored visual
+    style appended last. This avoids the legacy "character bible prepended +
+    raw project.topic at the very front" layout that made every still open
+    with the same 200-char setting blurb.
+    """
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
+    vis_style = effective_visual_style(project.visual_style, settings)
     prompt, _, _ = base_image_prompt_from_scene_fields(
         narration_text=scene.narration_text,
         prompt_package_json=pp,
         image_prompt_override=None,
+        visual_style_effective=vis_style,
     )
-    prefix = character_consistency_prefix(db, project.id, max_chars=2000)
-    if prefix and not prompt_already_has_character_prefix(prompt, prefix):
-        room = max(400, 4000 - len(prefix) - 3)
-        prompt = f"{prefix}\n\n{str(prompt)[:room]}"
-    vis_style = effective_visual_style(project.visual_style, settings)
+    prompt = str(prompt).strip()
+    character_prefix_injected = False
+    # See ``_phase3_image_generate`` for why we skip the bible on no-human shots.
+    if not _prompt_declares_no_humans(prompt):
+        prefix = character_consistency_prefix_for_scene(
+            db,
+            project.id,
+            scene_text=_scene_text_for_character_match(db, scene),
+            max_chars=2000,
+        )
+        if prefix and not prompt_already_has_character_prefix(prompt, prefix):
+            room = max(400, 4000 - len(prefix) - 3)
+            prompt = f"{str(prompt)[:room]}\n\n{prefix}"
+            character_prefix_injected = True
+        elif prefix:
+            character_prefix_injected = True
+
+    if _should_append_framing_safety_positive(
+        prompt, character_prefix_injected=character_prefix_injected
+    ):
+        room_fr = max(0, 4000 - len(prompt) - 2)
+        if room_fr > len(_FRAMING_SAFETY_POS):
+            prompt = f"{prompt}\n\n{_FRAMING_SAFETY_POS}"
+
+    try:
+        chapter = db.get(Chapter, scene.chapter_id) if scene.chapter_id else None
+    except Exception:  # noqa: BLE001
+        chapter = None
+    era_anchor = _scene_era_anchor(scene, chapter, project)
+    if era_anchor:
+        room_ea = max(0, 4000 - len(prompt) - 2)
+        if room_ea > len(era_anchor):
+            prompt = f"{prompt}\n\n{era_anchor}"
     if vis_style:
         vs = vis_style.strip()
         if vs:
@@ -984,18 +1453,29 @@ def _resolve_phase3_video_text_prompt(
     *,
     override: Any = None,
     project: Project | None = None,
+    settings: Any | None = None,
+    suffix: Any = None,
 ) -> str:
     """Text sent to generative video models; optional job override, else package, else ``[bracket]`` hints, else VO/purpose.
 
     When ``project.include_spoken_dialogue_in_video_prompt`` and ``pp["video_character_dialogue"]`` are set, appends a
     ``saying: "…"`` fragment for native video+audio models (e.g. Veo).
+
+    ``suffix`` (``video_prompt_suffix`` from the job payload) is appended to
+    the resolved scene prompt — that's how coverage takes layer framing
+    guidance on top of the real scene without replacing it.
     """
+    vis_eff: str | None = None
+    if project is not None and settings is not None:
+        vis_eff = effective_visual_style(project.visual_style, settings)
     base = video_text_prompt_from_scene_fields(
         narration_text=scene.narration_text,
         purpose=scene.purpose,
         visual_type=scene.visual_type,
         prompt_package_json=pp if isinstance(pp, dict) else {},
         video_prompt_override=override if isinstance(override, str) else None,
+        visual_style_effective=vis_eff,
+        video_prompt_suffix=suffix if isinstance(suffix, str) else None,
     )
     if project is None:
         return base
@@ -1052,86 +1532,97 @@ def _local_ffmpeg_motion_from_video_prompt(prompt: str) -> tuple[bool, str, str]
     return False, "in", "none"
 
 
-def _append_event(run: AgentRun, step: str, status: str, **extra: Any) -> None:
-    events = list(run.steps_json) if run.steps_json else []
-    row: dict[str, Any] = {
-        "step": step,
-        "status": status,
-        "at": datetime.now(timezone.utc).isoformat(),
-    }
-    for k, v in extra.items():
-        if v is not None:
-            row[k] = v
-    events.append(row)
-    run.steps_json = events
-    flag_modified(run, "steps_json")
+_EXPORT_PROC_LOCK = threading.Lock()
+_EXPORT_PROCS_BY_AGENT_RUN: dict[str, list[subprocess.Popen]] = {}
 
 
-def _pipeline_control_dict(raw: Any) -> dict[str, bool]:
-    if not isinstance(raw, dict):
-        return {"paused": False, "stop_requested": False}
-    return {
-        "paused": bool(raw.get("paused")),
-        "stop_requested": bool(raw.get("stop_requested")),
-    }
+class _AgentExportFfmpegRegistry:
+    """Register FFmpeg child processes so the export heartbeat can SIGTERM them when the run is reaped."""
+
+    __slots__ = ("_aid",)
+
+    def __init__(self, agent_run_id: uuid.UUID) -> None:
+        self._aid = agent_run_id
+
+    def attach(self, proc: subprocess.Popen) -> None:
+        key = str(self._aid)
+        with _EXPORT_PROC_LOCK:
+            _EXPORT_PROCS_BY_AGENT_RUN.setdefault(key, []).append(proc)
+
+    def detach(self, proc: subprocess.Popen) -> None:
+        key = str(self._aid)
+        with _EXPORT_PROC_LOCK:
+            lst = _EXPORT_PROCS_BY_AGENT_RUN.get(key)
+            if not lst:
+                return
+            try:
+                lst.remove(proc)
+            except ValueError:
+                pass
+            if not lst:
+                _EXPORT_PROCS_BY_AGENT_RUN.pop(key, None)
 
 
-def _payload_agent_run_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
-    v = payload.get("agent_run_id")
-    if v is None:
-        return None
+def _terminate_export_processes_for_agent_run(agent_run_uuid: uuid.UUID) -> None:
+    """Kill tracked FFmpeg children (stale reaper / cancel)."""
+    key = str(agent_run_uuid)
+    with _EXPORT_PROC_LOCK:
+        procs = list(_EXPORT_PROCS_BY_AGENT_RUN.pop(key, ()))
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.terminate()
+        except Exception:
+            log.warning("export_proc_terminate_failed", agent_run_id=key)
+    time.sleep(0.6)
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.kill()
+        except Exception:
+            log.warning("export_proc_kill_failed", agent_run_id=key)
+
+
+@contextmanager
+def _agent_run_export_heartbeat(agent_run_uuid: uuid.UUID | None):
+    """Bump ``AgentRun.updated_at`` periodically while FFmpeg export runs (stale reaper uses this heartbeat)."""
+    if agent_run_uuid is None:
+        yield
+        return
+    stop = threading.Event()
+
     try:
-        return uuid.UUID(str(v))
-    except (ValueError, TypeError):
-        return None
+        with SessionLocal() as hb_db:
+            r0 = hb_db.get(AgentRun, agent_run_uuid)
+            if r0 and r0.status == "running":
+                r0.updated_at = datetime.now(timezone.utc)
+                hb_db.commit()
+    except Exception:
+        log.warning("agent_run_export_heartbeat_prime_failed", agent_run_id=str(agent_run_uuid))
 
+    def _loop() -> None:
+        while not stop.wait(45.0):
+            try:
+                with SessionLocal() as hb_db:
+                    r = hb_db.get(AgentRun, agent_run_uuid)
+                    if not r:
+                        _terminate_export_processes_for_agent_run(agent_run_uuid)
+                        continue
+                    if r.status in ("failed", "cancelled"):
+                        _terminate_export_processes_for_agent_run(agent_run_uuid)
+                        continue
+                    if r.status == "running":
+                        r.updated_at = datetime.now(timezone.utc)
+                        hb_db.commit()
+            except Exception:
+                log.warning("agent_run_export_heartbeat_failed", agent_run_id=str(agent_run_uuid))
 
-def _merge_pipeline_control(run: AgentRun, **updates: bool) -> None:
-    cur = dict(run.pipeline_control_json) if isinstance(run.pipeline_control_json, dict) else {}
-    for k, v in updates.items():
-        cur[k] = bool(v)
-    run.pipeline_control_json = cur
-    flag_modified(run, "pipeline_control_json")
-
-
-def _agent_run_checkpoint(db: Any, agent_run_uuid: uuid.UUID) -> str:
-    """Honor pause/stop from API.
-
-    While paused, commits DB state and raises `AgentRunPausedYield` so the Celery task can exit
-    and re-queue with a countdown (avoids blocking ``--pool=solo`` with ``time.sleep``).
-
-    Returns 'ok' or 'stop'.
-    """
-    db.expire_all()
-    r = db.get(AgentRun, agent_run_uuid)
-    if not r:
-        return "stop"
-    ctrl = _pipeline_control_dict(r.pipeline_control_json)
-    if ctrl["stop_requested"]:
-        if r.status not in ("cancelled", "failed", "succeeded", "blocked"):
-            r.status = "cancelled"
-            r.error_message = "Stopped by user"
-            r.completed_at = datetime.now(timezone.utc)
-            r.current_step = None
-            _merge_pipeline_control(r, paused=False)
-            _append_event(r, "pipeline", "cancelled", reason="user_stop")
-            db.commit()
-        return "stop"
-    if ctrl["paused"]:
-        if r.status == "running":
-            r.status = "paused"
-            _append_event(r, "pipeline", "paused")
-            db.commit()
-        raise AgentRunPausedYield()
-    if r.status == "paused":
-        r.status = "running"
-        cur = dict(r.pipeline_control_json) if isinstance(r.pipeline_control_json, dict) else {}
-        cur["paused"] = False
-        r.pipeline_control_json = cur
-        flag_modified(r, "pipeline_control_json")
-        _append_event(r, "pipeline", "resumed")
-        db.commit()
-    return "ok"
+    th = threading.Thread(target=_loop, name="agent-export-heartbeat", daemon=True)
+    th.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def _latest_dossier(db, project_id: uuid.UUID) -> ResearchDossier | None:
@@ -1204,498 +1695,6 @@ def _strict_research_gate(
             "Dossier sources_min_met is not true",
             {"sources_min_met": body.get("sources_min_met")},
         )
-
-
-def _phase2_research_core(
-    db, project: Project, settings: Any, *, agent_run_id: uuid.UUID | None = None
-) -> None:
-    text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
-    if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
-        raise ValueError(
-            "active_text_provider must be one of: openai, lm_studio, openrouter, xai/grok, gemini"
-        )
-    if not project.director_output_json:
-        raise ValueError("director_output_json required before research")
-
-    def _ar_stop() -> None:
-        if agent_run_id is not None and _agent_run_checkpoint(db, agent_run_id) == "stop":
-            raise AgentRunStopRequested()
-
-    _ar_stop()
-
-    max_v = db.scalar(
-        select(func.max(ResearchDossier.version)).where(ResearchDossier.project_id == project.id)
-    )
-    next_v = (max_v or 0) + 1
-    dossier_id = uuid.uuid4()
-    min_n = max(1, int(project.research_min_sources or 3))
-    body, sources, claims = phase2_svc.build_research_package(
-        settings=settings,
-        project=project,
-        dossier_id=dossier_id,
-        min_sources=min_n,
-    )
-    _ar_stop()
-    preview: list[dict] = []
-    for row in sources:
-        ef = row.get("extracted_facts_json") or {}
-        snippet = ef.get("snippet") if isinstance(ef, dict) else None
-        preview.append(
-            {
-                "title": str(row.get("title") or "")[:500],
-                "url": str(row.get("url_or_reference") or "")[:2048],
-                "snippet": str(snippet or "")[:2000],
-            }
-        )
-    if _active_text_llm_configured(settings):
-        _ar_stop()
-        llm_u: list[dict[str, Any]] = []
-        body = phase2_llm.enrich_research_dossier_body(
-            body, topic=project.topic, sources_preview=preview, settings=settings, usage_sink=llm_u
-        )
-        _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
-        _ar_stop()
-    validate_research_dossier_body(body)
-
-    dossier = ResearchDossier(
-        id=dossier_id,
-        project_id=project.id,
-        version=next_v,
-        status="pending_review",
-        body_json=body,
-    )
-    db.add(dossier)
-    for row in sources:
-        db.add(
-            ResearchSource(
-                id=row["id"],
-                project_id=row["project_id"],
-                dossier_id=row["dossier_id"],
-                url_or_reference=row["url_or_reference"],
-                title=row["title"],
-                source_type=row["source_type"],
-                credibility_score=row["credibility_score"],
-                extracted_facts_json=row["extracted_facts_json"],
-                notes=row["notes"],
-                disputed=row["disputed"],
-            )
-        )
-    for row in claims:
-        db.add(
-            ResearchClaim(
-                id=row["id"],
-                project_id=row["project_id"],
-                dossier_id=row["dossier_id"],
-                claim_text=row["claim_text"],
-                confidence=row["confidence"],
-                disputed=row["disputed"],
-                adequately_sourced=row["adequately_sourced"],
-                source_refs_json=row["source_refs_json"],
-            )
-        )
-    project.workflow_phase = "research_ready"
-    db.flush()
-
-
-def _phase2_outline_core(db, project: Project, settings: Any) -> None:
-    text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
-    if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
-        raise ValueError(
-            "active_text_provider must be one of: openai, lm_studio, openrouter, xai/grok, gemini"
-        )
-    if not project.director_output_json:
-        raise ValueError("project or director pack missing")
-    director = project.director_output_json
-    specs: list[dict] | None = None
-    if _active_text_llm_configured(settings):
-        dossier = _latest_dossier(db, project.id)
-        dossier_body = (dossier.body_json if dossier else {}) or {}
-        llm_u: list[dict[str, Any]] = []
-        raw = phase2_llm.generate_outline_batch(
-            director=director,
-            dossier=dossier_body,
-            target_runtime_minutes=project.target_runtime_minutes,
-            settings=settings,
-            usage_sink=llm_u,
-        )
-        _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
-        if raw:
-            try:
-                validate_chapter_outline_batch(raw)
-                chapters = sorted(raw["chapters"], key=lambda x: int(x["order_index"]))
-                specs = [
-                    {
-                        "order_index": int(c["order_index"]),
-                        "title": sanitize_jsonb_text(str(c["title"]), 500),
-                        "summary": sanitize_jsonb_text(str(c["summary"]), 8000),
-                        "target_duration_sec": int(c["target_duration_sec"]),
-                    }
-                    for c in chapters
-                ]
-            except Exception:
-                log.warning("phase2_outline_validation_failed_falling_back", exc_info=True)
-                specs = None
-    if not specs:
-        specs = phase2_svc.chapter_outline_from_director(director, project)
-    for ch in list(project.chapters):
-        db.delete(ch)
-    db.flush()
-    for spec in specs:
-        db.add(
-            Chapter(
-                id=uuid.uuid4(),
-                project_id=project.id,
-                order_index=spec["order_index"],
-                title=spec["title"],
-                summary=spec["summary"],
-                target_duration_sec=spec["target_duration_sec"],
-                status="draft",
-            )
-        )
-    project.workflow_phase = "outline_ready"
-    db.flush()
-
-
-def _phase2_chapters_core(
-    db, project: Project, settings: Any, *, preserve_substantive_scripts: bool = False
-) -> None:
-    text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
-    if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
-        raise ValueError(
-            "active_text_provider must be one of: openai, lm_studio, openrouter, xai/grok, gemini"
-        )
-    chapters = (
-        db.scalars(
-            select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.order_index)
-        ).all()
-    )
-    if not chapters:
-        raise ValueError("no chapters — run outline first")
-    dossier = _latest_dossier(db, project.id)
-    dossier_body = (dossier.body_json if dossier else {}) or {}
-    director = project.director_output_json or {}
-    claims = (
-        db.scalars(select(ResearchClaim).where(ResearchClaim.dossier_id == dossier.id)).all()
-        if dossier
-        else []
-    )
-    allowed = [c.claim_text for c in claims if c.adequately_sourced and not c.disputed]
-    disputed = [c.claim_text for c in claims if c.disputed]
-    try:
-        tsp = int(getattr(settings, "scene_plan_target_scenes_per_chapter", 0) or 0)
-    except (TypeError, ValueError):
-        tsp = 0
-    tsp = max(0, min(48, tsp))
-    ch_meta = []
-    for ch in chapters:
-        tsec = ch.target_duration_sec or 120
-        tw = phase2_svc.target_narration_word_count(tsec)
-        row: dict[str, Any] = {
-            "order_index": ch.order_index,
-            "title": ch.title,
-            "summary": (ch.summary or "")[:8000],
-            "target_duration_sec": tsec,
-            "target_words_approx": tw,
-            "min_words": max(80, int(tw * 0.78)),
-        }
-        if tsp > 0:
-            row["target_scene_count"] = tsp
-        ch_meta.append(row)
-    _require_active_text_llm(settings, for_what="chapter script generation")
-
-    SUBSTANTIVE_SCRIPT_MIN_CHARS = 200
-
-    def _chapter_still_needs_script(ch: Chapter) -> bool:
-        if preserve_substantive_scripts and len((ch.script_text or "").strip()) >= SUBSTANTIVE_SCRIPT_MIN_CHARS:
-            return False
-        oid = ch.order_index
-        t = (by_idx.get(oid) or "").strip()
-        return (oid not in by_idx) or (not t)
-
-    def _absorb_scripts_batch(raw_batch: dict[str, Any] | None) -> None:
-        if not raw_batch or raw_batch.get("schema_id") != "chapter-scripts-batch/v1":
-            return
-        if isinstance(raw_batch.get("scripts"), list):
-            for s in raw_batch["scripts"]:
-                if isinstance(s, dict) and s.get("transition_to_next") is None:
-                    s.pop("transition_to_next", None)
-        try:
-            validate_chapter_scripts_batch(raw_batch)
-        except Exception as e:  # noqa: BLE001
-            raise ValueError(f"CHAPTER_SCRIPTS_INVALID: batch did not validate: {e}") from e
-        for s in raw_batch["scripts"]:
-            oid = int(s["order_index"])
-            txt = sanitize_jsonb_text(str(s.get("script_text") or ""), 120_000).strip()
-            if not txt:
-                continue
-            if tsp > 0:
-                got = phase2_svc.script_scene_beat_paragraph_count(txt)
-                if got != tsp:
-                    raise ValueError(
-                        f"CHAPTER_SCRIPT_SCENE_BEATS: chapter order_index={oid} must have exactly {tsp} "
-                        f"blank-line-separated paragraphs (one beat per scene); got {got}. "
-                        "Retry chapter generation or set target scenes to 0 in settings."
-                    )
-            by_idx[oid] = txt
-
-    by_idx: dict[int, str] = {}
-    for attempt in range(2):
-        llm_u = []
-        raw = phase2_llm.generate_scripts_batch(
-            director=director,
-            dossier=dossier_body,
-            chapters=ch_meta,
-            allowed_claims=allowed,
-            disputed_claims=disputed,
-            settings=settings,
-            narration_style=effective_narration_style(
-                project.narration_style, settings, db=db, tenant_id=project.tenant_id
-            ),
-            tone=project.tone,
-            audience=project.audience,
-            target_scenes_per_chapter=tsp,
-            usage_sink=llm_u,
-        )
-        _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
-        try:
-            _absorb_scripts_batch(raw)
-        except ValueError as ve:
-            if attempt == 0 and "CHAPTER_SCRIPTS_INVALID" in str(ve):
-                log.warning("phase2_scripts_batch_invalid_retrying", error=str(ve)[:400])
-                continue
-            raise
-        missing = [ch.order_index for ch in chapters if _chapter_still_needs_script(ch)]
-        if not missing:
-            break
-        if attempt == 0:
-            log.warning(
-                "phase2_scripts_batch_partial_retrying",
-                missing_order_indices=missing,
-                project_id=str(project.id),
-            )
-            continue
-        break
-
-    for ch in chapters:
-        if not _chapter_still_needs_script(ch):
-            continue
-        notes = (
-            "The multi-chapter JSON batch omitted or left this chapter blank. "
-            "Write the complete voice-over narration for this chapter only, using the chapter title and summary, "
-            "the dossier summary, director brief, allowed_claims, and disputed_claims. "
-            "Meet at least min_words for this chapter's target duration.\n\n"
-            f"Chapter summary:\n{(ch.summary or '')[:8000]}"
-        )
-        llm_fb: list[dict[str, Any]] = []
-        prior = (by_idx.get(ch.order_index) or ch.script_text or "")[:120_000]
-        single = phase2_llm.regenerate_chapter_script_llm(
-            director=director,
-            dossier_summary=dossier_body.get("summary"),
-            chapter_title=ch.title,
-            order_index=ch.order_index,
-            current_script=prior,
-            enhancement_notes=notes,
-            target_duration_sec=ch.target_duration_sec or 120,
-            allowed_claims=allowed,
-            disputed_claims=disputed,
-            settings=settings,
-            narration_style=effective_narration_style(
-                project.narration_style, settings, db=db, tenant_id=project.tenant_id
-            ),
-            tone=project.tone,
-            audience=project.audience,
-            target_scenes_per_chapter=tsp,
-            usage_sink=llm_fb,
-        )
-        _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_fb)
-        if single and single.strip():
-            txt = sanitize_jsonb_text(single, 120_000).strip()
-            if tsp > 0:
-                got = phase2_svc.script_scene_beat_paragraph_count(txt)
-                if got != tsp:
-                    raise ValueError(
-                        f"CHAPTER_SCRIPT_SCENE_BEATS: fallback chapter order_index={ch.order_index} must have "
-                        f"exactly {tsp} blank-line-separated paragraphs; got {got}. "
-                        "Retry or set target scenes to 0 in settings."
-                    )
-            by_idx[ch.order_index] = txt
-
-    for ch in chapters:
-        if not _chapter_still_needs_script(ch):
-            continue
-        tsec = ch.target_duration_sec or 120
-        tw = phase2_svc.target_narration_word_count(tsec)
-        min_w = max(80, int(tw * 0.78))
-        emerg = phase2_svc.deterministic_chapter_script_emergency(
-            chapter_title=ch.title,
-            chapter_summary=ch.summary,
-            project_topic=project.topic,
-            min_words=min_w,
-            target_scenes_per_chapter=tsp,
-        )
-        if emerg and emerg.strip():
-            log.warning(
-                "phase2_chapter_script_emergency_fallback",
-                project_id=str(project.id),
-                order_index=ch.order_index,
-                target_scenes_per_chapter=tsp,
-            )
-            by_idx[ch.order_index] = emerg
-
-    for ch in chapters:
-        if preserve_substantive_scripts and len((ch.script_text or "").strip()) >= SUBSTANTIVE_SCRIPT_MIN_CHARS:
-            continue
-        if ch.order_index not in by_idx or not (by_idx[ch.order_index] or "").strip():
-            raise ValueError(
-                f"CHAPTER_SCRIPT_EMPTY: no script_text for chapter order_index={ch.order_index} "
-                "(batch + per-chapter fallback failed). Retry chapters or check model output."
-            )
-        ch.script_text = by_idx[ch.order_index]
-    project.workflow_phase = "chapters_ready"
-    db.flush()
-
-
-def _phase2_chapter_script_regenerate_core(
-    db, project: Project, ch: Chapter, settings: Any, enhancement_notes: str
-) -> None:
-    notes = (enhancement_notes or "").strip()
-    if len(notes) < 8:
-        raise ValueError("enhancement_notes too short (min 8 characters)")
-    text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
-    if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
-        raise ValueError(
-            "active_text_provider must be one of: openai, lm_studio, openrouter, xai/grok, gemini"
-        )
-    if not project.director_output_json:
-        raise ValueError("director pack missing — start the project first")
-    dossier = _latest_dossier(db, project.id)
-    dossier_body = (dossier.body_json if dossier else {}) or {}
-    director = project.director_output_json or {}
-    claims = (
-        db.scalars(select(ResearchClaim).where(ResearchClaim.dossier_id == dossier.id)).all()
-        if dossier
-        else []
-    )
-    allowed = [c.claim_text for c in claims if c.adequately_sourced and not c.disputed]
-    disputed = [c.claim_text for c in claims if c.disputed]
-    try:
-        tsp = int(getattr(settings, "scene_plan_target_scenes_per_chapter", 0) or 0)
-    except (TypeError, ValueError):
-        tsp = 0
-    tsp = max(0, min(48, tsp))
-    tsec = ch.target_duration_sec or 120
-    _require_active_text_llm(settings, for_what="chapter script regeneration")
-
-    llm_u: list[dict[str, Any]] = []
-    new_script = phase2_llm.regenerate_chapter_script_llm(
-        director=director,
-        dossier_summary=dossier_body.get("summary"),
-        chapter_title=ch.title,
-        order_index=ch.order_index,
-        current_script=ch.script_text or "",
-        enhancement_notes=notes,
-        target_duration_sec=tsec,
-        allowed_claims=allowed,
-        disputed_claims=disputed,
-        settings=settings,
-        narration_style=effective_narration_style(
-            project.narration_style, settings, db=db, tenant_id=project.tenant_id
-        ),
-        tone=project.tone,
-        audience=project.audience,
-        target_scenes_per_chapter=tsp,
-        usage_sink=llm_u,
-    )
-    _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
-    if not new_script:
-        raise ValueError("LLM did not return a revised script (empty or invalid JSON)")
-    txt = sanitize_jsonb_text(new_script, 120_000)
-    if not txt.strip():
-        raise ValueError("Revised script is empty after sanitization")
-    if tsp > 0:
-        got = phase2_svc.script_scene_beat_paragraph_count(txt)
-        if got != tsp:
-            raise ValueError(
-                f"CHAPTER_SCRIPT_SCENE_BEATS: expected exactly {tsp} blank-line-separated paragraphs for this chapter; got {got}. "
-                "Adjust enhancement notes or target scenes in settings and retry."
-            )
-    ch.script_text = txt
-    db.flush()
-
-
-def _characters_generate_core(db, project: Project, settings: Any) -> None:
-    director = project.director_output_json if isinstance(project.director_output_json, dict) else {}
-    if not director:
-        raise ValueError("director pack required — start the project first")
-    chapters = list(
-        db.scalars(select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.order_index)).all()
-    )
-    story_bits: list[dict[str, Any]] = []
-    for ch in chapters:
-        st = (ch.script_text or "").strip()
-        su = (ch.summary or "").strip()
-        if st:
-            story_bits.append(
-                {
-                    "order_index": ch.order_index,
-                    "title": ch.title,
-                    "script_excerpt": st[:14_000],
-                }
-            )
-        elif su:
-            story_bits.append(
-                {
-                    "order_index": ch.order_index,
-                    "title": ch.title,
-                    "chapter_summary": su[:4000],
-                }
-            )
-    if not story_bits:
-        raise ValueError("need at least one chapter with script_text or summary to infer characters")
-    dossier = _latest_dossier(db, project.id)
-    body = (dossier.body_json if dossier else {}) or {}
-    dossier_summary = body.get("summary") if isinstance(body.get("summary"), str) else None
-
-    llm_u: list[dict[str, Any]] = []
-    raw, bible_err = phase2_llm.generate_character_bible(
-        director=director,
-        chapters_context=story_bits,
-        project_title=project.title,
-        project_topic=project.topic,
-        dossier_summary=dossier_summary,
-        settings=settings,
-        usage_sink=llm_u,
-    )
-    _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
-    if not raw:
-        raise ValueError(
-            bible_err
-            or "character agent returned no usable JSON — check Settings text provider, model, and API keys"
-        )
-    bible = validate_character_bible_batch(raw)
-    rows = list(bible.get("characters") or [])
-    if not rows:
-        raise ValueError("character bible was empty")
-    db.execute(delete(ProjectCharacter).where(ProjectCharacter.project_id == project.id))
-    db.flush()
-    for i, c in enumerate(rows):
-        db.add(
-            ProjectCharacter(
-                id=uuid.uuid4(),
-                tenant_id=project.tenant_id,
-                project_id=project.id,
-                sort_order=int(c["sort_order"]),
-                name=sanitize_jsonb_text(str(c.get("name") or "Character"), 256),
-                role_in_story=sanitize_jsonb_text(str(c.get("role_in_story") or ""), 2000),
-                visual_description=sanitize_jsonb_text(str(c.get("visual_description") or ""), 8000),
-                time_place_scope_notes=(
-                    sanitize_jsonb_text(str(c.get("time_place_scope_notes")), 2000)
-                    if isinstance(c.get("time_place_scope_notes"), str) and str(c.get("time_place_scope_notes")).strip()
-                    else None
-                ),
-            )
-        )
-    db.flush()
 
 
 @celery_app.task(name="director.run_adapter_smoke")
@@ -1771,7 +1770,12 @@ def run_phase2_job(job_id: str) -> None:
                 if job.type == "research_run":
                     _phase2_research_core(db, project, settings)
                 elif job.type == "script_outline":
-                    _phase2_outline_core(db, project, settings)
+                    _phase2_outline_core(
+                        db,
+                        project,
+                        settings,
+                        confirm_erase_assets=bool(payload.get("confirm_erase_assets")),
+                    )
                 elif job.type == "script_chapters":
                     _phase2_chapters_core(db, project, settings)
                 elif job.type == "script_chapter_regenerate":
@@ -1812,9 +1816,28 @@ def run_phase2_job(job_id: str) -> None:
 def _agent_run_mark_failed(db, run: AgentRun, step: str, exc: Exception) -> None:
     run.status = "failed"
     run.current_step = None
-    run.error_message = str(exc)[:8000]
+    # Erase-consent gate has its own friendly surface: UI distinguishes
+    # "please confirm" from a true automation failure via ``block_code``.
+    # We store the structured scope in ``error_message`` so the UI can
+    # render "8 scenes and 23 images will be erased — continue?" without
+    # another round-trip.
+    if isinstance(exc, EraseConfirmationRequired):
+        import json as _json
+
+        run.block_code = "erase_confirmation_required"
+        run.error_message = _json.dumps(exc.to_dict())[:8000]
+        _append_event(
+            run,
+            step,
+            "blocked",
+            block_code="erase_confirmation_required",
+            scope_label=exc.scope_label,
+            scope=exc.scope.to_dict(),
+        )
+    else:
+        run.error_message = str(exc)[:8000]
+        _append_event(run, step, "failed", error_code="EXCEPTION", message=str(exc)[:500])
     run.completed_at = datetime.now(timezone.utc)
-    _append_event(run, step, "failed", error_code="EXCEPTION", message=str(exc)[:500])
     db.commit()
 
 
@@ -1874,6 +1897,14 @@ def _scene_succeeded_video_count(db, scene_id: uuid.UUID) -> int:
     return int(n or 0)
 
 
+def _pipeline_video_provider_for_phase3(run_opts: dict[str, Any]) -> str | None:
+    """Synthetic ``scene_generate_video`` jobs read ``payload[\"video_provider\"]`` first — forward from pipeline_options."""
+    raw = run_opts.get("video_provider") or run_opts.get("preferred_video_provider")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip().lower()
+    return None
+
+
 def _scene_has_succeeded_video(db, scene_id: uuid.UUID) -> bool:
     n = db.scalar(
         select(func.count())
@@ -1895,7 +1926,9 @@ def _auto_scene_coverage_pass(
     tenant_id: str,
     all_scenes: list[Scene],
     agent_run_uuid: uuid.UUID,
-    automation_character_prefix: str | None,
+    video_provider_override: str | None = None,
+    auto_generate_scene_images: bool = True,
+    exclude_character_bible: bool = False,
 ) -> bool | None:
     """When ``agent_run_auto_scene_coverage_clips`` is on, enqueue extra image/video takes until each scene has enough clips vs VO.
 
@@ -1906,25 +1939,119 @@ def _auto_scene_coverage_pass(
     storage_root = Path(settings.local_storage_root).resolve()
     ffprobe_bin = (getattr(settings, "ffprobe_bin", None) or "ffprobe").strip() or "ffprobe"
     timeout_tl = float(settings.ffmpeg_timeout_sec)
-    clip_sec = float(_scene_clip_duration_sec(settings))
+    workspace_default_clip_sec = float(_scene_clip_duration_sec(settings))
     prefer_video = bool(getattr(settings, "agent_run_auto_generate_scene_videos", False))
-    extra_total = 0
+    coverage_provider = (
+        video_provider_override
+        or getattr(settings, "active_video_provider", None)
+        or "fal"
+    )
+    # Pre-flight planning — walk every scene to count how many extra takes
+    # the coverage pass will request, then emit a single ``planned`` event
+    # before any provider calls. Without this, the user has no idea the
+    # coverage pass is even running until images mysteriously keep
+    # generating after ``auto_images`` hits "73/73 done".
+    #
+    # NOTE: the same computation drives both the plan and the actual work
+    # below, so the totals are guaranteed to match (modulo new images
+    # added between the plan and the work — which only shrinks the
+    # deficit, never inflates it).
+    plan_total_extra = 0
+    plan_scenes_with_extra = 0
+    plan_per_scene_clip: dict[uuid.UUID, float] = {}
+    plan_per_scene_budget: dict[uuid.UUID, float] = {}
+    plan_per_scene_need: dict[uuid.UUID, int] = {}
     for sc in all_scenes:
         if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
             return None
-        budget = effective_scene_visual_budget_sec(
+        per_scene_clip_sec_plan = clip_seconds_for_scene(
+            settings,
+            sc,
+            provider=coverage_provider,
+            fal_model=getattr(settings, "fal_video_model", None),
+            fallback_sec=workspace_default_clip_sec,
+        )
+        budget_plan = effective_scene_visual_budget_sec(
             db,
             scene=sc,
             project_id=project_id,
-            base_clip_sec=clip_sec,
+            base_clip_sec=per_scene_clip_sec_plan,
             storage_root=storage_root,
             ffprobe_bin=ffprobe_bin,
             timeout_sec=timeout_tl,
             tail_padding_sec=_scene_vo_tail_padding_sec(settings),
         )
-        need = coverage_visual_slots_needed(budget_sec=budget, clip_sec=clip_sec)
+        need_plan = coverage_visual_slots_needed(
+            budget_sec=budget_plan, clip_sec=per_scene_clip_sec_plan
+        )
+        have_plan = _scene_succeeded_image_count(db, sc.id) + _scene_succeeded_video_count(
+            db, sc.id
+        )
+        deficit_plan = max(0, need_plan - have_plan)
+        plan_per_scene_clip[sc.id] = float(per_scene_clip_sec_plan)
+        plan_per_scene_budget[sc.id] = float(budget_plan)
+        plan_per_scene_need[sc.id] = int(need_plan)
+        if deficit_plan > 0:
+            plan_total_extra += deficit_plan
+            plan_scenes_with_extra += 1
+    run_plan = db.get(AgentRun, agent_run_uuid)
+    if run_plan:
+        _append_event(
+            run_plan,
+            "auto_scene_coverage",
+            "planned",
+            scenes_total=int(len(all_scenes)),
+            scenes_with_extra_coverage=int(plan_scenes_with_extra),
+            additional_clips_total=int(plan_total_extra),
+            prefer_video=bool(prefer_video),
+        )
+        db.commit()
+    extra_total = 0
+    for sc in all_scenes:
+        if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+            return None
+        # Per-scene clip length: respects scene.planned_duration_sec then provider
+        # cap. The budget calc uses the SAME value so a 12 s narration beat
+        # covered by one 6 s primary + one 6 s coverage clip equals exactly 2
+        # slots needed (not 3 like under the old 5 s default).
+        per_scene_clip_sec = clip_seconds_for_scene(
+            settings,
+            sc,
+            provider=coverage_provider,
+            fal_model=getattr(settings, "fal_video_model", None),
+            fallback_sec=workspace_default_clip_sec,
+        )
+        budget = effective_scene_visual_budget_sec(
+            db,
+            scene=sc,
+            project_id=project_id,
+            base_clip_sec=per_scene_clip_sec,
+            storage_root=storage_root,
+            ffprobe_bin=ffprobe_bin,
+            timeout_sec=timeout_tl,
+            tail_padding_sec=_scene_vo_tail_padding_sec(settings),
+        )
+        need = coverage_visual_slots_needed(budget_sec=budget, clip_sec=per_scene_clip_sec)
         have = _scene_succeeded_image_count(db, sc.id) + _scene_succeeded_video_count(db, sc.id)
         deficit = max(0, need - have)
+        if deficit > 0:
+            # Per-scene heartbeat for the coverage pass so the UI can render
+            # "Coverage take 2/3 for scene 32 of 73" alongside extra_total /
+            # planned total. Emitted BEFORE the provider call mirrors the
+            # auto_images pattern and keeps the stall detector happy.
+            run_cov_hb = db.get(AgentRun, agent_run_uuid)
+            if run_cov_hb:
+                _append_event(
+                    run_cov_hb,
+                    "auto_scene_coverage",
+                    "progress",
+                    scene_index=int(int(sc.order_index or 0) + 1),
+                    scenes_total=int(len(all_scenes)),
+                    extra_done_total=int(extra_total),
+                    extra_target_total=int(plan_total_extra),
+                    scene_extra_target=int(deficit),
+                )
+                db.commit()
         for i in range(deficit):
             if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
                 return None
@@ -1937,11 +2064,14 @@ def _auto_scene_coverage_pass(
                     "tenant_id": tenant_id,
                     "generation_tier": "preview",
                     "agent_run_id": str(agent_run_uuid),
-                    "video_prompt_override": cov["video_prompt_override"],
-                    "exclude_character_bible": bool(cov.get("exclude_character_bible")),
+                    # SUFFIX, not override — see ``image_prompt_suffix`` note
+                    # below for the rationale.
+                    "video_prompt_suffix": cov.get("video_prompt_suffix"),
+                    # User preference wins over the random coverage-slot toggle.
+                    "exclude_character_bible": exclude_character_bible or bool(cov.get("exclude_character_bible")),
                 }
-                if automation_character_prefix:
-                    payload_v["_automation_character_prefix"] = automation_character_prefix
+                if video_provider_override:
+                    payload_v["video_provider"] = video_provider_override
                 jv = _synthetic_job(
                     tenant_id=tenant_id,
                     project_id=project_id,
@@ -1969,16 +2099,21 @@ def _auto_scene_coverage_pass(
                     extra_total += 1
                 db.commit()
             else:
+                if not auto_generate_scene_images:
+                    continue
                 payload_i: dict[str, Any] = {
                     "scene_id": str(sc.id),
                     "tenant_id": tenant_id,
                     "generation_tier": "preview",
                     "agent_run_id": str(agent_run_uuid),
-                    "image_prompt_override": cov["image_prompt_override"],
-                    "exclude_character_bible": bool(cov.get("exclude_character_bible")),
+                    # SUFFIX, not override — appended to the scene's real
+                    # image_prompt by ``base_image_prompt_from_scene_fields``.
+                    # See ``services.scene_coverage.pick_coverage_payload``
+                    # docstring for the prior bug this prevents.
+                    "image_prompt_suffix": cov.get("image_prompt_suffix"),
+                    # User preference wins over the random coverage-slot toggle.
+                    "exclude_character_bible": exclude_character_bible or bool(cov.get("exclude_character_bible")),
                 }
-                if automation_character_prefix:
-                    payload_i["_automation_character_prefix"] = automation_character_prefix
                 j_img = _synthetic_job(
                     tenant_id=tenant_id,
                     project_id=project_id,
@@ -2121,7 +2256,7 @@ def _ensure_scene_plans_for_scripted_chapters_missing_scenes(
         db.scalars(select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.order_index)).all()
     )
     ensured = 0
-    scene_plan_char_prefix: str | None = None
+    scene_plan_char_chunks: list[tuple[str, str]] | None = None
     scene_plan_char_bible: str | None = None
     for ch in chapters:
         if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
@@ -2133,8 +2268,8 @@ def _ensure_scene_plans_for_scripted_chapters_missing_scenes(
         n_sc = db.scalar(select(func.count()).select_from(Scene).where(Scene.chapter_id == ch.id)) or 0
         if int(n_sc) > 0:
             continue
-        if scene_plan_char_prefix is None:
-            scene_plan_char_prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+        if scene_plan_char_chunks is None:
+            scene_plan_char_chunks = load_project_character_bible_chunks(db, project.id)
             scene_plan_char_bible = character_bible_for_llm_context(db, project.id, max_chars=6000)
         try:
             _phase3_scenes_plan_for_chapter(
@@ -2142,7 +2277,7 @@ def _ensure_scene_plans_for_scripted_chapters_missing_scenes(
                 ch,
                 project,
                 settings,
-                cached_character_consistency_prefix=scene_plan_char_prefix,
+                cached_character_bible_chunks=scene_plan_char_chunks,
                 cached_character_bible_for_llm=scene_plan_char_bible,
             )
             ensured += 1
@@ -2206,15 +2341,15 @@ def _run_agent_full_pipeline_tail(
 
     def _clamp_min_scene_media(n: Any) -> int:
         try:
-            return max(1, min(10, int(n)))
+            return max(0, min(10, int(n)))
         except (TypeError, ValueError):
-            return 1
+            return 0
 
     min_scene_images = _clamp_min_scene_media(
-        run_opts_pre.get("min_scene_images", getattr(settings, "agent_run_min_scene_images", 1))
+        run_opts_pre.get("min_scene_images", getattr(settings, "agent_run_min_scene_images", 0))
     )
     min_scene_videos = _clamp_min_scene_media(
-        run_opts_pre.get("min_scene_videos", getattr(settings, "agent_run_min_scene_videos", 1))
+        run_opts_pre.get("min_scene_videos", getattr(settings, "agent_run_min_scene_videos", 0))
     )
 
     def _clamp_auto_images_concurrency(n: Any) -> int:
@@ -2229,6 +2364,13 @@ def _run_agent_full_pipeline_tail(
             getattr(settings, "agent_run_auto_images_max_concurrency", 1),
         )
     )
+
+    # When the user checked "Exclude character bible from image/video prompts" in Studio before
+    # starting or resuming this run, the flag is stored in pipeline_options_json.  We read it
+    # once here and pass it into every synthetic image/video job built by the automation passes
+    # below so the session-level preference is honoured consistently across all pipeline paths
+    # (single-image, parallel, video, coverage) — not just the manual UI buttons.
+    pipeline_exclude_character_bible: bool = bool(run_opts_pre.get("exclude_character_bible", False))
 
     tr = pipeline_oversight_svc.normalize_tail_resume(
         tail_resume_from,
@@ -2290,6 +2432,7 @@ def _run_agent_full_pipeline_tail(
             if run:
                 _append_event(run, "auto_characters", "succeeded")
                 db.commit()
+                _notify_phase(db, settings, run, "auto_characters")
         else:
             if run:
                 _append_event(run, "auto_characters", "skipped", reason="characters_already_present")
@@ -2304,10 +2447,12 @@ def _run_agent_full_pipeline_tail(
     if not project:
         raise ValueError("project missing after character bible step")
 
-    # One read per tail pass — reused for every automation scene_generate_image (sequential + parallel threads).
-    automation_tail_character_prefix = character_consistency_prefix(db, pid, max_chars=2000)
-
-    if pipeline_oversight_svc.tail_should_run_with_force("auto_narration", tr, fs):
+    if getattr(project, "no_narration", False):
+        run = db.get(AgentRun, agent_run_uuid)
+        if run:
+            _append_event(run, "auto_narration", "skipped", reason="no_narration_project")
+        db.commit()
+    elif pipeline_oversight_svc.tail_should_run_with_force("auto_narration", tr, fs):
         all_scenes_narr = _ordered_scenes_for_project(db, pid)
         narr_scene_targets: list[Scene] = []
         for sc in all_scenes_narr:
@@ -2408,6 +2553,7 @@ def _run_agent_full_pipeline_tail(
         if run:
             _append_event(run, "auto_narration", "succeeded", narration_granularity="scene")
         db.commit()
+        _notify_phase(db, settings, run, "auto_narration", narration_granularity="scene")
     else:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
@@ -2425,17 +2571,19 @@ def _run_agent_full_pipeline_tail(
 
         def _gen_one_image(sc: Scene) -> str:
             """ok | fail | stop"""
+            img_payload: dict[str, Any] = {
+                "scene_id": str(sc.id),
+                "tenant_id": tenant_id,
+                "generation_tier": "preview",
+                "agent_run_id": str(agent_run_uuid),
+            }
+            if pipeline_exclude_character_bible:
+                img_payload["exclude_character_bible"] = True
             j_img = _synthetic_job(
                 tenant_id=tenant_id,
                 project_id=pid,
                 jtype="scene_generate_image",
-                payload={
-                    "scene_id": str(sc.id),
-                    "tenant_id": tenant_id,
-                    "generation_tier": "preview",
-                    "agent_run_id": str(agent_run_uuid),
-                    "_automation_character_prefix": automation_tail_character_prefix,
-                },
+                payload=img_payload,
             )
             try:
                 out = _phase3_image_generate(db, j_img)
@@ -2445,6 +2593,14 @@ def _run_agent_full_pipeline_tail(
                     scene_id=str(sc.id),
                     error=str(e)[:800],
                 )
+                # Commit the worker_failure status flip applied by
+                # ``_asset_running_guard`` inside ``_phase3_image_generate``;
+                # without this the orphaned Asset row would either be lost
+                # (next rollback) or commit the previous ``running`` state.
+                try:
+                    db.commit()
+                except Exception:  # noqa: BLE001
+                    db.rollback()
                 return "fail"
             if isinstance(out, dict) and out.get("stopped"):
                 return "stop"
@@ -2462,17 +2618,19 @@ def _run_agent_full_pipeline_tail(
             with SessionLocal() as tdb:
                 if _agent_run_checkpoint(tdb, agent_run_uuid) == "stop":
                     return "stop"
+                par_img_payload: dict[str, Any] = {
+                    "scene_id": str(scene_id),
+                    "tenant_id": tenant_id,
+                    "generation_tier": "preview",
+                    "agent_run_id": str(agent_run_uuid),
+                }
+                if pipeline_exclude_character_bible:
+                    par_img_payload["exclude_character_bible"] = True
                 j_img = _synthetic_job(
                     tenant_id=tenant_id,
                     project_id=pid,
                     jtype="scene_generate_image",
-                    payload={
-                        "scene_id": str(scene_id),
-                        "tenant_id": tenant_id,
-                        "generation_tier": "preview",
-                        "agent_run_id": str(agent_run_uuid),
-                        "_automation_character_prefix": automation_tail_character_prefix,
-                    },
+                    payload=par_img_payload,
                 )
                 try:
                     out = _phase3_image_generate(tdb, j_img)
@@ -2482,10 +2640,17 @@ def _run_agent_full_pipeline_tail(
                         scene_id=str(scene_id),
                         error=str(e)[:800],
                     )
+                    # Commit the worker_failure status flip applied by
+                    # ``_asset_running_guard`` (parallel session). Falling back
+                    # to rollback would discard the failed-asset row entirely;
+                    # we want it preserved as an audit trail in Studio.
                     try:
-                        tdb.rollback()
-                    except Exception:
-                        pass
+                        tdb.commit()
+                    except Exception:  # noqa: BLE001
+                        try:
+                            tdb.rollback()
+                        except Exception:  # noqa: BLE001
+                            pass
                     return "fail"
                 if isinstance(out, dict) and out.get("stopped"):
                     return "stop"
@@ -2524,11 +2689,29 @@ def _run_agent_full_pipeline_tail(
                 return "ok"
 
         img_conc = int(auto_images_max_concurrency)
+        n_img_targets = len(target_scenes)
         if img_conc <= 1:
             failed_ids: list[uuid.UUID] = []
-            for sc in target_scenes:
+            for si, sc in enumerate(target_scenes):
                 if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
                     return None
+                # Per-scene heartbeat for Studio (mirrors ``auto_narration`` pattern at line
+                # ~2020). Without this, ``AgentRun.updated_at`` doesn't advance during the
+                # image loop and the UI flags the run "stalled" after the default 3-minute
+                # client-side threshold even though the worker is busy. Emit BEFORE each
+                # scene so the heartbeat covers the upcoming provider call.
+                run_hb = db.get(AgentRun, agent_run_uuid)
+                if run_hb:
+                    _append_event(
+                        run_hb,
+                        "auto_images",
+                        "progress",
+                        scene_index=int(si + 1),
+                        scenes_total=int(n_img_targets),
+                        take_index=int(_scene_succeeded_image_count(db, sc.id)) + 1,
+                        take_target=int(min_scene_images),
+                    )
+                    db.commit()
                 scene_failed = False
                 while _scene_succeeded_image_count(db, sc.id) < min_scene_images:
                     if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
@@ -2541,6 +2724,21 @@ def _run_agent_full_pipeline_tail(
                         scene_failed = True
                         break
                     db.commit()
+                    # Mid-scene heartbeat — bump take_index after each succeeded take so
+                    # the UI banner moves "Scene 32 of 73 — take 1 of 3" → "2 of 3" → "3 of 3".
+                    if not scene_failed and _scene_succeeded_image_count(db, sc.id) < min_scene_images:
+                        run_hb = db.get(AgentRun, agent_run_uuid)
+                        if run_hb:
+                            _append_event(
+                                run_hb,
+                                "auto_images",
+                                "progress",
+                                scene_index=int(si + 1),
+                                scenes_total=int(n_img_targets),
+                                take_index=int(_scene_succeeded_image_count(db, sc.id)) + 1,
+                                take_target=int(min_scene_images),
+                            )
+                            db.commit()
                 if scene_failed:
                     continue
                 if force_regen_images:
@@ -2562,6 +2760,7 @@ def _run_agent_full_pipeline_tail(
 
         failed_ids_p: list[uuid.UUID] = []
         failed_set: set[uuid.UUID] = set()
+        round_idx = 0
 
         while True:
             if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
@@ -2574,6 +2773,35 @@ def _run_agent_full_pipeline_tail(
             if not unders:
                 break
             chunk = unders[:img_conc]
+            round_idx += 1
+            # Per-round heartbeat (parallel path). One progress event per concurrent
+            # chunk keeps ``updated_at`` advancing so the Studio stall detector
+            # doesn't fire while the worker is genuinely busy on a wide chunk.
+            scenes_done = n_img_targets - len(unders)
+            # Parallel path: report aggregate take progress so the UI can show
+            # "Round 3 — 145/219 takes" alongside the scene counter. Each scene
+            # contributes ``min_scene_images`` takes; the sum of finished
+            # succeeded images across all target scenes is what's actually done.
+            takes_target_total = int(n_img_targets) * int(min_scene_images)
+            takes_done_total = sum(
+                int(_scene_succeeded_image_count(db, s.id)) for s in target_scenes
+            )
+            run_hb = db.get(AgentRun, agent_run_uuid)
+            if run_hb:
+                _append_event(
+                    run_hb,
+                    "auto_images",
+                    "progress",
+                    scene_index=int(scenes_done + 1),
+                    scenes_total=int(n_img_targets),
+                    take_index=int(min(takes_done_total + 1, takes_target_total)),
+                    take_target=int(min_scene_images),
+                    takes_done_total=int(takes_done_total),
+                    takes_target_total=int(takes_target_total),
+                    parallel_round=round_idx,
+                    chunk_size=len(chunk),
+                )
+                db.commit()
             log.info(
                 "auto_pipeline_images_parallel_round",
                 project_id=str(pid),
@@ -2661,7 +2889,9 @@ def _run_agent_full_pipeline_tail(
             tenant_id=tenant_id,
             all_scenes=all_scenes,
             agent_run_uuid=agent_run_uuid,
-            automation_character_prefix=automation_tail_character_prefix,
+            video_provider_override=_pipeline_video_provider_for_phase3(run_opts_pre),
+            auto_generate_scene_images=auto_scene_images_pre,
+            exclude_character_bible=pipeline_exclude_character_bible,
         )
         if cov_ok is None:
             return False
@@ -2669,17 +2899,30 @@ def _run_agent_full_pipeline_tail(
         if run_cov2:
             _append_event(run_cov2, "auto_scene_coverage", "succeeded")
         db.commit()
+        _notify_phase(db, settings, run_cov2, "auto_scene_coverage")
 
     if tail_auto_images_runs:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
             run.current_step = "auto_images"
+            # Pre-flight summary — surfaces "scenes × min_images_per_scene" so the
+            # UI can show "73 × 3 = 219 baseline images" instead of just the
+            # bare scene_index/scenes_total counter (which made users think the
+            # pipeline was done at 73/73 even though every scene still owed 2
+            # more takes). ``coverage_pass_enabled`` warns the UI that an extra
+            # pass will follow before the run completes — the coverage pass
+            # itself emits its own ``planned`` event with the actual deficit
+            # numbers right before it starts work.
             _append_event(
                 run,
                 "auto_images",
                 "running",
                 scene_total=len(all_scenes),
                 min_stills_per_scene=min_scene_images,
+                expected_min_images=int(len(all_scenes)) * int(min_scene_images),
+                coverage_pass_enabled=bool(
+                    getattr(settings, "agent_run_auto_scene_coverage_clips", False)
+                ),
                 media_retry_passes_cap=_AUTO_SCENE_MEDIA_MAX_PASSES,
                 auto_images_max_concurrency=auto_images_max_concurrency,
             )
@@ -2727,6 +2970,7 @@ def _run_agent_full_pipeline_tail(
         if run:
             _append_event(run, "auto_images", "succeeded")
             db.commit()
+            _notify_phase(db, settings, run, "auto_images")
     else:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
@@ -2762,21 +3006,27 @@ def _run_agent_full_pipeline_tail(
             if pm == "videos" or (pm == "both" and not tail_auto_images_runs):
                 maybe_fill_pexels_for_project_scenes(db, settings, project)
         had_video_at_start = {sc.id for sc in all_scenes if _scene_has_succeeded_video(db, sc.id)}
+        _tail_video_provider = _pipeline_video_provider_for_phase3(run_opts_pre)
 
         def _auto_video_pass(target_scenes: list[Scene]) -> list[uuid.UUID] | None:
             failed_v: list[uuid.UUID] = []
 
             def _gen_one_video(sc: Scene) -> str:
+                vp_payload: dict[str, Any] = {
+                    "scene_id": str(sc.id),
+                    "tenant_id": tenant_id,
+                    "generation_tier": "preview",
+                    "agent_run_id": str(agent_run_uuid),
+                }
+                if _tail_video_provider:
+                    vp_payload["video_provider"] = _tail_video_provider
+                if pipeline_exclude_character_bible:
+                    vp_payload["exclude_character_bible"] = True
                 jv = _synthetic_job(
                     tenant_id=tenant_id,
                     project_id=pid,
                     jtype="scene_generate_video",
-                    payload={
-                        "scene_id": str(sc.id),
-                        "tenant_id": tenant_id,
-                        "generation_tier": "preview",
-                        "agent_run_id": str(agent_run_uuid),
-                    },
+                    payload=vp_payload,
                 )
                 try:
                     vout = _phase3_video_generate(db, jv)
@@ -2786,14 +3036,36 @@ def _run_agent_full_pipeline_tail(
                         scene_id=str(sc.id),
                         error=str(e)[:800],
                     )
+                    # Commit the worker_failure status flip applied by
+                    # ``_asset_running_guard`` inside ``_phase3_video_generate``;
+                    # see ``_gen_one_image`` for the rationale.
+                    try:
+                        db.commit()
+                    except Exception:  # noqa: BLE001
+                        db.rollback()
                     return "fail"
                 if isinstance(vout, dict) and vout.get("stopped"):
                     return "stop"
                 return "ok"
 
-            for sc in target_scenes:
+            n_vid_targets = len(target_scenes)
+            for si, sc in enumerate(target_scenes):
                 if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
                     return None
+                # Per-scene heartbeat for Studio (mirrors ``auto_narration`` at line ~2020 and
+                # ``auto_images`` above). WAN-style local video gen often takes 5-10 min per
+                # scene, so without this the agent-run row would sit untouched for the full
+                # render and the UI would flag a false "no heartbeat" stall.
+                run_hb = db.get(AgentRun, agent_run_uuid)
+                if run_hb:
+                    _append_event(
+                        run_hb,
+                        "auto_videos",
+                        "progress",
+                        scene_index=int(si + 1),
+                        scenes_total=int(n_vid_targets),
+                    )
+                    db.commit()
                 scene_failed = False
                 while _scene_succeeded_video_count(db, sc.id) < min_scene_videos:
                     if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
@@ -2896,6 +3168,15 @@ def _run_agent_full_pipeline_tail(
                     skipped_existing=video_skipped,
                 )
             db.commit()
+            if not vid_failed:
+                _notify_phase(
+                    db,
+                    settings,
+                    run,
+                    "auto_videos",
+                    generated=video_generated,
+                    skipped_existing=video_skipped,
+                )
     else:
         run = db.get(AgentRun, agent_run_uuid)
         if run:
@@ -2925,6 +3206,10 @@ def _run_agent_full_pipeline_tail(
     storage_root_tl = Path(settings.local_storage_root).resolve()
     ffprobe_bin_tl = (getattr(settings, "ffprobe_bin", None) or "ffprobe").strip() or "ffprobe"
     timeout_tl = float(settings.ffmpeg_timeout_sec)
+    # Scenes the timeline build had to skip because they ended up with no usable image or video
+    # (e.g. auto_videos partial_failed for that scene AND auto_images was disabled or also
+    # failed). Tracked for a single summarized event after the loop.
+    skipped_scenes_no_visual: list[uuid.UUID] = []
     for sc in all_scenes:
         if use_all_approved:
             use_rows = list_export_ready_scene_visuals_ordered(
@@ -3029,52 +3314,75 @@ def _run_agent_full_pipeline_tail(
         approved_only = [a for a in imgs if a.approved_at is not None]
         use_imgs = approved_only if approved_only else imgs
         if not use_imgs:
-            # Budget smoke: placeholder stills + optional local_ffmpeg (no cloud video). Tail resume can
-            # skip auto_images while a scene still has no still; local_ffmpeg needs a source image anyway.
-            proj_tl = proj_for_timeline or db.get(Project, pid)
-            want_placeholder_heal = bool(
-                proj_tl
-                and str(getattr(proj_tl, "preferred_image_provider", "") or "").strip().lower() == "placeholder"
-            ) or bool(getattr(settings, "director_placeholder_media", False))
-            if want_placeholder_heal:
-                j_heal = _synthetic_job(
-                    tenant_id=tenant_id,
-                    project_id=pid,
-                    jtype="scene_generate_image",
-                    payload={
-                        "scene_id": str(sc.id),
-                        "tenant_id": tenant_id,
-                        "generation_tier": "preview",
-                        "agent_run_id": str(agent_run_uuid),
-                        "_automation_character_prefix": automation_tail_character_prefix,
-                    },
+            # Recovery: timeline compile needs a visual. Try one heal attempt regardless of
+            # ``auto_scene_images_pre`` — if the user disabled image generation and only the
+            # video provider failed, an image fallback is strictly better than aborting the run.
+            j_heal = _synthetic_job(
+                tenant_id=tenant_id,
+                project_id=pid,
+                jtype="scene_generate_image",
+                payload={
+                    "scene_id": str(sc.id),
+                    "tenant_id": tenant_id,
+                    "generation_tier": "preview",
+                    "agent_run_id": str(agent_run_uuid),
+                },
+            )
+            try:
+                heal_out = _phase3_image_generate(db, j_heal)
+                if isinstance(heal_out, dict) and heal_out.get("ok") is True:
+                    _auto_pipeline_approve_scene_image(db, sc)
+                db.commit()
+                imgs = list(
+                    db.scalars(
+                        select(Asset)
+                        .where(
+                            Asset.scene_id == sc.id,
+                            Asset.asset_type == "image",
+                            Asset.status == "succeeded",
+                        )
+                        .order_by(Asset.timeline_sequence.asc(), Asset.created_at.asc())
+                    ).all()
                 )
-                try:
-                    heal_out = _phase3_image_generate(db, j_heal)
-                    if isinstance(heal_out, dict) and heal_out.get("ok") is True:
-                        _auto_pipeline_approve_scene_image(db, sc)
-                    db.commit()
-                    imgs = list(
-                        db.scalars(
-                            select(Asset)
-                            .where(
-                                Asset.scene_id == sc.id,
-                                Asset.asset_type == "image",
-                                Asset.status == "succeeded",
-                            )
-                            .order_by(Asset.timeline_sequence.asc(), Asset.created_at.asc())
-                        ).all()
-                    )
-                    approved_only = [a for a in imgs if a.approved_at is not None]
-                    use_imgs = approved_only if approved_only else imgs
-                except Exception as exc:
-                    log.warning(
-                        "auto_timeline_placeholder_heal_failed",
-                        scene_id=str(sc.id),
-                        error=str(exc)[:500],
-                    )
+                approved_only = [a for a in imgs if a.approved_at is not None]
+                use_imgs = approved_only if approved_only else imgs
+            except Exception as exc:
+                log.warning(
+                    "auto_timeline_missing_visual_heal_failed",
+                    scene_id=str(sc.id),
+                    error=str(exc)[:500],
+                )
             if not use_imgs:
-                raise ValueError(f"AUTO_TIMELINE_MISSING_IMAGE_{sc.id}")
+                # Heal failed too. Behavior splits on attended vs unattended:
+                #   * unattended (``allow_unapproved_media``): skip this scene from the timeline
+                #     and emit a structured ``scene_skipped`` event so Studio can surface it. The
+                #     run still produces a video for the other scenes.
+                #   * attended: raise a clear ``AUTO_TIMELINE_MISSING_VISUAL_<id>`` so the user
+                #     can fix that one scene by hand. Renamed from ``..._MISSING_IMAGE_*``: the
+                #     old name was misleading when the failure path was actually "video failed
+                #     and image generation was disabled".
+                if allow_unapproved_media:
+                    log.warning(
+                        "auto_timeline_skipping_scene_no_visual",
+                        scene_id=str(sc.id),
+                        auto_generate_scene_images=auto_scene_images_pre,
+                        auto_generate_scene_videos=auto_scene_videos_pre,
+                    )
+                    run_skip = db.get(AgentRun, agent_run_uuid)
+                    if run_skip is not None:
+                        _append_event(
+                            run_skip,
+                            "auto_timeline",
+                            "scene_skipped",
+                            scene_id=str(sc.id),
+                            reason="no_visual_media",
+                            auto_generate_scene_images=auto_scene_images_pre,
+                            auto_generate_scene_videos=auto_scene_videos_pre,
+                        )
+                        db.commit()
+                    skipped_scenes_no_visual.append(sc.id)
+                    continue
+                raise ValueError(f"AUTO_TIMELINE_MISSING_VISUAL_{sc.id}")
         scene_dur = effective_scene_visual_budget_sec(
             db,
             scene=sc,
@@ -3105,6 +3413,13 @@ def _run_agent_full_pipeline_tail(
                     }
                 )
                 clip_order += 1
+    if not clips:
+        # Every scene was skipped (or there were none). With no visual content there is nothing
+        # to render — fail loudly rather than producing an empty MP4.
+        raise ValueError(
+            "AUTO_TIMELINE_NO_VISUALS_AT_ALL: "
+            + ",".join(str(x) for x in skipped_scenes_no_visual[:32])
+        )
     tj: dict[str, Any] = {
         "schema_version": 2,
         "clips": clips,
@@ -3137,6 +3452,7 @@ def _run_agent_full_pipeline_tail(
     if run:
         _append_event(run, "auto_timeline", "succeeded", timeline_version_id=str(tv_id))
         db.commit()
+        _notify_phase(db, settings, run, "auto_timeline", timeline_version_id=str(tv_id))
 
     readiness = compute_phase5_readiness(
         db,
@@ -3168,42 +3484,45 @@ def _run_agent_full_pipeline_tail(
             "allow_unapproved_media": allow_unapproved_media,
         },
     )
-    _rough_cut(db, rj, settings)
-    run = db.get(AgentRun, agent_run_uuid)
-    if run:
-        _append_event(run, "auto_rough_cut", "succeeded")
-        db.commit()
+    export_reg = _AgentExportFfmpegRegistry(agent_run_uuid)
+    with _agent_run_export_heartbeat(agent_run_uuid):
+        _rough_cut(db, rj, settings, export_ffmpeg_registry=export_reg)
+        run = db.get(AgentRun, agent_run_uuid)
+        if run:
+            _append_event(run, "auto_rough_cut", "succeeded")
+            db.commit()
+            _notify_phase(db, settings, run, "auto_rough_cut")
 
-    if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
-        return False
-    db.refresh(tv)
-    _attach_latest_music_bed_if_missing(
-        db,
-        tv,
-        tenant_id=tenant_id,
-        project_id=pid,
-        storage_root=storage_root_pre,
-        director_auth_enabled=bool(getattr(settings, "director_auth_enabled", True)),
-    )
-    db.refresh(tv)
-    run = db.get(AgentRun, agent_run_uuid)
-    if run:
-        run.current_step = "auto_final_cut"
-        _append_event(run, "auto_final_cut", "running")
-    db.commit()
-    fj = _synthetic_job(
-        tenant_id=tenant_id,
-        project_id=pid,
-        jtype="final_cut",
-        payload={
-            "timeline_version_id": str(tv_id),
-            "project_id": str(pid),
-            "tenant_id": tenant_id,
-            "allow_unapproved_media": allow_unapproved_media,
-            "burn_subtitles_into_video": bool(getattr(settings, "burn_subtitles_in_final_cut_default", False)),
-        },
-    )
-    _final_cut(db, fj, settings)
+        if _agent_run_checkpoint(db, agent_run_uuid) == "stop":
+            return False
+        db.refresh(tv)
+        _attach_latest_music_bed_if_missing(
+            db,
+            tv,
+            tenant_id=tenant_id,
+            project_id=pid,
+            storage_root=storage_root_pre,
+            director_auth_enabled=bool(getattr(settings, "director_auth_enabled", True)),
+        )
+        db.refresh(tv)
+        run = db.get(AgentRun, agent_run_uuid)
+        if run:
+            run.current_step = "auto_final_cut"
+            _append_event(run, "auto_final_cut", "running")
+        db.commit()
+        fj = _synthetic_job(
+            tenant_id=tenant_id,
+            project_id=pid,
+            jtype="final_cut",
+            payload={
+                "timeline_version_id": str(tv_id),
+                "project_id": str(pid),
+                "tenant_id": tenant_id,
+                "allow_unapproved_media": allow_unapproved_media,
+                "burn_subtitles_into_video": bool(getattr(settings, "burn_subtitles_in_final_cut_default", False)),
+            },
+        )
+        _final_cut(db, fj, settings, export_ffmpeg_registry=export_reg)
     project = db.get(Project, pid)
     if project:
         project.workflow_phase = "final_video_ready"
@@ -3211,6 +3530,7 @@ def _run_agent_full_pipeline_tail(
     if run:
         _append_event(run, "auto_final_cut", "succeeded", timeline_version_id=str(tv_id))
         db.commit()
+        _notify_phase(db, settings, run, "auto_final_cut", timeline_version_id=str(tv_id))
     log.info(
         "agent_full_video_tail_timing",
         phase="complete",
@@ -3495,6 +3815,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                             _append_event(run, "director", "succeeded")
                             run.current_step = "research"
                             db.commit()
+                            _notify_phase(db, settings, run, "director")
                     except Exception as e:  # noqa: BLE001
                         run = db.get(AgentRun, aid)
                         if run:
@@ -3638,6 +3959,10 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                             _append_event(run, "research", "succeeded", dossier_id=str(dossier.id) if dossier else None)
                             run.current_step = "outline"
                             db.commit()
+                            _notify_phase(
+                                db, settings, run, "research",
+                                dossier_id=str(dossier.id) if dossier else None,
+                            )
                     except Exception as e:  # noqa: BLE001
                         run = db.get(AgentRun, aid)
                         if run:
@@ -3673,13 +3998,19 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                         project = db.get(Project, run_project_id)
                         if not project:
                             raise RuntimeError("project missing before outline")
-                        _phase2_outline_core(db, project, settings)
+                        _phase2_outline_core(
+                            db,
+                            project,
+                            settings,
+                            confirm_erase_assets=options_grant_erase_consent(opts_raw),
+                        )
                         db.commit()
                         run = db.get(AgentRun, aid)
                         if run:
                             _append_event(run, "outline", "succeeded")
                             run.current_step = "chapters"
                             db.commit()
+                            _notify_phase(db, settings, run, "outline")
                     except Exception as e:  # noqa: BLE001
                         run = db.get(AgentRun, aid)
                         if run:
@@ -3722,6 +4053,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                             _append_event(run, "chapters", "succeeded")
                             run.current_step = "scenes"
                             db.commit()
+                            _notify_phase(db, settings, run, "chapters")
                     except Exception as e:  # noqa: BLE001
                         run = db.get(AgentRun, aid)
                         if run:
@@ -3817,7 +4149,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                             plan_queue.append(ch)
 
                         if plan_queue:
-                            scene_plan_char_prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+                            scene_plan_char_chunks = load_project_character_bible_chunks(db, project.id)
                             scene_plan_char_bible = character_bible_for_llm_context(db, project.id, max_chars=6000)
                             for plan_i, ch in enumerate(plan_queue):
                                 if halt():
@@ -3846,8 +4178,9 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                                     ch,
                                     project,
                                     settings,
-                                    cached_character_consistency_prefix=scene_plan_char_prefix,
+                                    cached_character_bible_chunks=scene_plan_char_chunks,
                                     cached_character_bible_for_llm=scene_plan_char_bible,
+                                    confirm_erase_assets=options_grant_erase_consent(opts_raw),
                                 )
                                 planned += 1
                         db.commit()
@@ -3863,6 +4196,12 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                             )
                             run.current_step = "story_research_review"
                             db.commit()
+                            _notify_phase(
+                                db, settings, run, "scenes",
+                                chapters_planned=planned,
+                                chapters_skipped_short_script=skipped_short_script,
+                                chapters_skipped_existing_scenes=chapters_skipped_existing_scenes,
+                            )
                     except Exception as e:  # noqa: BLE001
                         run = db.get(AgentRun, aid)
                         if run:
@@ -4053,6 +4392,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                     if run:
                         run.current_step = None
                         db.commit()
+                        _notify_phase(db, settings, run, "story_research_review")
                     project = db.get(Project, run_project_id)
                     run = db.get(AgentRun, aid)
                     if through == "full_video" and project and run:
@@ -4135,20 +4475,26 @@ def _phase3_scenes_plan_for_chapter(
     project: Project,
     settings: Any,
     *,
-    cached_character_consistency_prefix: str | None = None,
+    cached_character_bible_chunks: list[tuple[str, str]] | None = None,
     cached_character_bible_for_llm: str | None = None,
+    confirm_erase_assets: bool = False,
 ) -> None:
     """Agentic scene planning (same as scene_generate job body)."""
     if not phase3_svc.chapter_eligible_for_scene_planning(chapter):
         raise ValueError(
             "chapter needs script_text or a substantive summary (12+ chars) before scene planning"
         )
+    # Defence-in-depth erase gate — see phase3_impl._phase3_scenes_plan_for_chapter
+    # for the rationale (this duplicate path is used by the agent-run loop).
+    from director_api.services.erase_consent import assert_chapter_replan_erase_consent
+
+    assert_chapter_replan_erase_consent(chapter, consent=confirm_erase_assets)
 
     vis_prompt = effective_visual_style(project.visual_style, settings)
-    if cached_character_consistency_prefix is None:
-        char_prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+    if cached_character_bible_chunks is None:
+        char_chunks = load_project_character_bible_chunks(db, project.id)
     else:
-        char_prefix = cached_character_consistency_prefix
+        char_chunks = cached_character_bible_chunks
     try:
         min_sc = max(0, min(48, int(getattr(settings, "scene_plan_target_scenes_per_chapter", 0) or 0)))
     except (TypeError, ValueError):
@@ -4165,7 +4511,7 @@ def _phase3_scenes_plan_for_chapter(
         visual_style_prompt=vis_prompt,
         min_scenes=min_sc,
         scene_clip_duration_sec=clip_sec,
-        character_consistency_prefix=char_prefix or None,
+        character_bible_chunks=char_chunks,
     )
     batch = seed_batch
     refined = None
@@ -4188,7 +4534,9 @@ def _phase3_scenes_plan_for_chapter(
             target_duration_sec=chapter.target_duration_sec,
             character_bible=char_ctx or None,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+            visual_style_resolved=vis_prompt,
             usage_sink=llm_u,
+            no_narration=bool(getattr(project, "no_narration", False)),
         )
     _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
     if refined:
@@ -4224,6 +4572,9 @@ def _phase3_scenes_plan_for_chapter(
         if not isinstance(ct, list):
             ct = []
         ct = [str(x)[:256] for x in ct if x is not None][:32]
+        narr_out = str(item["narration_text"])
+        if getattr(project, "no_narration", False):
+            narr_out = phase3_svc.NO_NARRATION_SCENE_TEXT
         db.add(
             Scene(
                 id=uuid.uuid4(),
@@ -4231,7 +4582,7 @@ def _phase3_scenes_plan_for_chapter(
                 order_index=int(item["order_index"]),
                 purpose=sanitize_jsonb_text(str(item["purpose"]), 2000),
                 planned_duration_sec=int(item["planned_duration_sec"]),
-                narration_text=sanitize_jsonb_text(str(item["narration_text"]), 12_000),
+                narration_text=sanitize_jsonb_text(narr_out, 12_000),
                 visual_type=str(item["visual_type"])[:64],
                 prompt_package_json=pp,
                 continuity_tags_json=ct,
@@ -4339,6 +4690,7 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
             scene_clip_sec=clip,
             character_bible=char_ctx or None,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+            visual_style_resolved=vis_prompt,
             usage_sink=llm_u,
         )
     if not batch:
@@ -4350,7 +4702,7 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
             prior_narrations=narrs,
             last_visual_type=str(last.visual_type or ""),
             visual_style_prompt=vis_prompt,
-            character_consistency_prefix=character_consistency_prefix(db, project.id, max_chars=2000) or None,
+            character_bible_chunks=load_project_character_bible_chunks(db, project.id),
         )
     _flush_llm_usage(db, project.tenant_id, project.id, None, None, llm_u)
     validate_scene_plan_batch(batch)
@@ -4450,10 +4802,19 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
 
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
     override = payload.get("image_prompt_override")
+    # ``image_prompt_suffix`` is APPENDED to the resolved scene prompt; it is
+    # how coverage takes ("Medium shot, alternate framing, same scene…") add
+    # framing guidance without erasing the scene description. Without this,
+    # coverage takes used to produce hero portraits because the whole scene
+    # prompt was being discarded.
+    suffix = payload.get("image_prompt_suffix")
+    vis_style = effective_visual_style(project.visual_style, settings)
     prompt, used_brackets, bracket_phrases = base_image_prompt_from_scene_fields(
         narration_text=scene.narration_text,
         prompt_package_json=pp,
         image_prompt_override=override if isinstance(override, str) else None,
+        visual_style_effective=vis_style,
+        image_prompt_suffix=suffix if isinstance(suffix, str) else None,
     )
     bracket_llm_refined = False
     want_refine = bool(payload.get("refine_bracket_visual_with_llm"))
@@ -4488,16 +4849,66 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             "used_bracket_hints": used_brackets,
         }
 
-    if not bool(payload.get("exclude_character_bible")):
-        if "_automation_character_prefix" in payload:
-            prefix = str(payload.get("_automation_character_prefix") or "")[:2000]
-        else:
-            prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+    # ------------------------------------------------------------------
+    # Image prompt assembly — scene direction LEADS so the diffusion model
+    # weights this beat's actual SHOT_TAG + subject + frozen composition.
+    # Mirrors the video assembler (see ``_phase3_video_generate`` below):
+    #   - per-scene image_prompt at the top (early tokens carry the most
+    #     weight in Flux / SD / FAL pipelines),
+    #   - character bible APPENDED (and only when ``match_keys`` for a
+    #     character actually appear in this scene's text — no global bible
+    #     spam on [BROLL] / [INSERT] beats),
+    #   - a short chapter/project era anchor APPENDED (replaces the old
+    #     ``maybe_prepend_topic_setting_anchor`` that jammed the raw
+    #     ``project.topic`` brief at the very front of every prompt — that
+    #     was the leading source of "all my images look the same" because
+    #     the same 200-char setting clause dominated early tokens for
+    #     every scene),
+    #   - the still-flavored visual style appended last.
+    # Each piece is independently capped so a single block can't eat the
+    # prompt budget.
+    # ------------------------------------------------------------------
+    prompt = str(prompt).strip()
+    character_prefix_injected = False
+
+    # Suppress the character bible whenever the IMAGE PROMPT declares the
+    # shot is people-free (SHOT_TAG ∈ {[BROLL],[INSERT],[ECU]} or contains a
+    # "no people" phrase). Otherwise the bible — which is keyed off
+    # ``narration_text`` and frequently matches "Moses" on a B-roll scene
+    # whose visual brief is an empty brick pile — silently inserts a human
+    # subject, and the resulting half-figure shows up with the head out of
+    # frame. The explicit ``exclude_character_bible`` payload toggle is
+    # still honoured for callers that set it (coverage [BROLL] variants).
+    prompt_excludes_people = _prompt_declares_no_humans(prompt)
+    if not bool(payload.get("exclude_character_bible")) and not prompt_excludes_people:
+        prefix = character_consistency_prefix_for_scene(
+            db,
+            project.id,
+            scene_text=_scene_text_for_character_match(db, scene),
+            max_chars=2000,
+        )
         if prefix and not prompt_already_has_character_prefix(prompt, prefix):
             room = max(400, 4000 - len(prefix) - 3)
-            prompt = f"{prefix}\n\n{str(prompt)[:room]}"
+            prompt = f"{str(prompt)[:room]}\n\n{prefix}"
+            character_prefix_injected = True
+        elif prefix:
+            # Prefix was already present from a prior assembly pass — still
+            # counts as "human subject expected" for framing safety.
+            character_prefix_injected = True
 
-    vis_style = effective_visual_style(project.visual_style, settings)
+    if _should_append_framing_safety_positive(
+        prompt, character_prefix_injected=character_prefix_injected
+    ):
+        room_fr = max(0, 4000 - len(prompt) - 2)
+        if room_fr > len(_FRAMING_SAFETY_POS):
+            prompt = f"{prompt}\n\n{_FRAMING_SAFETY_POS}"
+
+    era_anchor = _scene_era_anchor(scene, chapter, project)
+    if era_anchor:
+        room_ea = max(0, 4000 - len(prompt) - 2)
+        if room_ea > len(era_anchor):
+            prompt = f"{prompt}\n\n{era_anchor}"
+
     if vis_style:
         vs = vis_style.strip()
         if vs:
@@ -4507,7 +4918,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
                 if room_vs > 80:
                     prompt = f"{prompt}\n\nVisual style: {vs[:room_vs]}"
 
-    scene_neg = _package_negative_prompt(pp)
+    scene_neg = _merge_framing_safety_negative(_package_negative_prompt(pp))
 
     payload_override = payload.get("image_provider")
     if isinstance(payload_override, str) and payload_override.strip():
@@ -4525,8 +4936,6 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         req_l = "fal"
     if req_l in ("openai", "grok", "xai", "gemini", "google"):
         req_l = "fal"
-    if bool(getattr(settings, "director_placeholder_media", False)):
-        req_l = "placeholder"
 
     if req_l == "placeholder":
         from director_api.providers.media_placeholder import render_placeholder_scene_png_bytes
@@ -4674,6 +5083,19 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         else [],
         "prompt_package_json": scene.prompt_package_json,
         "image_prompt_used": prompt[:4000],
+        # Persist the negative we'll send so we can audit anti-crop tokens
+        # from the DB after the fact. ``(scene_neg or "")`` so the JSON has
+        # a real string, never ``null``.
+        "image_negative_prompt_used": (scene_neg or "")[:1200],
+        # Record the framing-safety branch decisions so post-mortems on
+        # "head cropped" / "no people but a man appeared" don't require
+        # re-deriving them from scratch.
+        "framing_safety_audit": {
+            "shot_tag": _prompt_leading_shot_tag(prompt) or "",
+            "declares_no_humans": bool(prompt_excludes_people),
+            "character_prefix_injected": bool(character_prefix_injected),
+            "framing_safety_positive_applied": _FRAMING_SAFETY_POS in prompt,
+        },
         "routing_audit": {"requested_provider": requested, "resolved_provider": resolved_provider},
     }
     if bracket_visual_audit:
@@ -4710,16 +5132,39 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         fal_key_configured=bool((settings.fal_key or "").strip()),
     )
 
-    if resolved_provider == "comfyui":
-        res = generate_scene_image_comfyui(settings, str(prompt), negative_prompt=scene_neg)
-    else:
-        res = generate_scene_image(
-            settings,
-            str(prompt),
-            model_path=fal_image_override,
-            negative_prompt=scene_neg,
-            frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
-        )
+    # Composite stop signal: polls agent_run (when this is auto-pipeline work),
+    # the Job row (per-job /cancel writes payload.stop_requested), AND project
+    # cascade (any running agent_run on this project whose user pressed Stop).
+    # This makes Stop work for manual /generate-image jobs too, even though
+    # those don't carry agent_run_id in their payload.
+    stop_signal = _make_job_stop_signal(
+        agent_run_uuid=ar_uuid,
+        job_uuid=job.id,
+        project_uuid=project.id,
+    )
+    # Asset-running guard. The row above is now persisted with ``status='running'``.
+    # Without this guard, any uncaught exception during the 5-15 min provider
+    # call would leave the row orphaned at ``running`` forever (the caller's
+    # ``except`` block just logs and returns ``fail`` — it never rolls the
+    # session back, so the orphaned row commits alongside the next scene's
+    # success). The guard flips the row to ``failed`` before re-raising.
+    with _asset_running_guard(db, asset, service_type="image_gen", tenant_id=tenant_id, project_id=project.id, scene_id=scene.id):
+        if resolved_provider == "comfyui":
+            res = generate_scene_image_comfyui(
+                settings,
+                str(prompt),
+                negative_prompt=scene_neg,
+                should_stop=stop_signal,
+            )
+        else:
+            res = generate_scene_image(
+                settings,
+                str(prompt),
+                model_path=fal_image_override,
+                negative_prompt=scene_neg,
+                frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+                should_stop=stop_signal,
+            )
 
     if res.get("ok") and res.get("bytes"):
         content_type = str(res.get("content_type") or "image/png")
@@ -4778,6 +5223,11 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
     out: dict[str, Any] = {"asset_id": str(asset.id), "ok": asset.status == "succeeded"}
     if asset.status != "succeeded" and asset.error_message:
         out["error_message"] = str(asset.error_message)[:2000]
+    # Propagate provider-level stop ("user clicked Stop while Comfy was polling")
+    # so the auto-image loop in ``_auto_image_pass`` exits immediately instead
+    # of retrying this scene through the retry-passes cap.
+    if bool(res.get("stopped")):
+        out["stopped"] = True
     return out
 
 
@@ -4809,7 +5259,14 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
 
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
     base_video_text_prompt = _resolve_phase3_video_text_prompt(
-        scene, pp, override=payload.get("video_prompt_override"), project=project
+        scene,
+        pp,
+        override=payload.get("video_prompt_override"),
+        # ``video_prompt_suffix`` is appended (coverage variants); see the
+        # docstring on ``services.scene_coverage.pick_coverage_payload``.
+        suffix=payload.get("video_prompt_suffix"),
+        project=project,
+        settings=settings,
     )
     payload_override = payload.get("video_provider")
     if isinstance(payload_override, str) and payload_override.strip():
@@ -4827,11 +5284,11 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         selected_video_provider = "fal"
     if selected_video_provider in ("grok", "xai", "gemini", "google", "local_ltx", "local_wan"):
         selected_video_provider = "fal"
-    # Placeholder / budget mode: avoid paid cloud video (fal). Local ComfyUI WAN is OSS on your machine —
-    # keep comfyui_wan so it matches scripts/test_comfyui_wan_video.py and real WAN jobs.
-    if bool(getattr(settings, "director_placeholder_media", False)):
-        if selected_video_provider == "fal":
-            selected_video_provider = "local_ffmpeg"
+    # Stock libraries are valid workspace defaults for browse/import flows, but they are
+    # not direct generators. When selected for generation jobs, use the configured
+    # local still->video path so scene jobs remain runnable.
+    if selected_video_provider in ("pexels", "storyblocks"):
+        selected_video_provider = "local_ffmpeg"
     if selected_video_provider not in (
         "local_ffmpeg",
         "fal",
@@ -4842,23 +5299,83 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         )
 
     if selected_video_provider in ("fal", "comfyui_wan"):
-        prompt = base_video_text_prompt
-        if not bool(payload.get("exclude_character_bible")):
-            vprefix = character_consistency_prefix(db, project.id, max_chars=2000)
-            if vprefix and not prompt_already_has_character_prefix(prompt, vprefix):
-                room = max(400, 3000 - len(vprefix) - 3)
-                prompt = f"{vprefix}\n\n{str(prompt)[:room]}"
-        vis_style = effective_visual_style(project.visual_style, settings)
+        # ------------------------------------------------------------------
+        # Video prompt assembly — scene direction LEADS so the diffusion model
+        # weights this beat's actual subject + action. We then append (only when
+        # warranted):
+        #   - the FULL character bible (same long-form ``IDENTITY LOCK``
+        #     formatted prefix the image path uses — see
+        #     ``character_consistency_prefix_for_scene``). Injected only when
+        #     ``match_keys`` for a character actually appear in this scene's
+        #     text AND the prompt does not declare "no humans" (e.g. ``[BROLL]
+        #     no people``). The long-form bible leads with the identity-locked
+        #     skin tone / hair / ethnicity tokens at the very front of each
+        #     character chunk, so a T2V model (Fal LTX, WAN T2V without seed
+        #     image) gets the same consistent identity anchors as the still
+        #     image generator. With WAN seed-image (I2V) mode, the still
+        #     dominates appearance and the bible just keeps the motion text
+        #     in character.
+        #   - a short setting / era anchor derived from chapter / project title
+        #     (never the raw project.topic, which used to truncate mid-word and
+        #     leak the LLM brief),
+        #   - the *video-flavored* visual style (preset.video_prompt when set,
+        #     otherwise a still→motion rewrite — never the raw "PHOTOREAL …
+        #     STILL" string that told video models to render a still frame).
+        # Each piece is independently capped so a single block can never eat
+        # the prompt budget.
+        # ------------------------------------------------------------------
+        prompt = str(base_video_text_prompt).strip()
+
+        # Same no-human gate as the image path: when the resolved prompt is a
+        # ``[BROLL]`` / ``[INSERT]`` / ``[ECU]`` shot or says "no people",
+        # skip the bible so we don't drag a character into a deliberately
+        # empty B-roll beat (which then prompts head-cropped half-figures).
+        video_excludes_people = _prompt_declares_no_humans(prompt)
+        if not bool(payload.get("exclude_character_bible")) and not video_excludes_people:
+            # Inject the FULL character bible (visual_description) — same payload
+            # the still-gen path uses — but only when ``match_keys`` actually fire
+            # for THIS scene. This keeps face/wardrobe drift down on character
+            # scenes while still leaving [BROLL] / [INSERT] / pure-landscape
+            # beats lean (no match -> no injection).
+            prefix = character_consistency_prefix_for_scene(
+                db,
+                project.id,
+                scene_text=_scene_text_for_character_match(db, scene),
+                max_chars=2000,
+            )
+            if prefix and not prompt_already_has_character_prefix(prompt, prefix):
+                # Keep the per-scene direction at the top (WAN weighs early tokens
+                # heaviest), then the character bible, then the era anchor / style
+                # that follow are appended after this block by later code.
+                room = max(400, 3000 - len(prefix) - 3)
+                prompt = f"{str(prompt)[:room]}\n\n{prefix}"
+
+        era_anchor = _scene_era_anchor(scene, chapter, project)
+        if era_anchor:
+            prompt = f"{prompt}\n\n{era_anchor}"
+
+        vis_style = effective_video_visual_style(project.visual_style, settings)
         if vis_style:
-            room_vs = max(0, 4000 - len(prompt) - 24)
+            room_vs = max(0, 3000 - len(prompt) - 24)
             if room_vs > 80:
-                prompt = f"{prompt}\n\nVisual style: {vis_style.strip()[:room_vs]}"
-        duration_sec = max(1.0, min(_scene_clip_duration_sec(settings), 30.0))
+                prompt = f"{prompt}\n\nStyle: {vis_style.strip()[:room_vs]}"
+        prompt = prompt[:3000]
         fal_video_override = payload.get("fal_video_model")
         if not isinstance(fal_video_override, str) or not fal_video_override.strip():
             fal_video_override = None
         else:
             fal_video_override = fal_video_override.strip().lstrip("/")
+        # Per-scene length: prefer the LLM-planned beat duration so a 12-second
+        # narration line gets one continuous shot instead of three hard cuts.
+        # ``clip_seconds_for_scene`` also enforces a provider-safe ceiling
+        # (e.g. WAN sweet-spot 6 s) so we never ask a model for more frames
+        # than it can stably render.
+        duration_sec = clip_seconds_for_scene(
+            settings,
+            scene,
+            provider=selected_video_provider,
+            fal_model=fal_video_override or getattr(settings, "fal_video_model", None),
+        )
 
         scene_comfy_path: Path | None = None
         prereq_image_asset_id: str | None = None
@@ -4922,7 +5439,16 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                     workflow_hint=wf_still[:120],
                 )
                 ires = generate_scene_image_comfyui(
-                    settings, img_prompt, negative_prompt=_package_negative_prompt(scene.prompt_package_json)
+                    settings,
+                    img_prompt,
+                    negative_prompt=_merge_framing_safety_negative(
+                        _package_negative_prompt(scene.prompt_package_json)
+                    ),
+                    should_stop=_make_job_stop_signal(
+                        agent_run_uuid=ar_uuid,
+                        job_uuid=job.id,
+                        project_uuid=project.id,
+                    ),
                 )
                 if not ires.get("ok") or not ires.get("bytes"):
                     err = str(ires.get("detail") or ires.get("error") or "comfyui_still_failed")[:8000]
@@ -4958,7 +5484,11 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                         meta={"ok": False, "reason": "auto_still_failed", "tier": tier},
                     )
                     db.flush()
-                    return {"asset_id": str(fail.id)}
+                    out_still: dict[str, Any] = {"asset_id": str(fail.id)}
+                    if bool(ires.get("stopped")):
+                        out_still["stopped"] = True
+                        out_still["ok"] = False
+                    return out_still
                 storage = FilesystemStorage(settings.local_storage_root)
                 img_wf_name = (settings.comfyui_model_name or "").strip() or Path(wf_still).name
                 img_asset = Asset(
@@ -5083,7 +5613,11 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             "prompt_used": prompt,
             "video_prompt_base": base_video_text_prompt[:3000],
             "planned_duration_sec": duration_sec,
-            "duration_source": "runtime_setting:scene_clip_duration_sec",
+            "duration_source": (
+                "scene.planned_duration_sec"
+                if scene.planned_duration_sec
+                else "runtime_setting:scene_clip_duration_sec"
+            ),
             "routing_audit": {
                 "requested_provider": requested,
                 "resolved_provider": resolved_provider,
@@ -5189,22 +5723,51 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                     scene_image_ct = "image/jpeg"
                 elif suf == ".webp":
                     scene_image_ct = "image/webp"
-            vres = generate_scene_video_fal(
-                settings,
-                prompt,
-                duration_sec,
-                model=fal_video_override,
-                image_bytes=scene_image_bytes,
-                image_content_type=scene_image_ct,
-                frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
-            )
+            # Provider call wrapped by ``_asset_running_guard`` so an uncaught
+            # exception during the 10+ min fal / WAN render flips the Asset
+            # row to ``failed`` instead of leaving it orphaned at ``running``.
+            with _asset_running_guard(
+                db,
+                asset,
+                service_type="video_gen",
+                tenant_id=tenant_id,
+                project_id=project.id,
+                scene_id=scene.id,
+            ):
+                vres = generate_scene_video_fal(
+                    settings,
+                    prompt,
+                    duration_sec,
+                    model=fal_video_override,
+                    image_bytes=scene_image_bytes,
+                    image_content_type=scene_image_ct,
+                    frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+                    should_stop=_make_job_stop_signal(
+                        agent_run_uuid=ar_uuid,
+                        job_uuid=job.id,
+                        project_uuid=project.id,
+                    ),
+                )
         else:
-            vres = generate_scene_video_comfyui(
-                settings,
-                prompt,
-                scene_image_path=scene_comfy_path,
-                duration_sec=duration_sec,
-            )
+            with _asset_running_guard(
+                db,
+                asset,
+                service_type="video_gen",
+                tenant_id=tenant_id,
+                project_id=project.id,
+                scene_id=scene.id,
+            ):
+                vres = generate_scene_video_comfyui(
+                    settings,
+                    prompt,
+                    scene_image_path=scene_comfy_path,
+                    duration_sec=duration_sec,
+                    should_stop=_make_job_stop_signal(
+                        agent_run_uuid=ar_uuid,
+                        job_uuid=job.id,
+                        project_uuid=project.id,
+                    ),
+                )
         if vres.get("ok") and vres.get("bytes"):
             storage = FilesystemStorage(settings.local_storage_root)
             key = f"assets/{project.id}/{scene.id}/{asset.id}.mp4"
@@ -5238,7 +5801,14 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                 meta={"ok": False, "error": err[:500], "tier": tier},
             )
         db.flush()
-        return {"asset_id": str(asset.id)}
+        out_v: dict[str, Any] = {"asset_id": str(asset.id)}
+        # Surface ``stopped=True`` from Comfy provider so the auto-video loop in
+        # ``_auto_video_pass`` exits immediately and the run can move to the
+        # cancelled state instead of retrying through the per-scene retry cap.
+        if bool(vres.get("stopped")):
+            out_v["stopped"] = True
+            out_v["ok"] = False
+        return out_v
 
     ffmpeg_bin = (settings.ffmpeg_bin or "ffmpeg").strip() or "ffmpeg"
     if not shutil.which(ffmpeg_bin):
@@ -5333,11 +5903,22 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             )
         resolved_paths.append((img, ip))
 
-    duration_sec = max(0.5, min(_scene_clip_duration_sec(settings), 300.0))
+    # local_ffmpeg Ken Burns has no real frame ceiling — let one scene's slideshow
+    # cover the full narration beat (provider cap = 60 s sanity ceiling).
+    duration_sec = clip_seconds_for_scene(
+        settings,
+        scene,
+        provider="local_ffmpeg",
+    )
     src_image = pick_imgs[0]
     use_slideshow = len(resolved_paths) > 1
     model_name = "image_slideshow_mp4" if use_slideshow else "still_to_mp4"
     per_slide_sec = duration_sec / len(resolved_paths) if use_slideshow else duration_sec
+    # Ken Burns motion picker — keyword search ("pan", "zoom in", "dolly out",
+    # …) over the scene-direction text only. We deliberately do NOT prepend
+    # ``project.topic`` here anymore: topics like "Aerial pan across Jerusalem"
+    # would inject false-positive motion hints from the user brief instead of
+    # this scene's actual ``video_prompt``.
     slow_zoom_ff, kb_dir, slide_motion = _local_ffmpeg_motion_from_video_prompt(base_video_text_prompt)
 
     params_json: dict[str, Any] = {
@@ -5349,13 +5930,17 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         "source_image_asset_id": str(src_image.id),
         "source_image_asset_ids": [str(a.id) for a in pick_imgs],
         "planned_duration_sec": duration_sec,
-        "duration_source": "runtime_setting:scene_clip_duration_sec",
+        "duration_source": (
+            "scene.planned_duration_sec"
+            if scene.planned_duration_sec
+            else "runtime_setting:scene_clip_duration_sec"
+        ),
         "routing_audit": {
             "requested_provider": requested,
             "resolved_provider": "local_ffmpeg",
         },
         "notes": str(notes)[:2000] if notes else None,
-        "video_prompt_resolved": base_video_text_prompt[:3000],
+        "video_prompt_resolved": video_text_for_motion[:3000],
         "ffmpeg_motion_hint": slide_motion,
         "slow_zoom": slow_zoom_ff,
         "ken_burns_direction": kb_dir,
@@ -5393,41 +5978,71 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
     key = f"assets/{project.id}/{scene.id}/{asset.id}.mp4"
     out_path = storage.get_path(key)
 
-    try:
-        w = exp_w
-        h = exp_h
-        tmo = float(settings.ffmpeg_timeout_sec)
-        if use_slideshow:
-            slides = [(p, per_slide_sec) for _a, p in resolved_paths]
-            sm = slide_motion if slide_motion in ("pan", "zoom") else "none"
-            enc = compile_image_slideshow(
-                slides,
-                out_path,
-                width=w,
-                height=h,
-                fps=30,
-                ffmpeg_bin=ffmpeg_bin,
-                timeout_sec=tmo,
-                motion=sm,
-                crossfade_sec=0.0,
-                slow_zoom=False,
+    # Asset-running guard catches unexpected exception types (PermissionError,
+    # OOM, network errors on slideshow inputs, etc.) so the row reaches a
+    # terminal ``failed`` state instead of being orphaned at ``running``.
+    # ``FFmpegCompileError`` is still caught explicitly below to preserve the
+    # well-formed user-facing error message.
+    with _asset_running_guard(
+        db,
+        asset,
+        service_type="video_gen",
+        tenant_id=tenant_id,
+        project_id=project.id,
+        scene_id=scene.id,
+    ):
+        try:
+            w = exp_w
+            h = exp_h
+            tmo = float(settings.ffmpeg_timeout_sec)
+            if use_slideshow:
+                slides = [(p, per_slide_sec) for _a, p in resolved_paths]
+                sm = slide_motion if slide_motion in ("pan", "zoom") else "none"
+                enc = compile_image_slideshow(
+                    slides,
+                    out_path,
+                    width=w,
+                    height=h,
+                    fps=30,
+                    ffmpeg_bin=ffmpeg_bin,
+                    timeout_sec=tmo,
+                    motion=sm,
+                    crossfade_sec=0.0,
+                    slow_zoom=False,
+                )
+            else:
+                enc = encode_image_to_mp4(
+                    resolved_paths[0][1],
+                    out_path,
+                    duration_sec=duration_sec,
+                    width=w,
+                    height=h,
+                    slow_zoom=slow_zoom_ff,
+                    ken_burns_direction=kb_dir if kb_dir in ("in", "out") else "in",
+                    ffmpeg_bin=ffmpeg_bin,
+                    timeout_sec=tmo,
+                )
+        except FFmpegCompileError as e:
+            err = str(e)[:8000]
+            asset.status = "failed"
+            asset.error_message = err
+            _record_usage(
+                db,
+                tenant_id=tenant_id,
+                project_id=project.id,
+                scene_id=scene.id,
+                asset_id=asset.id,
+                provider="local_ffmpeg",
+                service_type="video_gen",
+                meta={"ok": False, "error": err[:500], "tier": tier},
             )
-        else:
-            enc = encode_image_to_mp4(
-                resolved_paths[0][1],
-                out_path,
-                duration_sec=duration_sec,
-                width=w,
-                height=h,
-                slow_zoom=slow_zoom_ff,
-                ken_burns_direction=kb_dir if kb_dir in ("in", "out") else "in",
-                ffmpeg_bin=ffmpeg_bin,
-                timeout_sec=tmo,
-            )
-    except FFmpegCompileError as e:
-        err = str(e)[:8000]
-        asset.status = "failed"
-        asset.error_message = err
+            db.flush()
+            return {"asset_id": str(asset.id)}
+
+        url = out_path.resolve().as_uri()
+        _bind_asset_local_file(asset, url, key)
+        asset.status = "succeeded"
+        asset.error_message = None
         _record_usage(
             db,
             tenant_id=tenant_id,
@@ -5436,32 +6051,15 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             asset_id=asset.id,
             provider="local_ffmpeg",
             service_type="video_gen",
-            meta={"ok": False, "error": err[:500], "tier": tier},
+            meta={
+                "ok": True,
+                "tier": tier,
+                "duration_sec": float(duration_sec),
+                **{k: v for k, v in enc.items() if k != "output_path"},
+            },
         )
         db.flush()
         return {"asset_id": str(asset.id)}
-
-    url = out_path.resolve().as_uri()
-    _bind_asset_local_file(asset, url, key)
-    asset.status = "succeeded"
-    asset.error_message = None
-    _record_usage(
-        db,
-        tenant_id=tenant_id,
-        project_id=project.id,
-        scene_id=scene.id,
-        asset_id=asset.id,
-        provider="local_ffmpeg",
-        service_type="video_gen",
-        meta={
-            "ok": True,
-            "tier": tier,
-            "duration_sec": float(duration_sec),
-            **{k: v for k, v in enc.items() if k != "output_path"},
-        },
-    )
-    db.flush()
-    return {"asset_id": str(asset.id)}
 
 
 # Scene planning hits the text LLM with large JSON; local models (e.g. Qwen via LM Studio) may need >10 min/chapter.
@@ -5536,336 +6134,6 @@ def run_phase3_job(self, job_id: str) -> None:
     finally:
         if should_notify and settings is not None:
             notify_job_terminal(jid, settings)
-
-
-def _revision_issue_scene_id(refs: Any, fallback: uuid.UUID | None) -> uuid.UUID | None:
-    if not isinstance(refs, dict):
-        return fallback
-    ids = refs.get("scene_ids")
-    if isinstance(ids, list) and ids:
-        try:
-            return uuid.UUID(str(ids[0]))
-        except (ValueError, TypeError):
-            return fallback
-    return fallback
-
-
-def _persist_revision_issues(
-    db,
-    *,
-    tenant_id: str,
-    project_id: uuid.UUID,
-    report_id: uuid.UUID,
-    issues: list[dict[str, Any]],
-    default_scene_id: uuid.UUID | None,
-) -> None:
-    for it in issues:
-        refs = it.get("refs")
-        sid = _revision_issue_scene_id(refs, default_scene_id)
-        db.add(
-            RevisionIssue(
-                id=uuid.uuid4(),
-                tenant_id=tenant_id,
-                project_id=project_id,
-                critic_report_id=report_id,
-                scene_id=sid,
-                asset_id=None,
-                code=str(it.get("code") or "GENERIC")[:64],
-                severity=str(it.get("severity") or "medium")[:16],
-                message=str(it.get("message") or "")[:8000],
-                refs_json=refs if isinstance(refs, (dict, list)) else None,
-                status="open",
-            )
-        )
-
-
-def _phase4_scene_critique_core(
-    db,
-    *,
-    scene_id: uuid.UUID,
-    tenant_id: str,
-    job_id: uuid.UUID | None,
-    prior_report_id_in: uuid.UUID | None,
-    settings: Any,
-    meta_extra: dict[str, Any] | None = None,
-    prefetched_llm: tuple[dict[str, Any] | None, list[str] | None] | None = None,
-) -> dict[str, Any]:
-    """Scene critic — used by Celery job and autonomous agent run."""
-    sc = db.get(Scene, scene_id)
-    if not sc:
-        raise ValueError("scene not found")
-    ch = db.get(Chapter, sc.chapter_id)
-    if not ch:
-        raise ValueError("chapter not found")
-    project = db.get(Project, ch.project_id)
-    if not project or project.tenant_id != tenant_id:
-        raise ValueError("project not found")
-
-    pol = critic_policy_svc.effective_policy(project, settings)
-    if int(sc.critic_revision_count or 0) >= pol.max_revision_cycles_per_scene:
-        raise ValueError("critic_revision_cap_exceeded")
-
-    cont = phase4_svc.continuity_findings_for_scene(
-        sc,
-        list(db.scalars(select(Scene).where(Scene.chapter_id == ch.id).order_by(Scene.order_index)).all()),
-    )
-    assets = list(db.scalars(select(Asset).where(Asset.scene_id == sc.id)).all())
-    has_ok_image = any(a.asset_type == "image" and a.approved_at is not None for a in assets)
-
-    baseline: float | None = None
-    prior_report_id: uuid.UUID | None = None
-    if prior_report_id_in:
-        prior = db.get(CriticReport, prior_report_id_in)
-        if prior and prior.target_type == "scene" and prior.target_id == sc.id:
-            baseline = prior.score
-            prior_report_id = prior.id
-    if baseline is None and sc.critic_score is not None:
-        baseline = float(sc.critic_score)
-
-    llm_payload = phase4_svc.build_scene_critique_llm_payload(db, sc)
-    llm_u: list[dict[str, Any]] = []
-    if prefetched_llm is None:
-        llm_dims, llm_recs = phase4_llm.critique_scene_llm(
-            llm_payload, settings=settings, usage_sink=llm_u
-        )
-    else:
-        llm_dims, llm_recs = prefetched_llm
-    _flush_llm_usage(db, tenant_id, project.id, sc.id, None, llm_u)
-
-    score, passed, dims, issues, recs = phase4_svc.merge_heuristic_scene_critique(
-        continuity_issues=cont,
-        has_approved_image=has_ok_image,
-        dimensions_llm=llm_dims,
-        recommendations_llm=llm_recs,
-        threshold=pol.pass_threshold,
-        missing_dimension_default=pol.missing_dimension_default,
-        dimension_invalid_fallback=pol.dimension_invalid_fallback,
-    )
-
-    meta = {
-        "revision_index": int(sc.critic_revision_count or 0) + 1,
-        "threshold": pol.pass_threshold,
-    }
-    if meta_extra:
-        meta.update(meta_extra)
-
-    rep = CriticReport(
-        id=uuid.uuid4(),
-        tenant_id=tenant_id,
-        project_id=project.id,
-        target_type="scene",
-        target_id=sc.id,
-        job_id=job_id,
-        score=score,
-        passed=passed,
-        dimensions_json=dims,
-        issues_json=issues,
-        recommendations_json=recs,
-        continuity_json={"findings": cont},
-        baseline_score=baseline,
-        prior_report_id=prior_report_id,
-        meta_json=meta,
-    )
-    db.add(rep)
-    db.flush()
-    _persist_revision_issues(
-        db,
-        tenant_id=tenant_id,
-        project_id=project.id,
-        report_id=rep.id,
-        issues=issues,
-        default_scene_id=sc.id,
-    )
-
-    sc.critic_score = score
-    sc.critic_passed = passed
-    sc.critic_revision_count = int(sc.critic_revision_count or 0) + 1
-
-    return {"critic_report_id": str(rep.id), "score": score, "passed": passed}
-
-
-def _phase4_scene_critique(db, job: Job, settings: Any) -> dict[str, Any]:
-    payload = job.payload or {}
-    praw = payload.get("prior_report_id")
-    return _phase4_scene_critique_core(
-        db,
-        scene_id=uuid.UUID(str(payload["scene_id"])),
-        tenant_id=str(payload.get("tenant_id") or settings.default_tenant_id),
-        job_id=job.id,
-        prior_report_id_in=uuid.UUID(str(praw)) if praw else None,
-        settings=settings,
-        meta_extra=None,
-    )
-
-
-def _phase4_chapter_critique_core(
-    db,
-    *,
-    chapter_id: uuid.UUID,
-    tenant_id: str,
-    job_id: uuid.UUID | None,
-    settings: Any,
-    meta_extra: dict[str, Any] | None = None,
-    prefetched_llm: tuple[dict[str, Any] | None, list[str] | None] | None = None,
-) -> dict[str, Any]:
-    ch = db.get(Chapter, chapter_id)
-    if not ch:
-        raise ValueError("chapter not found")
-    project = db.get(Project, ch.project_id)
-    if not project or project.tenant_id != tenant_id:
-        raise ValueError("project not found")
-
-    scenes = list(
-        db.scalars(select(Scene).where(Scene.chapter_id == ch.id).order_by(Scene.order_index)).all()
-    )
-    rollup = phase4_svc.chapter_continuity_rollup(scenes)
-    llm_payload = phase4_svc.build_chapter_critique_llm_payload(db, ch)
-    llm_u: list[dict[str, Any]] = []
-    if prefetched_llm is None:
-        llm_dims, llm_recs = phase4_llm.critique_chapter_llm(
-            llm_payload, settings=settings, usage_sink=llm_u
-        )
-    else:
-        llm_dims, llm_recs = prefetched_llm
-    _flush_llm_usage(db, tenant_id, project.id, None, None, llm_u)
-
-    pol = critic_policy_svc.effective_policy(project, settings)
-    score, passed, dims, issues, recs = phase4_svc.chapter_aggregate_from_scenes(
-        scenes,
-        target_duration_sec=ch.target_duration_sec,
-        chapter_dims_llm=llm_dims,
-        continuity_rollup=rollup,
-        threshold_ratio=pol.chapter_min_scene_pass_ratio,
-        min_aggregate_score=pol.chapter_pass_score_threshold,
-        missing_dimension_default=pol.missing_dimension_default,
-        dimension_invalid_fallback=pol.dimension_invalid_fallback,
-    )
-    if llm_recs:
-        recs = list(dict.fromkeys(recs + llm_recs))[:20]
-
-    meta = {
-        "threshold_scene_pass_ratio": pol.chapter_min_scene_pass_ratio,
-        "threshold_chapter_aggregate_score": pol.chapter_pass_score_threshold,
-    }
-    if meta_extra:
-        meta.update(meta_extra)
-
-    rep = CriticReport(
-        id=uuid.uuid4(),
-        tenant_id=tenant_id,
-        project_id=project.id,
-        target_type="chapter",
-        target_id=ch.id,
-        job_id=job_id,
-        score=score,
-        passed=passed,
-        dimensions_json=dims,
-        issues_json=issues,
-        recommendations_json=recs,
-        continuity_json=rollup,
-        baseline_score=None,
-        prior_report_id=None,
-        meta_json=meta,
-    )
-    db.add(rep)
-    db.flush()
-    _persist_revision_issues(
-        db,
-        tenant_id=tenant_id,
-        project_id=project.id,
-        report_id=rep.id,
-        issues=issues,
-        default_scene_id=None,
-    )
-
-    ch.critic_gate_status = "passed" if passed else "blocked"
-
-    return {"critic_report_id": str(rep.id), "score": score, "passed": passed}
-
-
-def _phase4_chapter_critique(db, job: Job, settings: Any) -> dict[str, Any]:
-    payload = job.payload or {}
-    return _phase4_chapter_critique_core(
-        db,
-        chapter_id=uuid.UUID(str(payload["chapter_id"])),
-        tenant_id=str(payload.get("tenant_id") or settings.default_tenant_id),
-        job_id=job.id,
-        settings=settings,
-        meta_extra=None,
-    )
-
-
-def _scene_critic_revision_apply_from_latest_report(
-    db,
-    sc: Scene,
-    project: Project,
-    settings: Any,
-) -> tuple[str, uuid.UUID | None]:
-    """
-    Rewrite scene narration from latest scene critic report (same logic as scene_critic_revision job).
-    Returns (mode, prior_report_id).
-    """
-    report = db.scalars(
-        select(CriticReport)
-        .where(CriticReport.target_type == "scene", CriticReport.target_id == sc.id)
-        .order_by(desc(CriticReport.created_at))
-        .limit(1)
-    ).first()
-    if not report:
-        return "skip", None
-
-    recs: list[str] = []
-    if isinstance(report.recommendations_json, list):
-        recs = [str(x) for x in report.recommendations_json if x is not None][:20]
-    if not recs and isinstance(report.issues_json, list):
-        for it in report.issues_json[:12]:
-            if isinstance(it, dict) and it.get("message"):
-                recs.append(str(it["message"])[:2000])
-
-    llm_u: list[dict[str, Any]] = []
-    new_t = phase4_llm.revise_scene_narration_llm(
-        purpose=sc.purpose,
-        narration_text=sc.narration_text,
-        recommendations=recs or ["Tighten clarity for spoken documentary VO."],
-        settings=settings,
-        narration_style=effective_narration_style(
-            project.narration_style, settings, db=db, tenant_id=project.tenant_id
-        ),
-        usage_sink=llm_u,
-    )
-    _flush_llm_usage(db, project.tenant_id, project.id, sc.id, None, llm_u)
-    mode = "llm"
-    if not new_t:
-        note = (recs[0] if recs else "Critic follow-up")[:1200]
-        base = (sc.narration_text or "").strip()
-        new_t = f"{base}\n\n[Editor revision: {note}]".strip() if base else note
-        mode = "fallback"
-
-    sc.narration_text = sanitize_jsonb_text(new_t, 12_000)
-    if sc.critic_passed is False:
-        sc.critic_passed = None
-
-    return mode, report.id
-
-
-def _phase4_scene_critic_revision(db, job: Job, settings: Any) -> dict[str, Any]:
-    payload = job.payload or {}
-    sid = uuid.UUID(str(payload["scene_id"]))
-    sc = db.get(Scene, sid)
-    if not sc:
-        raise ValueError("scene not found")
-    ch = db.get(Chapter, sc.chapter_id)
-    if not ch:
-        raise ValueError("chapter not found")
-    project = db.get(Project, ch.project_id)
-    if not project:
-        raise ValueError("project not found")
-
-    mode, rid = _scene_critic_revision_apply_from_latest_report(db, sc, project, settings)
-    if mode == "skip":
-        raise ValueError("no critic report for scene; run scene critique first")
-
-    return {"scene_id": str(sid), "revision_mode": mode, "prior_critic_report_id": str(rid) if rid else ""}
 
 
 def _agent_run_repair_failing_scenes(
@@ -6425,7 +6693,13 @@ def _attach_latest_music_bed_if_missing(
     )
 
 
-def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
+def _final_cut(
+    db,
+    job: Job,
+    settings: Any,
+    *,
+    export_ffmpeg_registry: ExportFfmpegRegistry | None = None,
+) -> dict[str, Any]:
     payload = job.payload or {}
     tv_id = uuid.UUID(str(payload["timeline_version_id"]))
     tenant = str(payload.get("tenant_id") or settings.default_tenant_id)
@@ -6450,10 +6724,12 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
     rough_p = storage_root / "exports" / str(project_id) / str(tv_id) / "rough_cut.mp4"
     if not path_is_readable_file(fine_p) and not path_is_readable_file(rough_p):
         log.info("final_cut_prerun_rough_cut", timeline_version_id=str(tv_id), project_id=str(project_id))
-        _rough_cut(db, job, settings)
-        # Commit the rough_cut DB state (tv.render_status, tv.output_url) before refreshing so
-        # that a subsequent final_cut failure doesn't leave the DB in an inconsistent state
-        # (file on disk, but DB still showing the pre-rough-cut render_status).
+        _rough_cut(db, job, settings, export_ffmpeg_registry=export_ffmpeg_registry)
+        # Use a distinct "compiling_final" status rather than the standalone rough-cut status
+        # ("compiled") so the UI accurately reflects that the rough cut exists but the final
+        # encode is still in progress. If _final_cut fails after this point the DB is left in
+        # "compiling_final", not "compiled" — which correctly signals "re-run final_cut".
+        tv.render_status = "compiling_final"
         db.commit()
         db.refresh(tv)
         rough_p = storage_root / "exports" / str(project_id) / str(tv_id) / "rough_cut.mp4"
@@ -6572,7 +6848,7 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
             sum_expanded_sec=sum_e,
             base_video_sec=vid_len,
         )
-        _rough_cut(db, job, settings, manifest_override=manifest_exp)
+        _rough_cut(db, job, settings, manifest_override=manifest_exp, export_ffmpeg_registry=export_ffmpeg_registry)
         if path_is_readable_file(fine_p):
             try:
                 fine_p.unlink()
@@ -6585,6 +6861,9 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
                 _fine_cut(db, job, settings)
             except ValueError as e:
                 log.warning("final_cut_fine_cut_after_narration_expand_failed", error=str(e)[:400])
+        # Same "compiling_final" intermediate status as above — distinguishes this from a
+        # standalone rough cut while the final encode is still running.
+        tv.render_status = "compiling_final"
         db.commit()
         db.refresh(tv)
         base_video = fine_p if path_is_readable_file(fine_p) else rough_p
@@ -6626,6 +6905,7 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
             ffmpeg_bin=ffmpeg_bin,
             ffprobe_bin=ffprobe_bin,
             timeout_sec=float(settings.ffmpeg_timeout_sec),
+            export_ffmpeg_registry=export_ffmpeg_registry,
         )
         mux_meta = {
             **mux_meta,
@@ -6782,6 +7062,7 @@ def _rough_cut(
     settings: Any,
     *,
     manifest_override: list[dict[str, Any]] | None = None,
+    export_ffmpeg_registry: ExportFfmpegRegistry | None = None,
 ) -> dict[str, Any]:
     payload = job.payload or {}
     tv_id = uuid.UUID(str(payload["timeline_version_id"]))
@@ -6882,6 +7163,7 @@ def _rough_cut(
                     ffprobe_bin=ffprobe_bin,
                     timeout_sec=float(settings.ffmpeg_timeout_sec),
                     image_batch_crossfade_sec=clip_xf,
+                    export_ffmpeg_registry=export_ffmpeg_registry,
                 )
                 compile_meta["export_chapter_title_card_sec"] = card_sec
             elif len(types) > 1:
@@ -6909,6 +7191,7 @@ def _rough_cut(
                     ffprobe_bin=ffprobe_bin,
                     timeout_sec=float(settings.ffmpeg_timeout_sec),
                     image_batch_crossfade_sec=clip_xf,
+                    export_ffmpeg_registry=export_ffmpeg_registry,
                 )
             elif types == {"video"}:
                 video_segments: list[Any] = []
@@ -6926,6 +7209,7 @@ def _rough_cut(
                     ffprobe_bin=ffprobe_bin,
                     timeout_sec=float(settings.ffmpeg_timeout_sec),
                     image_batch_crossfade_sec=0.0,
+                    export_ffmpeg_registry=export_ffmpeg_registry,
                 )
             elif types == {"image"}:
                 slides: list[tuple[Path, float]] = []
@@ -6944,9 +7228,10 @@ def _rough_cut(
                     height=eh,
                     ffmpeg_bin=ffmpeg_bin,
                     timeout_sec=float(settings.ffmpeg_timeout_sec),
-                    motion="none",
+                    motion="pan",
                     crossfade_sec=clip_xf,
                     slow_zoom=False,
+                    export_ffmpeg_registry=export_ffmpeg_registry,
                 )
             else:
                 raise ValueError("ROUGH_CUT_FFMPEG: unsupported asset_type for compile")

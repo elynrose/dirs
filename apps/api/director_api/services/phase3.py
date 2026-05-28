@@ -6,11 +6,21 @@ import re
 from typing import Any
 
 from director_api.db.models import Chapter, Project
+from director_api.services.character_prompt import (
+    character_prefix_from_chunks as _character_prefix_from_chunks,
+)
 from director_api.services.project_frame import image_prompt_aspect_phrase
 from director_api.services.research_service import sanitize_jsonb_text
 
 # Match HTTP + worker gates to ``build_scene_plan_batch`` (script preferred, else summary).
 MIN_CHARS_FOR_SCENE_PLANNING = 12
+
+# Placeholder stored on scenes when ``Project.no_narration`` is true — auto TTS skips text shorter than 2 chars.
+NO_NARRATION_SCENE_TEXT = "."
+
+
+def project_no_narration(project: Project) -> bool:
+    return bool(getattr(project, "no_narration", False))
 
 _STOCK_QUERY_STOPWORDS = frozenset(
     {
@@ -155,20 +165,111 @@ def _illustrative_visual_preset_ids() -> frozenset[str]:
     return frozenset({"three_d_animation", "hand_drawn_2d", "flat_infographic"})
 
 
+def _parse_visual_preset_id(visual_style: str | None) -> str:
+    s = (visual_style or "").strip()
+    if s.lower().startswith("preset:"):
+        return s.split(":", 1)[1].strip().lower()
+    return ""
+
+
+def _free_text_suggests_historical(visual_style: str | None) -> bool:
+    """True when the project uses custom (non-preset) visual_style text that implies an ancient/historical setting."""
+    s = (visual_style or "").strip()
+    if not s or s.lower().startswith("preset:"):
+        return False
+    low = s.lower()
+    keys = (
+        "ancient",
+        "biblical",
+        "iron age",
+        "bronze age",
+        "medieval",
+        "byzantine",
+        "roman empire",
+        "first century",
+        "second temple",
+        "levant",
+        "pre-industrial",
+        "period accuracy",
+        "historical reenactment",
+        "no modern",
+        "anachron",
+        "old testament",
+        "new testament",
+        "exodus",
+        "jerusalem",
+    )
+    return any(k in low for k in keys)
+
+
+def _free_text_historical_is_archival_flavor(visual_style: str | None) -> bool:
+    s = (visual_style or "").lower()
+    return "archival" in s or "sepia" in s or "monochrome" in s
+
+
+def _free_text_historical_is_epic_flavor(visual_style: str | None) -> bool:
+    s = (visual_style or "").lower()
+    return "epic" in s or "torchlight" in s or "golden hour" in s or "sword" in s
+
+
 def _image_prompt_boilerplate_for_project(project: Project) -> str:
     shape = image_prompt_aspect_phrase(getattr(project, "frame_aspect_ratio", None))
     vs = (getattr(project, "visual_style", None) or "").strip()
-    pid = ""
-    if vs.lower().startswith("preset:"):
-        pid = vs.split(":", 1)[1].strip().lower()
+    pid = _parse_visual_preset_id(vs)
     if pid in _illustrative_visual_preset_ids():
         return (
             f"Single full-frame key visual, {shape}, editorial composition. "
             "Follow the VISUAL TREATMENT below for medium and look (may be non-photoreal when so stated). "
             "No arbitrary watermark or unrelated on-image branding. Visual treatment: "
         )
+    if pid == "archival_historical":
+        return (
+            f"Single photoreal still frame, {shape}, as if from a period-appropriate camera or scanned archival source — "
+            "period-accurate subjects, materials, props, and environment; monochrome or sepia-friendly with believable "
+            "grain and aging; no modern technology or anachronisms unless the program explicitly addresses the present. "
+            "No on-image typography, captions, logos, or watermarks. "
+            "STRICTLY AVOID illustration, cartoon, clean vector, painterly faux-vintage, or stylized caricature of history "
+            "unless the visual treatment below explicitly names that medium. Visual treatment: "
+        )
+    if pid == "cinematic_historical_epic":
+        return (
+            f"Single photoreal still frame, {shape}, as if from a prestige historical epic — "
+            "live cast in period wardrobe on practical sets or real locations; motivated practical or golden-hour light; "
+            "accurate architecture, tools, and materials visible in frame; no modern objects unless the story demands it. "
+            "No on-image typography, captions, logos, or watermarks. "
+            "STRICTLY AVOID illustration, matte-painting storybook epic, game cinematic abandon of photographic skin, "
+            "or stylized fantasy poster art unless the visual treatment below explicitly names that medium. Visual treatment: "
+        )
+    if not pid and _free_text_suggests_historical(vs):
+        if _free_text_historical_is_epic_flavor(vs) and not _free_text_historical_is_archival_flavor(vs):
+            return (
+                f"Single photoreal still frame, {shape}, cinematic historical epic photography — "
+                "period-accurate costume, props, architecture, and technology in frame; motivated dramatic light; "
+                "no modern anachronisms unless the program explicitly discusses modernity. "
+                "No on-image typography, captions, logos, or watermarks. "
+                "STRICTLY AVOID illustration, cartoon, anime, clipart, vector poster, painterly concept art, "
+                "or stylized graphic-novel rendering unless the visual treatment below explicitly names that medium. "
+                "Visual treatment: "
+            )
+        if _free_text_historical_is_archival_flavor(vs):
+            return (
+                f"Single photoreal still frame, {shape}, authentic archival or period-camera photography — "
+                "believable grain, period-accurate subjects and materials; no modern items unless stated in the program. "
+                "No on-image typography, captions, logos, or watermarks. "
+                "STRICTLY AVOID illustration, cartoon, clean vector, painterly faux-vintage unless the visual treatment "
+                "below explicitly names that medium. Visual treatment: "
+            )
+        return (
+            f"Single photoreal still frame, {shape}, period-accurate to the story's era and geography — "
+            "authentic materials, wardrobe, architecture, and technology in frame; no modern anachronisms unless the "
+            "program explicitly addresses the present. "
+            "No on-image typography, captions, logos, or watermarks. "
+            "STRICTLY AVOID illustration, cartoon, anime, clipart, vector poster, comic linework, painterly concept art, "
+            "storybook watercolor, or stylized graphic-novel rendering unless the visual treatment below explicitly names "
+            "that medium. Visual treatment: "
+        )
     return (
-        f"Single photoreal still frame, {shape}, as if from a documentary or prestige film camera — "
+        f"Single photoreal still frame, {shape}, cinematic observational photography — "
         "sharp hero subject, readable real-world environment, natural motivated light, accurate materials and skin "
         "texture. No on-image typography, captions, logos, or watermarks. "
         "STRICTLY AVOID illustration, cartoon, anime, clipart, vector poster, comic linework, painterly concept art, "
@@ -176,18 +277,57 @@ def _image_prompt_boilerplate_for_project(project: Project) -> str:
         "that medium. Visual treatment: "
     )
 
+
+def video_prompt_lead_for_project(project: Project) -> str:
+    """Opening clause for seed ``video_prompt`` rows (deterministic scene planning before LLM refinement)."""
+    vs = (getattr(project, "visual_style", None) or "").strip()
+    pid = _parse_visual_preset_id(vs)
+    if pid in _illustrative_visual_preset_ids():
+        return (
+            "Gentle motion: subtle hold or slow push; keep the same designed world and subjects as the still. Beat context: "
+        )
+    if pid == "archival_historical":
+        return (
+            "Observational period motion: very slow push or gentle pan; soft grain; maintain the same subject and "
+            "setting as the scene still. Beat context: "
+        )
+    if pid == "cinematic_historical_epic":
+        return (
+            "Epic period-film motion: slow dolly or push; motivated torchlight or golden hour; maintain the same "
+            "subject and setting as the scene still. Beat context: "
+        )
+    if not pid and _free_text_suggests_historical(vs):
+        if _free_text_historical_is_epic_flavor(vs) and not _free_text_historical_is_archival_flavor(vs):
+            return (
+                "Epic period motion: slow camera move; dramatic but motivated light; same subject and setting as the still. "
+                "Beat context: "
+            )
+        if _free_text_historical_is_archival_flavor(vs):
+            return (
+                "Archival-feel motion: minimal drift or slow push; period setting locked; same subject as the still. "
+                "Beat context: "
+            )
+        return (
+            "Period-appropriate motion: slow camera move; no modern elements; same subject and setting as the still. "
+            "Beat context: "
+        )
+    return (
+        "Cinematic motion: subtle slow push-in, stable framing, shallow depth of field; "
+        "maintain the same subject and setting as the scene still. Beat context: "
+    )
+
+
 _DEFAULT_SCENE_NEGATIVE_PROMPT = (
     "text, watermark, logo, subtitles, UI, deformed anatomy, extra limbs, blurry, low resolution, "
     "oversaturated, cartoon, anime, illustration, clipart, vector art, comic book, sketch, digital painting, "
-    "concept art, painterly, storybook art, collage, split screen"
+    "concept art, painterly, storybook art, collage, split screen, "
+    # Framing-safety tokens — Flux/SD without these regularly clips a portion
+    # of the head, especially on tight shots ([CU]/[MS]/[OTS]) and torch-lit
+    # close-ups. Listing the failure mode explicitly steers the sampler away.
+    "cropped head, cropped face, head out of frame, face cut off, decapitated subject, "
+    "headless figure, head touching upper frame edge, top of head clipped, hairline clipped, "
+    "partial face, partial subject, subject too close to edge, awkward crop, off-center crop"
 )
-
-# Motion / camera brief for generative video and for coarse FFmpeg Ken Burns hints (local still→video).
-_VIDEO_PROMPT_LEAD = (
-    "Documentary clip motion: subtle slow push-in, observational handheld stability, shallow depth of field; "
-    "maintain the same subject and setting as the scene still. Beat context: "
-)
-
 
 def chapter_eligible_for_scene_planning(chapter: Chapter, *, min_chars: int = MIN_CHARS_FOR_SCENE_PLANNING) -> bool:
     """True if chapter has enough script_text or a substantive (non-outline) summary for scene planning."""
@@ -369,6 +509,7 @@ def build_scene_plan_batch(
     min_scenes: int = 0,
     scene_clip_duration_sec: int | None = None,
     character_consistency_prefix: str | None = None,
+    character_bible_chunks: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build scene-plan-batch/v1 from chapter script (no LLM)."""
     script = (chapter.script_text or "").strip()
@@ -441,11 +582,12 @@ def build_scene_plan_batch(
         head = f"{_boiler}{style}{_tail}"
         narr_room = max(200, 4000 - len(head))
         narr_excerpt = narr_clean[: min(1400, narr_room)]
-        _vp_room = max(120, 3000 - len(_VIDEO_PROMPT_LEAD))
+        _v_lead = video_prompt_lead_for_project(project)
+        _vp_room = max(120, 3000 - len(_v_lead))
         pp: dict[str, Any] = {
             "image_prompt": sanitize_jsonb_text(head + narr_excerpt, 4000),
             "video_prompt": sanitize_jsonb_text(
-                _VIDEO_PROMPT_LEAD + narr_clean[: min(900, _vp_room)],
+                _v_lead + narr_clean[: min(900, _vp_room)],
                 3000,
             ),
             "negative_prompt": _DEFAULT_SCENE_NEGATIVE_PROMPT,
@@ -454,12 +596,28 @@ def build_scene_plan_batch(
         tags = [chapter_tag, f"scene_{idx + 1}", vtype]
         img_p = project.preferred_image_provider
         vid_p = project.preferred_video_provider
-        _embed_character_prefix_in_prompt_package(pp, character_consistency_prefix)
+        # Filter bible to characters mentioned in this scene; fall back to the
+        # caller-supplied legacy prefix only when no chunks were passed.
+        if character_bible_chunks is not None:
+            scene_text_for_bible = " ".join(
+                [
+                    str(narr_clean or ""),
+                    str(purpose or ""),
+                    str(chapter.title or ""),
+                ]
+            )
+            scene_prefix = _character_prefix_from_chunks(
+                character_bible_chunks, scene_text=scene_text_for_bible
+            )
+            _embed_character_prefix_in_prompt_package(pp, scene_prefix)
+        else:
+            _embed_character_prefix_in_prompt_package(pp, character_consistency_prefix)
+        narr_stored = NO_NARRATION_SCENE_TEXT if project_no_narration(project) else narr_clean
         row: dict[str, Any] = {
             "order_index": idx,
             "purpose": purpose,
             "planned_duration_sec": planned,
-            "narration_text": narr_clean,
+            "narration_text": narr_stored,
             "visual_type": vtype,
             "prompt_package_json": pp,
             "continuity_tags_json": tags,
@@ -489,6 +647,7 @@ def build_extend_scene_deterministic(
     last_visual_type: str,
     visual_style_prompt: str,
     character_consistency_prefix: str | None = None,
+    character_bible_chunks: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Single-scene plan when LLM refinement is skipped (e.g. agent_run_fast)."""
     script = (chapter.script_text or "").strip()
@@ -532,17 +691,31 @@ def build_extend_scene_deterministic(
     head = f"{_boiler_e}{style}{_ext_tail}"
     narr_room = max(200, 4000 - len(head))
     narr_excerpt = new_narr[: min(1400, narr_room)]
-    _vp_room_e = max(120, 3000 - len(_VIDEO_PROMPT_LEAD))
+    _v_lead_e = video_prompt_lead_for_project(project)
+    _vp_room_e = max(120, 3000 - len(_v_lead_e))
     pp: dict[str, Any] = {
         "image_prompt": sanitize_jsonb_text(head + narr_excerpt, 4000),
         "video_prompt": sanitize_jsonb_text(
-            _VIDEO_PROMPT_LEAD + new_narr[: min(900, _vp_room_e)],
+            _v_lead_e + new_narr[: min(900, _vp_room_e)],
             3000,
         ),
         "negative_prompt": _DEFAULT_SCENE_NEGATIVE_PROMPT,
         "chapter_title": chapter.title,
     }
-    _embed_character_prefix_in_prompt_package(pp, character_consistency_prefix)
+    if character_bible_chunks is not None:
+        scene_text_for_bible = " ".join(
+            [
+                str(new_narr or ""),
+                str(purpose or ""),
+                str(chapter.title or ""),
+            ]
+        )
+        scene_prefix = _character_prefix_from_chunks(
+            character_bible_chunks, scene_text=scene_text_for_bible
+        )
+        _embed_character_prefix_in_prompt_package(pp, scene_prefix)
+    else:
+        _embed_character_prefix_in_prompt_package(pp, character_consistency_prefix)
     tags = [chapter_tag, "extended_scene", vtype]
     img_p = project.preferred_image_provider
     vid_p = project.preferred_video_provider

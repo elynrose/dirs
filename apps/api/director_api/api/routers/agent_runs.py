@@ -17,7 +17,8 @@ from director_api.auth.context import AuthContext
 from director_api.api.schemas.agent_run import AgentRunCreate, AgentRunOut, AgentRunPipelineControl
 from director_api.api.schemas.project import ProjectOut
 from director_api.config import Settings, get_settings
-from director_api.db.models import AgentRun, Project
+from sqlalchemy import select
+from director_api.db.models import AgentRun, Job, Project
 from director_api.db.session import get_db
 from director_api.tasks.worker_tasks import run_agent_run
 from director_api.services.agent_resume import normalize_pipeline_options_for_persist
@@ -29,6 +30,39 @@ router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
 log = structlog.get_logger(__name__)
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "blocked"})
+
+
+def _cascade_stop_to_project_jobs(db: Session, project_id: uuid.UUID | None) -> int:
+    """Write ``payload.stop_requested=True`` into every active Job for ``project_id``.
+
+    The agent-run-level stop flag is only visible to jobs that carry
+    ``payload.agent_run_id`` (auto-pipeline scene jobs). Manual single-scene
+    /generate-image / /generate-video jobs do NOT — they have no agent_run
+    link. Without this cascade, the user's Stop button "stops the run" but
+    in-flight manual jobs ignore it and burn another 5-15 min on the GPU.
+
+    Returns the count of jobs that received the stop signal. Caller commits.
+    """
+    if project_id is None:
+        return 0
+    active = list(
+        db.scalars(
+            select(Job).where(
+                Job.project_id == project_id,
+                Job.status.in_(("queued", "running")),
+            )
+        ).all()
+    )
+    n = 0
+    for j in active:
+        ctrl_payload = dict(j.payload) if isinstance(j.payload, dict) else {}
+        if ctrl_payload.get("stop_requested"):
+            continue
+        ctrl_payload["stop_requested"] = True
+        j.payload = ctrl_payload
+        flag_modified(j, "payload")
+        n += 1
+    return n
 
 
 def _apply_stop_to_agent_run(db: Session, r: AgentRun) -> AgentRun:
@@ -58,9 +92,17 @@ def _apply_stop_to_agent_run(db: Session, r: AgentRun) -> AgentRun:
     # Bumps row version so clients polling ``updated_at`` / SSE see the stop signal immediately
     # (status may stay ``running`` until the worker hits a checkpoint).
     r.updated_at = datetime.now(timezone.utc)
+    # Cascade: project-level Stop should ALSO interrupt in-flight manual jobs
+    # (which have no agent_run_id). See ``_cascade_stop_to_project_jobs``.
+    cascaded = _cascade_stop_to_project_jobs(db, r.project_id)
     db.commit()
     db.refresh(r)
-    log.info("agent_run_stop_requested", agent_run_id=str(r.id), status=r.status)
+    log.info(
+        "agent_run_stop_requested",
+        agent_run_id=str(r.id),
+        status=r.status,
+        cascaded_jobs=cascaded,
+    )
     return r
 
 
@@ -138,6 +180,7 @@ def _project_from_brief(
         preferred_speech_provider=b.preferred_speech_provider,
         frame_aspect_ratio=(b.frame_aspect_ratio or "16:9"),
         clip_frame_fit=coerce_clip_frame_fit(getattr(b, "clip_frame_fit", None)),
+        no_narration=bool(getattr(b, "no_narration", False)),
     )
     db.add(p)
     db.flush()
@@ -155,11 +198,11 @@ def create_agent_run(
     auth_on = bool(get_settings().director_auth_enabled)
     if body.project_id is not None:
         p = db.get(Project, body.project_id)
-        if not p or p.tenant_id != settings.default_tenant_id:
+        if not p or p.tenant_id != auth.tenant_id:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
     else:
-        assert_can_create_project(db, settings.default_tenant_id, auth_enabled=auth_on)
-        p = _project_from_brief(db, settings, body)
+        assert_can_create_project(db, auth.tenant_id, auth_enabled=auth_on)
+        p = _project_from_brief(db, settings, body, tenant_id_override=auth.tenant_id)
 
     po: dict = dict(body.pipeline_options or {})
     if body.brief is not None:
@@ -169,12 +212,44 @@ def create_agent_run(
         po["continue_from_existing"] = True
     po = normalize_pipeline_options_for_persist(po)
     assert_agent_run_pipeline_allowed(
-        po, db=db, tenant_id=settings.default_tenant_id, auth_enabled=auth_on
+        po, db=db, tenant_id=auth.tenant_id, auth_enabled=auth_on
     )
+
+    # Erase-consent gate: if these pipeline options will cause the worker
+    # to re-run outline or replan scenes (force_pipeline_steps containing
+    # "outline"/"scenes", force_replan_scenes=true, or rerun_from_step in
+    # {"outline","scenes"}) AND the existing project has scenes / generated
+    # assets that would be wiped, refuse the request unless
+    # ``pipeline_options.confirm_erase_assets`` is true. The UI catches the
+    # 409 ERASE_CONFIRMATION_REQUIRED payload (with structured scope) and
+    # shows the "Erase all images or video assets to restart?" Yes/No
+    # dialog before re-submitting with the flag set.
+    if body.project_id is not None and p is not None:
+        from director_api.services.erase_consent import (
+            EraseConfirmationRequired,
+            compute_outline_erase_scope,
+            compute_project_replan_erase_scope,
+            options_grant_erase_consent,
+            pipeline_options_imply_outline_wipe,
+            pipeline_options_imply_scenes_wipe,
+        )
+
+        wipe_outline = pipeline_options_imply_outline_wipe(po)
+        wipe_scenes = wipe_outline or pipeline_options_imply_scenes_wipe(po)
+        if (wipe_outline or wipe_scenes) and not options_grant_erase_consent(po):
+            if wipe_outline:
+                scope = compute_outline_erase_scope(p)
+                scope_label = "outline"
+            else:
+                scope = compute_project_replan_erase_scope(p)
+                scope_label = "scenes_replan"
+            if scope.has_content_to_erase:
+                err = EraseConfirmationRequired(scope_label=scope_label, scope=scope)
+                raise HTTPException(status_code=409, detail=err.to_dict())
     starter_uid = int(auth.user_id) if auth.user_id else None
     run = AgentRun(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         project_id=p.id,
         started_by_user_id=starter_uid,
         status="queued",
@@ -203,10 +278,11 @@ def get_agent_run(
     agent_run_id: uuid.UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     r = db.get(AgentRun, agent_run_id)
-    if not r or r.tenant_id != settings.default_tenant_id:
+    if not r or r.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
     return {"data": AgentRunOut.model_validate(r).model_dump(mode="json"), "meta": meta}
 
@@ -216,10 +292,11 @@ def get_agent_run_events(
     agent_run_id: uuid.UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     r = db.get(AgentRun, agent_run_id)
-    if not r or r.tenant_id != settings.default_tenant_id:
+    if not r or r.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
     events = r.steps_json if isinstance(r.steps_json, list) else []
     return {"data": {"events": events}, "meta": meta}
@@ -231,11 +308,12 @@ def post_agent_run_control(
     body: AgentRunPipelineControl,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Pause, resume, or stop the autonomous pipeline (worker honors flags at step boundaries)."""
     r = db.get(AgentRun, agent_run_id)
-    if not r or r.tenant_id != settings.default_tenant_id:
+    if not r or r.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
 
     if body.action == "stop" and r.status in _TERMINAL_STATUSES:
@@ -250,10 +328,11 @@ def delete_agent_run(
     agent_run_id: uuid.UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> Response:
     """Remove a finished agent run row (terminal status only)."""
     r = db.get(AgentRun, agent_run_id)
-    if not r or r.tenant_id != settings.default_tenant_id:
+    if not r or r.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
     if r.status not in _TERMINAL_STATUSES:
         raise HTTPException(

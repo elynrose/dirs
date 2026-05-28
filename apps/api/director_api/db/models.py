@@ -53,6 +53,9 @@ class Project(Base):
         Boolean, default=False, server_default="false"
     )
 
+    # Slideshow / music-only mode: skip TTS and final mux uses visuals + background music (no VO stem).
+    no_narration: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -328,6 +331,35 @@ class ProjectCharacter(Base):
     role_in_story: Mapped[str] = mapped_column(Text)
     visual_description: Mapped[str] = mapped_column(Text)
     time_place_scope_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Canonical lowercase tokens used by the per-scene character-bible filter when
+    # deciding whether this character actually appears in a scene. Replaces the
+    # old "split ``name`` on whitespace" heuristic that matched stopwords like
+    # "the"/"god"/"voice" pulled from names such as
+    # "The Voice of God / Divine Presence" and forced the full bible into every
+    # scene. Empty list ⇒ fall back to filtered ``name`` tokens.
+    match_keys: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+
+    # Tight one-line visual descriptor (e.g. "middle-aged shepherd, gray beard,
+    # brown wool tunic, leather sandals, wooden staff") used by the video-clip
+    # prompt assembler instead of the full ``visual_description`` (often ~700
+    # chars) so the per-scene direction is not drowned out. Empty ⇒ fall back to
+    # first sentence of ``visual_description``.
+    short_visual_tag: Mapped[str] = mapped_column(
+        String(500), nullable=False, default="", server_default=""
+    )
+
+    # Canonical "hero shot" PNG of the character, rendered once from
+    # ``visual_description`` (typically by Flux Dev) and reused as the visual
+    # anchor for all downstream per-scene generation: img2img seed for stills,
+    # first-frame for image-to-video clips, etc. Empty / NULL ⇒ not rendered
+    # yet (the hero-shot generator script populates it).
+    reference_image_url: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -398,6 +430,9 @@ class ResearchClaim(Base):
 
 class Chapter(Base):
     __tablename__ = "chapters"
+    __table_args__ = (
+        UniqueConstraint("project_id", "order_index", name="uq_chapters_project_order"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -423,6 +458,9 @@ class Chapter(Base):
 
 class Scene(Base):
     __tablename__ = "scenes"
+    __table_args__ = (
+        UniqueConstraint("chapter_id", "order_index", name="uq_scenes_chapter_order"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chapter_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("chapters.id", ondelete="CASCADE"), index=True)
@@ -601,7 +639,13 @@ class Job(Base):
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    # Project deletion should not be blocked by historical job rows. Audit/work records survive
+    # the project; the column is set to NULL so DELETE PROJECT cascades through the live data
+    # graph without RESTRICT errors. NO ACTION (the previous default) made deletion impossible
+    # for any project that ever had a job.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -626,8 +670,14 @@ class GenerationArtifact(Base):
     __tablename__ = "generation_artifacts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
-    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    # Same rationale as ``Job.project_id`` — generation artifacts are append-only audit/billing
+    # records that should not block deletion of the project or job they reference.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     provider: Mapped[str] = mapped_column(String(64))
     model_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     params_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
@@ -656,6 +706,9 @@ class TelegramChatStudioSession(Base):
 
 class IdempotencyRecord(Base):
     __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "route", "key", name="uq_idempotency_keys_tenant_route_key"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)

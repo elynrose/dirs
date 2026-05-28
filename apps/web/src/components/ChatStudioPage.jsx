@@ -12,7 +12,8 @@ import {
 const CHAT_RUN_STORAGE_PREFIX = "director_chat_agent_run:";
 const CHAT_STUDIO_STATE_PREFIX = "director_chat_studio_state:";
 const CHAT_STUDIO_LAST_PROJECT_KEY = "director_chat_studio_last_project_id";
-const CHAT_STUDIO_STATE_VERSION = 1;
+const CHAT_STUDIO_DRAFT_KEY = "director_chat_studio_draft";
+const CHAT_STUDIO_STATE_VERSION = 2;
 
 function storageKeyForProject(projectId) {
   return `${CHAT_RUN_STORAGE_PREFIX}${projectId}`;
@@ -40,13 +41,43 @@ function maxSuffixFromIds(rows, letter) {
   return max;
 }
 
+function normalizePersistedBlob(data) {
+  if (!data || typeof data !== "object") return null;
+  const v = data.v;
+  if (v !== 1 && v !== CHAT_STUDIO_STATE_VERSION) return null;
+  return {
+    v: CHAT_STUDIO_STATE_VERSION,
+    agentRunId: typeof data.agentRunId === "string" ? data.agentRunId : "",
+    setupMessages: Array.isArray(data.setupMessages) ? data.setupMessages : [],
+    setupInput: typeof data.setupInput === "string" ? data.setupInput : "",
+    messages: Array.isArray(data.messages) ? data.messages : [],
+    composer: data.composer && typeof data.composer === "object" ? data.composer : null,
+    lastStepsLen: Number.isFinite(Number(data.lastStepsLen)) ? Number(data.lastStepsLen) : 0,
+    doneAnnounced: Boolean(data.doneAnnounced),
+    messageIdSeq: Number.isFinite(Number(data.messageIdSeq)) ? Number(data.messageIdSeq) : 0,
+    setupMsgIdSeq: Number.isFinite(Number(data.setupMsgIdSeq)) ? Number(data.setupMsgIdSeq) : 0,
+    runStatus: typeof data.runStatus === "string" ? data.runStatus : "",
+    timelineVersionId: typeof data.timelineVersionId === "string" ? data.timelineVersionId : "",
+    finalVideoReady: Boolean(data.finalVideoReady),
+    pendingCharacterDrafts: Array.isArray(data.pendingCharacterDrafts) ? data.pendingCharacterDrafts : [],
+  };
+}
+
 function readChatStudioPersistedState(projectId) {
   try {
     const raw = localStorage.getItem(chatStudioStateKey(projectId));
     if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (data.v !== CHAT_STUDIO_STATE_VERSION || !Array.isArray(data.setupMessages)) return null;
-    return data;
+    return normalizePersistedBlob(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function readChatStudioDraftState() {
+  try {
+    const raw = localStorage.getItem(CHAT_STUDIO_DRAFT_KEY);
+    if (!raw) return null;
+    return normalizePersistedBlob(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -58,6 +89,64 @@ function writeChatStudioPersistedState(projectId, payload) {
   } catch {
     /* quota or private mode */
   }
+}
+
+function writeChatStudioDraftState(payload) {
+  try {
+    localStorage.setItem(CHAT_STUDIO_DRAFT_KEY, JSON.stringify(payload));
+  } catch {
+    /* quota or private mode */
+  }
+}
+
+function clearChatStudioDraftState() {
+  try {
+    localStorage.removeItem(CHAT_STUDIO_DRAFT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function composerFieldsFromState(s) {
+  return {
+    title: String(s.title ?? ""),
+    topic: String(s.topic ?? ""),
+    runtime: Math.min(120, Math.max(2, Number(s.runtime) || 10)),
+    frameAspectRatio: s.frameAspectRatio === "9:16" ? "9:16" : "16:9",
+    clipFrameFit: s.clipFrameFit === "letterbox" ? "letterbox" : "center_crop",
+    narrationStyleRef: String(s.narrationStyleRef ?? ""),
+    visualStyleRef: String(s.visualStyleRef ?? ""),
+    audience: String(s.audience ?? "general"),
+    tone: String(s.tone ?? "documentary"),
+    factualStrictness:
+      s.factualStrictness === "strict" || s.factualStrictness === "balanced" || s.factualStrictness === "creative" ?
+        s.factualStrictness
+      : null,
+    musicPreference: String(s.musicPreference ?? ""),
+    researchMinSources:
+      s.researchMinSources !== "" && s.researchMinSources != null && Number.isFinite(Number(s.researchMinSources)) ?
+        Number(s.researchMinSources)
+      : "",
+  };
+}
+
+function buildChatStudioPersistPayload(s) {
+  return {
+    v: CHAT_STUDIO_STATE_VERSION,
+    agentRunId: String(s.agentRunId || ""),
+    setupMessages: s.setupMessages,
+    setupInput: s.setupInput,
+    messages: (s.messages || []).map(messageForStorage),
+    composer: composerFieldsFromState(s),
+    lastStepsLen: s.lastStepsLen,
+    doneAnnounced: s.doneAnnounced,
+    messageIdSeq: s.messageIdSeq,
+    setupMsgIdSeq: s.setupMsgIdSeq,
+    runStatus: String(s.runStatus || ""),
+    timelineVersionId: String(s.timelineVersionId || ""),
+    finalVideoReady: Boolean(s.finalVideoReady),
+    pendingCharacterDrafts: s.pendingCharacterDrafts || [],
+  };
 }
 
 function friendlyStepLine(ev) {
@@ -113,6 +202,8 @@ export function ChatStudioPage({
   onReloadProjects,
   studioProjectId = "",
   onStudioProjectOpen,
+  /** When false (Editor rail), pause polling; in-memory state is kept via App keep-alive. */
+  isPageActive = true,
 }) {
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [title, setTitle] = useState("");
@@ -161,6 +252,57 @@ export function ChatStudioPage({
     setMessages((prev) => [...prev, { id, role, text, ...extra }]);
   }, []);
 
+  const applyComposerFields = useCallback((composer) => {
+    if (!composer || typeof composer !== "object") return;
+    if (typeof composer.title === "string") setTitle(composer.title);
+    if (typeof composer.topic === "string") setTopic(composer.topic);
+    if (Number.isFinite(Number(composer.runtime))) {
+      setRuntime(Math.min(120, Math.max(2, Number(composer.runtime))));
+    }
+    if (composer.frameAspectRatio === "9:16" || composer.frameAspectRatio === "16:9") {
+      setFrameAspectRatio(composer.frameAspectRatio);
+    }
+    if (composer.clipFrameFit === "letterbox" || composer.clipFrameFit === "center_crop") {
+      setClipFrameFit(composer.clipFrameFit);
+    }
+    if (typeof composer.narrationStyleRef === "string") setNarrationStyleRef(composer.narrationStyleRef);
+    if (typeof composer.visualStyleRef === "string") setVisualStyleRef(composer.visualStyleRef);
+    if (typeof composer.audience === "string" && composer.audience.trim()) setAudience(composer.audience.trim());
+    if (typeof composer.tone === "string" && composer.tone.trim()) setTone(composer.tone.trim());
+    if (
+      composer.factualStrictness === "strict" ||
+      composer.factualStrictness === "balanced" ||
+      composer.factualStrictness === "creative"
+    ) {
+      setFactualStrictness(composer.factualStrictness);
+    }
+    if (typeof composer.musicPreference === "string") setMusicPreference(composer.musicPreference);
+    if (composer.researchMinSources === "" || composer.researchMinSources == null) {
+      setResearchMinSources("");
+    } else if (Number.isFinite(Number(composer.researchMinSources))) {
+      setResearchMinSources(Number(composer.researchMinSources));
+    }
+  }, []);
+
+  const restorePersistedThread = useCallback((persisted) => {
+    if (!persisted) return;
+    setSetupMessages(persisted.setupMessages);
+    setSetupInput(persisted.setupInput || "");
+    setupMsgIdRef.current =
+      persisted.setupMsgIdSeq > 0 ? persisted.setupMsgIdSeq : maxSuffixFromIds(persisted.setupMessages, "s");
+    setMessages(persisted.messages);
+    if (persisted.pendingCharacterDrafts.length > 0) {
+      setPendingCharacterDrafts(persisted.pendingCharacterDrafts);
+    }
+    lastStepsLenRef.current = persisted.lastStepsLen >= 0 ? persisted.lastStepsLen : 0;
+    doneAnnouncedRef.current = persisted.doneAnnounced;
+    messageIdRef.current =
+      persisted.messageIdSeq > 0 ? persisted.messageIdSeq : maxSuffixFromIds(persisted.messages, "m");
+    if (persisted.runStatus) setRunStatus(persisted.runStatus);
+    if (persisted.timelineVersionId) setTimelineVersionId(persisted.timelineVersionId);
+    setFinalVideoReady(persisted.finalVideoReady);
+  }, []);
+
   const resetThread = useCallback(() => {
     lastStepsLenRef.current = 0;
     doneAnnouncedRef.current = false;
@@ -196,6 +338,7 @@ export function ChatStudioPage({
         return;
       }
       skipPersistRef.current = true;
+      clearChatStudioDraftState();
       setSelectedProjectId(pid);
       resetThread();
       try {
@@ -236,32 +379,8 @@ export function ChatStudioPage({
             String(persisted.agentRunId).trim()
           : "";
 
-        if (persisted) {
-          setSetupMessages(Array.isArray(persisted.setupMessages) ? persisted.setupMessages : []);
-          if (typeof persisted.setupInput === "string") setSetupInput(persisted.setupInput || "");
-          setupMsgIdRef.current =
-            Number.isFinite(Number(persisted.setupMsgIdSeq)) && Number(persisted.setupMsgIdSeq) > 0 ?
-              Number(persisted.setupMsgIdSeq)
-            : maxSuffixFromIds(persisted.setupMessages, "s");
-          setMessages(Array.isArray(persisted.messages) ? persisted.messages : []);
-          if (Array.isArray(persisted.pendingCharacterDrafts) && persisted.pendingCharacterDrafts.length > 0) {
-            setPendingCharacterDrafts(persisted.pendingCharacterDrafts);
-          }
-          lastStepsLenRef.current =
-            Number.isFinite(Number(persisted.lastStepsLen)) && Number(persisted.lastStepsLen) >= 0 ?
-              Number(persisted.lastStepsLen)
-            : 0;
-          doneAnnouncedRef.current = Boolean(persisted.doneAnnounced);
-          messageIdRef.current =
-            Number.isFinite(Number(persisted.messageIdSeq)) && Number(persisted.messageIdSeq) > 0 ?
-              Number(persisted.messageIdSeq)
-            : maxSuffixFromIds(persisted.messages, "m");
-          if (typeof persisted.runStatus === "string" && persisted.runStatus) setRunStatus(persisted.runStatus);
-          if (typeof persisted.timelineVersionId === "string" && persisted.timelineVersionId) {
-            setTimelineVersionId(persisted.timelineVersionId);
-          }
-          if (typeof persisted.finalVideoReady === "boolean") setFinalVideoReady(persisted.finalVideoReady);
-        }
+        if (persisted?.composer) applyComposerFields(persisted.composer);
+        restorePersistedThread(persisted);
 
         const effectiveRun = blobRun || lsRun;
         if (effectiveRun) {
@@ -289,7 +408,7 @@ export function ChatStudioPage({
         });
       }
     },
-    [resetThread],
+    [resetThread, applyComposerFields, restorePersistedThread],
   );
 
   const pollPipeline = useCallback(async (pid) => {
@@ -424,7 +543,7 @@ export function ChatStudioPage({
   );
 
   useEffect(() => {
-    if (!agentRunId) return;
+    if (!agentRunId || !isPageActive) return;
     let cancelled = false;
     const tick = async () => {
       const r = await api(`/v1/agent-runs/${encodeURIComponent(agentRunId)}`);
@@ -464,14 +583,14 @@ export function ChatStudioPage({
       cancelled = true;
       clearInterval(id);
     };
-  }, [agentRunId, appendMessage, selectedProjectId]);
+  }, [agentRunId, appendMessage, selectedProjectId, isPageActive]);
 
   useEffect(() => {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || !isPageActive) return;
     void pollPipeline(selectedProjectId);
     const id = setInterval(() => void pollPipeline(selectedProjectId), 4000);
     return () => clearInterval(id);
-  }, [selectedProjectId, pollPipeline]);
+  }, [selectedProjectId, pollPipeline, isPageActive]);
 
   const agentRunSidebarFetchPidRef = useRef("");
 
@@ -507,35 +626,65 @@ export function ChatStudioPage({
   }, [selectedProjectId, agentRunsListTick, fetchAgentRunSidebar]);
 
   useEffect(() => {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || !isPageActive) return;
     const id = setInterval(() => void fetchAgentRunSidebar(selectedProjectId, false), 5000);
     return () => clearInterval(id);
-  }, [selectedProjectId, fetchAgentRunSidebar]);
+  }, [selectedProjectId, fetchAgentRunSidebar, isPageActive]);
 
-  /** Persist setup + run transcript and generation snapshot so reload keeps state. */
-  useEffect(() => {
-    if (!selectedProjectId || skipPersistRef.current) return;
-    const payload = {
-      v: CHAT_STUDIO_STATE_VERSION,
-      agentRunId: String(agentRunId || ""),
+  const flushPersistRef = useRef(() => {});
+
+  flushPersistRef.current = () => {
+    if (skipPersistRef.current) return;
+    const snap = {
+      agentRunId,
       setupMessages,
       setupInput,
-      messages: messages.map(messageForStorage),
+      messages,
+      title,
+      topic,
+      runtime,
+      frameAspectRatio,
+      clipFrameFit,
+      narrationStyleRef,
+      visualStyleRef,
+      audience,
+      tone,
+      factualStrictness,
+      musicPreference,
+      researchMinSources,
       lastStepsLen: lastStepsLenRef.current,
       doneAnnounced: doneAnnouncedRef.current,
       messageIdSeq: messageIdRef.current,
       setupMsgIdSeq: setupMsgIdRef.current,
-      runStatus: String(runStatus || ""),
-      timelineVersionId: String(timelineVersionId || ""),
-      finalVideoReady: Boolean(finalVideoReady),
+      runStatus,
+      timelineVersionId,
+      finalVideoReady,
       pendingCharacterDrafts,
     };
-    writeChatStudioPersistedState(selectedProjectId, payload);
-    try {
-      localStorage.setItem(CHAT_STUDIO_LAST_PROJECT_KEY, selectedProjectId);
-    } catch {
-      /* ignore */
+    const payload = buildChatStudioPersistPayload(snap);
+    if (selectedProjectId) {
+      writeChatStudioPersistedState(selectedProjectId, payload);
+      try {
+        localStorage.setItem(CHAT_STUDIO_LAST_PROJECT_KEY, selectedProjectId);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      const hasContent =
+        snap.setupMessages.length > 0 ||
+        snap.messages.length > 0 ||
+        String(snap.setupInput || "").trim() ||
+        String(snap.topic || "").trim() ||
+        String(snap.title || "").trim() ||
+        snap.pendingCharacterDrafts.length > 0;
+      if (hasContent) writeChatStudioDraftState(payload);
+      else clearChatStudioDraftState();
     }
+  };
+
+  /** Persist setup + run transcript, composer fields, and generation snapshot (refresh / navigate). */
+  useEffect(() => {
+    flushPersistRef.current();
   }, [
     selectedProjectId,
     setupMessages,
@@ -547,7 +696,28 @@ export function ChatStudioPage({
     finalVideoReady,
     pendingCharacterDrafts,
     persistVersion,
+    title,
+    topic,
+    runtime,
+    frameAspectRatio,
+    clipFrameFit,
+    narrationStyleRef,
+    visualStyleRef,
+    audience,
+    tone,
+    factualStrictness,
+    musicPreference,
+    researchMinSources,
   ]);
+
+  useEffect(() => {
+    const onBeforeUnload = () => flushPersistRef.current();
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      flushPersistRef.current();
+    };
+  }, []);
 
   const restoredSelectionRef = useRef(false);
   const projectsRef = useRef(projects);
@@ -579,6 +749,23 @@ export function ChatStudioPage({
     }
 
     if (restoredSelectionRef.current) return;
+
+    const draft = readChatStudioDraftState();
+    if (draft) {
+      restoredSelectionRef.current = true;
+      skipPersistRef.current = true;
+      applyComposerFields(draft.composer);
+      restorePersistedThread(draft);
+      if (draft.agentRunId && /^[0-9a-f-]{36}$/i.test(String(draft.agentRunId).trim())) {
+        setAgentRunId(String(draft.agentRunId).trim());
+      }
+      queueMicrotask(() => {
+        skipPersistRef.current = false;
+        setPersistVersion((n) => n + 1);
+      });
+      return;
+    }
+
     let last = "";
     try {
       last = localStorage.getItem(CHAT_STUDIO_LAST_PROJECT_KEY) || "";
@@ -590,7 +777,14 @@ export function ChatStudioPage({
     if (!list.some((p) => String(p.id) === pid)) return;
     restoredSelectionRef.current = true;
     void loadProjectIntoComposer(pid);
-  }, [projectsListIdentityKey, studioProjectId, selectedProjectId, loadProjectIntoComposer]);
+  }, [
+    projectsListIdentityKey,
+    studioProjectId,
+    selectedProjectId,
+    loadProjectIntoComposer,
+    applyComposerFields,
+    restorePersistedThread,
+  ]);
 
   useEffect(() => {
     const el = setupThreadRef.current;
@@ -957,6 +1151,7 @@ export function ChatStudioPage({
               setMusicPreference("");
               setResearchMinSources("");
               resetThread();
+              clearChatStudioDraftState();
               try {
                 localStorage.removeItem(CHAT_STUDIO_LAST_PROJECT_KEY);
               } catch {

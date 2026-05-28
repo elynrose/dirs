@@ -130,6 +130,28 @@ def test_structural_issues_missing_scene_narration_ok_when_optional():
     assert not any(i.get("code") == "missing_scene_narration" for i in issues)
 
 
+def test_structural_issues_no_narration_skips_narration_on_final_cut():
+    """Music-only projects never require scene TTS even on final_cut."""
+    pid = uuid4()
+    db = MagicMock()
+    with (
+        patch("director_api.services.phase5_readiness.scene_image_video_counts", return_value=(2, 2, 0, 2)),
+        patch("director_api.services.phase5_readiness.scene_visual_gate_counts", return_value=(2, 2, 2)),
+        patch("director_api.services.phase5_readiness.scenes_spoken_narration_coverage") as sn,
+        patch("director_api.services.phase5_readiness._scene_narration_disk_issues", return_value=[]),
+    ):
+        issues = _project_structural_issues(
+            db,
+            project_id=pid,
+            storage_root=MagicMock(),
+            export_stage="final_cut",
+            require_scene_narration_tracks=True,
+            no_narration=True,
+        )
+    sn.assert_not_called()
+    assert not any(i.get("code") == "missing_scene_narration" for i in issues)
+
+
 def test_rough_cut_structural_skips_narration_checks():
     pid = uuid4()
     db = MagicMock()

@@ -295,6 +295,27 @@ export function InspectorPipelinePanel({ p }) {
                 <textarea id="topic" value={p.topic} onChange={(e) => p.setTopic(e.target.value)} rows={3} />
                 <label htmlFor="runtime">Runtime minutes</label>
                 <input id="runtime" type="number" min={5} max={120} value={p.runtime} onChange={(e) => p.setRuntime(e.target.value)} />
+                <label
+                  className="brief-automate-option"
+                  style={{ marginTop: 10, marginBottom: 0 }}
+                  title={
+                    p.projectId ?
+                      "Set when the project is created. Start a new project to change this."
+                    : "Skip voice-over TTS; export is a slideshow of stills/clips with background music only."
+                  }
+                >
+                  <input
+                    id="noNarration"
+                    type="checkbox"
+                    checked={Boolean(p.noNarration)}
+                    disabled={Boolean(p.projectId)}
+                    onChange={(e) => p.setNoNarration(e.target.checked)}
+                  />
+                  <span>No narration</span>
+                </label>
+                <p className="subtle" style={{ margin: "4px 0 0", fontSize: "0.78rem", lineHeight: 1.45 }}>
+                  music-only slideshow: scene images or clips are timed to your clip length, with an optional music bed in the final mix. no tts step.
+                </p>
                 <label htmlFor="frameAspect">Picture frame</label>
                 <select
                   id="frameAspect"
@@ -361,8 +382,8 @@ export function InspectorPipelinePanel({ p }) {
                     {allowFullThrough ? (
                       p.autoThrough === "full_video" ? (
                         <>
-                          After scenes and the one-time story vs research check, the worker continues with character bible, scene media, narration,
-                          timeline, and exports.
+                          After scenes and the one-time story vs research check, the worker continues with character bible, scene media,
+                          {p.noNarration ? " timeline, and exports (no TTS — music-only final mix)." : " narration, timeline, and exports."}
                         </>
                       ) : (
                         <>

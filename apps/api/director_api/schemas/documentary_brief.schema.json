@@ -29,6 +29,10 @@
       "type": "string",
       "enum": ["center_crop", "letterbox"],
       "description": "How Pexels / imported stills are fitted to the project frame: center_crop fills and may cut edges; letterbox pads with black bars."
+    },
+    "no_narration": {
+      "type": "boolean",
+      "description": "When true, skip voice-over TTS; final video is visuals plus optional background music only (slideshow style)."
     }
   }
 }

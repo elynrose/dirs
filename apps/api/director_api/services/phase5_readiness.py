@@ -401,11 +401,12 @@ def _project_structural_issues(
     export_stage: ExportStage | None = None,
     allow_unapproved_media: bool = False,
     require_scene_narration_tracks: bool = False,
+    no_narration: bool = False,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     scenes_tot, scenes_img, _vid, scenes_appr_img = scene_image_video_counts(db, project_id)
     _, scenes_succ_visual, scenes_appr_visual = scene_visual_gate_counts(db, project_id)
-    skip_narration_preflight = export_stage == "rough_cut"
+    skip_narration_preflight = export_stage == "rough_cut" or no_narration
     sn_need, sn_ok = (0, 0) if skip_narration_preflight else scenes_spoken_narration_coverage(db, project_id)
 
     if scenes_tot == 0:
@@ -682,6 +683,7 @@ def compute_phase5_readiness(
         export_stage=export_stage,
         allow_unapproved_media=allow_unapproved_media,
         require_scene_narration_tracks=require_scene_narration_tracks,
+        no_narration=bool(getattr(p, "no_narration", False)),
     )
 
     timeline_attention_assets: list[dict[str, Any]] = []

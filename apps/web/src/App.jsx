@@ -1327,6 +1327,8 @@ export default function App() {
   const [frameAspectRatio, setFrameAspectRatio] = useState("16:9");
   /** Pexels / stock import fit: center_crop (fill, may cut edges) vs letterbox (pad). */
   const [clipFrameFit, setClipFrameFit] = useState("center_crop");
+  /** Slideshow / music-only: skip TTS; final export is visuals + background music. */
+  const [noNarration, setNoNarration] = useState(false);
   const [topic, setTopic] = useState(
     "Urban community gardens and neighborhood food security in one mid-size city.",
   );
@@ -4674,6 +4676,7 @@ export default function App() {
             visual_style: `preset:${visId || "cinematic_documentary"}`,
             frame_aspect_ratio: frameAspectRatio === "9:16" ? "9:16" : "16:9",
             clip_frame_fit: clipFrameFit === "letterbox" ? "letterbox" : "center_crop",
+            no_narration: Boolean(noNarration),
             ...briefPreferredMediaProvidersFromAppConfig(appConfig),
           },
           pipeline_options,
@@ -6424,6 +6427,7 @@ export default function App() {
       setRuntime(Number(p.target_runtime_minutes || 15));
       setFrameAspectRatio(p.frame_aspect_ratio === "9:16" ? "9:16" : "16:9");
       setClipFrameFit(p.clip_frame_fit === "letterbox" ? "letterbox" : "center_crop");
+      setNoNarration(Boolean(p.no_narration));
       setUseAllApprovedSceneMedia(Boolean(p.use_all_approved_scene_media));
       setIncludeSpokenDialogueInVideoPrompt(Boolean(p.include_spoken_dialogue_in_video_prompt));
 
@@ -6714,6 +6718,7 @@ export default function App() {
     setRuntime(15);
     setFrameAspectRatio("16:9");
     setClipFrameFit("center_crop");
+    setNoNarration(false);
     queueMicrotask(() => {
       document.getElementById("studio-pipeline-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -7106,7 +7111,23 @@ export default function App() {
         </nav>
         <div className="app-shell__main">
       <StudioPanelErrorBoundary resetKey={activePage}>
-      {activePage === "terms" || activePage === "privacy" || activePage === "copyright" ? (
+      <div
+        className="chat-studio-keepalive"
+        style={{ display: activePage === "chat" ? undefined : "none" }}
+        aria-hidden={activePage !== "chat"}
+        hidden={activePage !== "chat" ? true : undefined}
+      >
+        <ChatStudioPage
+          appConfig={appConfig}
+          stylePresets={stylePresets}
+          projects={projects}
+          onReloadProjects={() => void loadProjects()}
+          studioProjectId={projectId}
+          onStudioProjectOpen={onChatStudioProjectOpen}
+          isPageActive={activePage === "chat"}
+        />
+      </div>
+      {activePage === "chat" ? null : activePage === "terms" || activePage === "privacy" || activePage === "copyright" ? (
         <StudioLegalPage docId={activePage} setActivePage={setActivePage} />
       ) : activePage === "ideas" ? (
         <StudioIdeasPage
@@ -7115,15 +7136,6 @@ export default function App() {
           setAgentRunId={setAgentRunId}
           setProjectId={setProjectId}
           setActivePage={setActivePage}
-        />
-      ) : activePage === "chat" ? (
-        <ChatStudioPage
-          appConfig={appConfig}
-          stylePresets={stylePresets}
-          projects={projects}
-          onReloadProjects={() => void loadProjects()}
-          studioProjectId={projectId}
-          onStudioProjectOpen={onChatStudioProjectOpen}
         />
       ) : activePage === "account" ? (
         <StudioAccountPage
@@ -11866,6 +11878,8 @@ export TELEGRAM_WEBHOOK_SECRET='…'
             setRuntime,
             frameAspectRatio,
             setFrameAspectRatio,
+            noNarration,
+            setNoNarration,
             busy,
             startAgentRun,
             continuePipelineAuto,

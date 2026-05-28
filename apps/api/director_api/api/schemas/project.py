@@ -32,6 +32,10 @@ class ProjectCreate(BaseModel):
         default="center_crop",
         description='Stock/import fit: "center_crop" fills the frame (may crop edges) or "letterbox" scales inside the frame with padding.',
     )
+    no_narration: bool = Field(
+        default=False,
+        description="When true, skip voice-over TTS; exports are visuals plus optional background music only.",
+    )
 
     def brief_dict(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)
@@ -61,6 +65,10 @@ class ProjectPatch(BaseModel):
     include_spoken_dialogue_in_video_prompt: bool | None = Field(
         default=None,
         description="Append optional per-scene video_character_dialogue to generative video prompts (e.g. Veo).",
+    )
+    no_narration: bool | None = Field(
+        default=None,
+        description="When true, skip voice-over TTS; slideshow-style exports use music only.",
     )
 
 
@@ -92,6 +100,7 @@ class ProjectOut(BaseModel):
     frame_aspect_ratio: str = "16:9"
     clip_frame_fit: str = "center_crop"
     include_spoken_dialogue_in_video_prompt: bool = False
+    no_narration: bool = False
     created_at: datetime
     updated_at: datetime
     # Populated on GET /v1/projects list when an automation run is active (queued / running / paused).
@@ -131,7 +140,10 @@ class ProjectOut(BaseModel):
 
 class JobCreate(BaseModel):
     type: str = Field(..., pattern="^adapter_smoke$")
-    provider: str = Field(..., description="openai | lm_studio | openrouter | fal | gemini")
+    provider: str = Field(
+        ...,
+        description="openai | lm_studio | openrouter | fal | gemini | comfyui (aliases: comfy)",
+    )
     project_id: UUID | None = None
 
 

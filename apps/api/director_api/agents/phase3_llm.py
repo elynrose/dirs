@@ -41,10 +41,19 @@ def refine_scene_plan_batch(
     target_duration_sec: int | None = None,
     character_bible: str | None = None,
     frame_aspect_ratio: str | None = None,
+    visual_style_resolved: str | None = None,
     usage_sink: list[dict[str, Any]] | None = None,
+    no_narration: bool = False,
 ) -> dict[str, Any] | None:
     """Return scene-plan-batch/v1 or None to keep seed."""
     sys = get_llm_prompt_text("phase3_scene_plan_refine_base")
+    if no_narration:
+        sys += (
+            " NO_NARRATION MODE (hard rule): this project has no voice-over. Set every scene's "
+            "narration_text to exactly \".\" (a single period). Put the story beat, subjects, and "
+            "visual intent in purpose, image_prompt, and video_prompt instead — not in narration_text. "
+            "Do not write spoken documentary VO."
+        )
     if planning_hints:
         sys += (
             " The user JSON includes planning_hints: blend the seed's editorial structure (paragraph/beat "
@@ -66,7 +75,7 @@ def refine_scene_plan_batch(
             f"stay within about ±35% of that target (roughly {int(t * 0.65)}–{int(t * 1.35)} seconds total). "
             "Adjust per-scene durations or scene splits to hit that band—large drift hurts automated chapter pacing review."
         )
-    if (narration_style or "").strip():
+    if (narration_style or "").strip() and not no_narration:
         sys += " Voice brief for all narration_text: " + (narration_style.strip()[:1200])
     if (character_bible or "").strip():
         sys += (
@@ -85,6 +94,9 @@ def refine_scene_plan_batch(
         "chapter_title": chapter_title,
         "topic": project_topic[:4000],
     }
+    vsr = (visual_style_resolved or "").strip()
+    if vsr:
+        user_obj["visual_style_resolved"] = vsr[:4000]
     if far in ("16:9", "9:16"):
         user_obj["frame_aspect_ratio"] = far
     if target_duration_sec is not None and int(target_duration_sec) > 0:
@@ -139,6 +151,7 @@ def extend_scene_plan_batch(
     scene_clip_sec: int = 10,
     character_bible: str | None = None,
     frame_aspect_ratio: str | None = None,
+    visual_style_resolved: str | None = None,
     usage_sink: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Return scene-plan-batch/v1 with exactly one new scene appended in narrative terms, or None on failure."""
@@ -169,6 +182,9 @@ def extend_scene_plan_batch(
         "topic": (project_topic or "")[:4000],
         "scene_clip_duration_sec": int(scene_clip_sec),
     }
+    vsr_x = (visual_style_resolved or "").strip()
+    if vsr_x:
+        user_obj["visual_style_resolved"] = vsr_x[:4000]
     if far in ("16:9", "9:16"):
         user_obj["frame_aspect_ratio"] = far
     if target_duration_sec is not None and int(target_duration_sec) > 0:

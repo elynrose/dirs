@@ -13,6 +13,8 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from director_api.api.deps import meta_dep, settings_dep
 from director_api.api.tenant_access import get_project_for_tenant, require_project_for_tenant
+from director_api.auth.context import AuthContext
+from director_api.auth.deps import auth_context_dep
 from director_api.db.session import get_db
 from director_api.api.schemas.phase4 import CriticReportOut
 from director_api.api.schemas.agent_run import AgentRunListItem
@@ -36,9 +38,9 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 log = structlog.get_logger(__name__)
 
 
-def _timeline_version_or_404(db: Session, settings: Settings, timeline_version_id: UUID) -> TimelineVersion:
+def _timeline_version_or_404(db: Session, tenant_id: str, timeline_version_id: UUID) -> TimelineVersion:
     tv = db.get(TimelineVersion, timeline_version_id)
-    if not tv or tv.tenant_id != settings.default_tenant_id:
+    if not tv or tv.tenant_id != tenant_id:
         raise HTTPException(
             status_code=404,
             detail={"code": "NOT_FOUND", "message": "timeline version not found"},
@@ -62,6 +64,7 @@ _BRIEF_FIELDS = (
     "preferred_speech_provider",
     "frame_aspect_ratio",
     "clip_frame_fit",
+    "no_narration",
 )
 
 
@@ -83,6 +86,7 @@ def create_project(
     body: ProjectCreate,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     try:
@@ -93,9 +97,9 @@ def create_project(
             status_code=422,
             detail={"code": "VALIDATION_ERROR", "message": str(e)},
         ) from e
-    assert_can_create_project(db, settings.default_tenant_id, auth_enabled=bool(get_settings().director_auth_enabled))
+    assert_can_create_project(db, auth.tenant_id, auth_enabled=bool(get_settings().director_auth_enabled))
     p = Project(
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         title=body.title,
         topic=body.topic,
         status="draft",
@@ -114,6 +118,7 @@ def create_project(
         preferred_speech_provider=body.preferred_speech_provider,
         frame_aspect_ratio=(body.frame_aspect_ratio or "16:9"),
         clip_frame_fit=coerce_clip_frame_fit(getattr(body, "clip_frame_fit", None)),
+        no_narration=bool(getattr(body, "no_narration", False)),
     )
     db.add(p)
     db.commit()
@@ -127,11 +132,12 @@ def list_projects(
     offset: int = 0,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     n = max(1, min(int(limit), 200))
     off = max(0, int(offset))
-    tenant = settings.default_tenant_id
+    tenant = auth.tenant_id
     total = int(
         db.scalar(select(func.count()).select_from(Project).where(Project.tenant_id == tenant)) or 0
     )
@@ -187,10 +193,11 @@ def list_active_project_jobs(
     project_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Queued or running jobs for this project (Studio can resume polling after a browser refresh)."""
-    if get_project_for_tenant(db, project_id, settings.default_tenant_id) is None:
+    if get_project_for_tenant(db, project_id, auth.tenant_id) is None:
         # Same shape as success; avoids Studio "Not Found" when project row is missing or tenant mismatches.
         return {"data": {"jobs": [], "count": 0}, "meta": meta}
     rows = list(
@@ -199,7 +206,7 @@ def list_active_project_jobs(
             .where(
                 and_(
                     Job.project_id == project_id,
-                    Job.tenant_id == settings.default_tenant_id,
+                    Job.tenant_id == auth.tenant_id,
                     Job.status.in_(("queued", "running")),
                 )
             )
@@ -218,14 +225,15 @@ def list_project_agent_runs(
     offset: int = 0,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Hands-off Studio: list autonomous runs for a project (newest first)."""
-    if get_project_for_tenant(db, project_id, settings.default_tenant_id) is None:
+    if get_project_for_tenant(db, project_id, auth.tenant_id) is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
     n = max(1, min(int(limit), 200))
     off = max(0, int(offset))
-    tid = settings.default_tenant_id
+    tid = auth.tenant_id
     total = int(
         db.scalar(
             select(func.count()).select_from(AgentRun).where(
@@ -261,6 +269,7 @@ def get_phase5_readiness(
     project_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
     timeline_version_id: UUID | None = Query(default=None),
     export_stage: Literal["rough_cut", "fine_cut", "final_cut"] | None = Query(default=None),
@@ -291,7 +300,7 @@ def get_phase5_readiness(
                 ),
             },
         )
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     require_project_for_tenant(db, project_id, tenant_id)
     r = compute_phase5_readiness(
         db,
@@ -316,16 +325,17 @@ def approve_all_succeeded_project_assets(
     project_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Approve every succeeded image/video in the project that is not yet approved (export preflight helper)."""
-    require_project_for_tenant(db, project_id, settings.default_tenant_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     now = datetime.now(timezone.utc)
     rows = list(
         db.scalars(
             select(Asset).where(
                 Asset.project_id == project_id,
-                Asset.tenant_id == settings.default_tenant_id,
+                Asset.tenant_id == auth.tenant_id,
                 Asset.status == "succeeded",
                 Asset.asset_type.in_(("image", "video")),
                 Asset.approved_at.is_(None),
@@ -351,12 +361,13 @@ def reject_and_regenerate_rough_cut_timeline_images(
     timeline_version_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
     allow_unapproved_media: bool = Query(default=False),
 ) -> dict:
     """Reject flagged timeline image assets (rough-cut preflight) and queue one ``scene_generate_image`` per affected scene."""
-    project = require_project_for_tenant(db, project_id, settings.default_tenant_id)
-    tv = _timeline_version_or_404(db, settings, timeline_version_id)
+    project = require_project_for_tenant(db, project_id, auth.tenant_id)
+    tv = _timeline_version_or_404(db, auth.tenant_id, timeline_version_id)
     if tv.project_id != project_id:
         raise HTTPException(
             status_code=404,
@@ -413,12 +424,12 @@ def reject_and_regenerate_rough_cut_timeline_images(
         assert_can_enqueue(db, settings, "scene_generate_image", tenant_id=project.tenant_id)
         job = Job(
             id=uuid.uuid4(),
-            tenant_id=settings.default_tenant_id,
+            tenant_id=auth.tenant_id,
             type="scene_generate_image",
             status="queued",
             payload={
                 "scene_id": str(sid),
-                "tenant_id": settings.default_tenant_id,
+                "tenant_id": auth.tenant_id,
                 "generation_tier": "preview",
             },
             project_id=project_id,
@@ -446,12 +457,13 @@ def reconcile_timeline_clip_images(
     timeline_version_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
     allow_unapproved_media: bool = Query(default=False),
 ) -> dict:
     """Rewrite timeline clips to use viable succeeded scene **images or videos** when the current ref is rejected, in-flight, missing, or disallowed."""
-    project = require_project_for_tenant(db, project_id, settings.default_tenant_id)
-    tv = _timeline_version_or_404(db, settings, timeline_version_id)
+    project = require_project_for_tenant(db, project_id, auth.tenant_id)
+    tv = _timeline_version_or_404(db, auth.tenant_id, timeline_version_id)
     if tv.project_id != project_id:
         raise HTTPException(
             status_code=404,
@@ -498,17 +510,18 @@ def list_project_critic_reports(
     limit: int = 50,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Latest critic reports for a project (includes story-vs-research `target_type=project`), newest first."""
-    require_project_for_tenant(db, project_id, settings.default_tenant_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     n = max(1, min(int(limit), 100))
     rows = list(
         db.scalars(
             select(CriticReport)
             .where(
                 CriticReport.project_id == project_id,
-                CriticReport.tenant_id == settings.default_tenant_id,
+                CriticReport.tenant_id == auth.tenant_id,
             )
             .order_by(desc(CriticReport.created_at))
             .limit(n)
@@ -523,9 +536,10 @@ def list_project_audit_events(
     project_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    require_project_for_tenant(db, project_id, settings.default_tenant_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     ch_ids = [c[0] for c in db.execute(select(Chapter.id).where(Chapter.project_id == project_id)).all()]
     sc_ids = [s[0] for s in db.execute(select(Scene.id).join(Chapter).where(Chapter.project_id == project_id)).all()]
     scope_ids = {project_id, *ch_ids, *sc_ids}
@@ -533,7 +547,7 @@ def list_project_audit_events(
         db.scalars(
             select(AuditEvent)
             .where(
-                AuditEvent.tenant_id == settings.default_tenant_id,
+                AuditEvent.tenant_id == auth.tenant_id,
                 AuditEvent.resource_id.in_(scope_ids),
             )
             .order_by(AuditEvent.created_at.desc())
@@ -560,9 +574,10 @@ def get_project(
     project_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    p = require_project_for_tenant(db, project_id, settings.default_tenant_id)
+    p = require_project_for_tenant(db, project_id, auth.tenant_id)
     return {"data": ProjectOut.model_validate(p).model_dump(mode="json"), "meta": meta}
 
 
@@ -572,9 +587,10 @@ def patch_project(
     body: ProjectPatch,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    p = require_project_for_tenant(db, project_id, settings.default_tenant_id)
+    p = require_project_for_tenant(db, project_id, auth.tenant_id)
     data = body.model_dump(exclude_unset=True)
     if not data:
         return {"data": ProjectOut.model_validate(p).model_dump(mode="json"), "meta": meta}
@@ -604,20 +620,21 @@ def delete_project(
     project_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    p = require_project_for_tenant(db, project_id, settings.default_tenant_id)
+    p = require_project_for_tenant(db, project_id, auth.tenant_id)
     try:
         job_ids = [
             j[0]
             for j in db.execute(
-                select(Job.id).where(Job.project_id == project_id, Job.tenant_id == settings.default_tenant_id)
+                select(Job.id).where(Job.project_id == project_id, Job.tenant_id == auth.tenant_id)
             ).all()
         ]
         if job_ids:
             db.execute(delete(GenerationArtifact).where(GenerationArtifact.job_id.in_(job_ids)))
         db.execute(delete(GenerationArtifact).where(GenerationArtifact.project_id == project_id))
-        db.execute(delete(Job).where(Job.project_id == project_id, Job.tenant_id == settings.default_tenant_id))
+        db.execute(delete(Job).where(Job.project_id == project_id, Job.tenant_id == auth.tenant_id))
         db.delete(p)
         db.commit()
     except IntegrityError:
