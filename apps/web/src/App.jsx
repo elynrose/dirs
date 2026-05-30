@@ -29,6 +29,7 @@ import {
   apiSceneNarrationContentUrl,
   apiSceneNarrationSubtitlesUrl,
   apiChatterboxVoiceRefContentUrl,
+  downloadEditorExportZip,
 } from "./lib/api.js";
 import {
   DIRECTOR_UI_SESSION_KEY,
@@ -12278,7 +12279,34 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                       >
                         Export
                       </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy || !projectId || !timelineVersionId}
+                        title="ZIP with media, CapCut draft_content.json, and OpenShot-importable XML"
+                        onClick={async () => {
+                          if (!projectId || !timelineVersionId) return;
+                          setBusy(true);
+                          setError("");
+                          try {
+                            await downloadEditorExportZip(projectId, timelineVersionId, {
+                              allowUnapprovedMedia: pipelineMode === "unattended",
+                            });
+                            showToast("Editor export downloaded (CapCut + OpenShot). See README inside the ZIP.");
+                          } catch (e) {
+                            setError(formatUserFacingError(e));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        CapCut / OpenShot
+                      </button>
                     </div>
+                    <p className="subtle" style={{ marginTop: 8, marginBottom: 6, fontSize: "0.78rem" }}>
+                      CapCut / OpenShot downloads a ZIP: copy the CapCut folder into your CapCut projects directory, or import{" "}
+                      <code>openshot/directely_fcpxml.xml</code> in OpenShot (File → Import → Final Cut Pro XML).
+                    </p>
                     <p className="subtle" style={{ marginTop: 12, marginBottom: 6 }}>
                       <strong>Rough-cut image repair:</strong> try <strong>Reconcile timeline clips</strong> first — it re-points clips at valid
                       scene media (and related sync). Use <strong>Reject &amp; regen flagged stills</strong> only when flagged stills are bad and you

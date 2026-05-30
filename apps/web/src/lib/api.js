@@ -58,6 +58,45 @@ export function apiCompiledVideoUrl(projectId, timelineVersionId, { download = f
   return apiPath(`/v1/projects/${pid}/timeline-versions/${tid}/compiled-video${q ? `?${q}` : ""}`);
 }
 
+/**
+ * ZIP with CapCut draft + OpenShot-importable FCP XML and copied media.
+ */
+export function apiEditorExportZipUrl(projectId, timelineVersionId, { allowUnapprovedMedia = false } = {}) {
+  const pid = encodeURIComponent(String(projectId));
+  const tid = encodeURIComponent(String(timelineVersionId));
+  const params = new URLSearchParams();
+  appendMediaAuthQueryParams(params);
+  if (allowUnapprovedMedia) params.set("allow_unapproved_media", "true");
+  const q = params.toString();
+  return apiPath(`/v1/projects/${pid}/timeline-versions/${tid}/editor-export.zip${q ? `?${q}` : ""}`);
+}
+
+/** Fetch editor export ZIP and trigger browser download (uses session cookies). */
+export async function downloadEditorExportZip(projectId, timelineVersionId, opts = {}) {
+  const url = apiEditorExportZipUrl(projectId, timelineVersionId, opts);
+  const r = await api(url);
+  if (!r.ok) {
+    const body = await r.json().catch(() => null);
+    const msg =
+      body?.detail?.message ||
+      (typeof body?.detail === "string" ? body.detail : null) ||
+      `Download failed (HTTP ${r.status})`;
+    throw new Error(msg);
+  }
+  const blob = await r.blob();
+  const cd = r.headers.get("Content-Disposition") || "";
+  const m = /filename="?([^";\n]+)"?/i.exec(cd);
+  const filename = m?.[1]?.trim() || "directely_capcut_openshot.zip";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
 /** Chapter-level narration WAV URL. */
 export function apiChapterNarrationContentUrl(chapterId, cacheBust) {
   const v = cacheBust != null && String(cacheBust).trim() !== "" ? String(cacheBust) : "0";

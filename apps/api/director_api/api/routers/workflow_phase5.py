@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Annotated
@@ -10,6 +12,7 @@ from uuid import UUID
 import jsonschema
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.background import BackgroundTask
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -40,6 +43,7 @@ from director_api.api.schemas.phase5 import (
 from director_api.config import Settings, get_settings
 from director_api.db.models import Chapter, Job, MusicBed, NarrationTrack, Project, Scene, TimelineVersion
 from director_api.db.session import get_db
+from director_api.services.editor_project_export import build_editor_export_plan, write_editor_export_zip
 from director_api.services.job_quota import assert_can_enqueue
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.tasks.job_enqueue import enqueue_job_task
@@ -387,6 +391,61 @@ def get_project_timeline_compiled_video(
     return file_response_local_media(
         p,
         content_disposition_type="attachment" if download else None,
+    )
+
+
+@router.get("/projects/{project_id}/timeline-versions/{timeline_version_id}/editor-export.zip")
+def download_editor_export_zip(
+    project_id: UUID,
+    timeline_version_id: UUID,
+    allow_unapproved_media: Annotated[
+        bool,
+        Query(description="Include timeline clips whose assets are not yet approved."),
+    ] = False,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+):
+    """
+    ZIP for CapCut and OpenShot: ``media/``, ``openshot/directely_fcpxml.xml``, ``capcut/…/draft_content.json``.
+    """
+    project = _project_or_404(db, settings, project_id)
+    tv = db.get(TimelineVersion, timeline_version_id)
+    if not tv or tv.tenant_id != settings.default_tenant_id or tv.project_id != project_id:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": "timeline version not found for this project"},
+        )
+    try:
+        plan = build_editor_export_plan(
+            db, project, tv, settings, allow_unapproved_media=allow_unapproved_media
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "EDITOR_EXPORT_INVALID", "message": str(exc)},
+        ) from exc
+    if not plan.video_clips:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "EDITOR_EXPORT_EMPTY", "message": "Timeline has no clips to export."},
+        )
+
+    fd, tmp_name = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        write_editor_export_zip(plan, tmp_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (project.title or "project"))[:60]
+    filename = f"{safe or 'directely'}_capcut_openshot.zip"
+    return FileResponse(
+        path=tmp_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(lambda: tmp_path.unlink(missing_ok=True)),
     )
 
 
