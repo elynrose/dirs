@@ -1,7 +1,7 @@
 """Add projects.no_narration (slideshow / music-only exports without TTS).
 
 Revision ID: 039
-Revises: 038
+Revises: 033
 """
 
 from typing import Sequence, Union
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "039"
-down_revision: Union[str, None] = "038"
+down_revision: Union[str, None] = "033"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

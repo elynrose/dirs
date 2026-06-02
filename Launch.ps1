@@ -80,6 +80,83 @@ function Resolve-PythonExe {
     return $null
 }
 
+function Invoke-DirectorAlembicUpgrade {
+    param(
+        [Parameter(Mandatory = $true)][string]$ApiDir,
+        [Parameter(Mandatory = $true)][string]$PythonExe,
+        [Parameter(Mandatory = $true)][string]$RepoRoot
+    )
+    function Invoke-AlembicUpgradeOnce {
+        $prevEa = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $text = & $PythonExe -m alembic upgrade head 2>&1 | Out-String
+            return @{ Text = $text; ExitCode = $LASTEXITCODE }
+        } finally {
+            $ErrorActionPreference = $prevEa
+        }
+    }
+
+    Push-Location $ApiDir
+    try {
+        $run = Invoke-AlembicUpgradeOnce
+        if ($run.Text.Trim()) { Write-Host $run.Text.TrimEnd() }
+        if ($run.ExitCode -eq 0) { return }
+
+        if ($run.Text -notmatch "Can't locate revision") {
+            throw "alembic failed with exit $($run.ExitCode)"
+        }
+
+        Write-Host @"
+
+Database migration revision does not match this checkout
+(e.g. Postgres was upgraded by director-local or a newer deploy).
+Resetting the local Compose Postgres volume and retrying once…
+"@ -ForegroundColor Yellow
+
+        Pop-Location
+        Push-Location $RepoRoot
+        $prevEa = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            docker compose down -v 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "docker compose down -v exited with $LASTEXITCODE" }
+        } finally {
+            $ErrorActionPreference = $prevEa
+            Pop-Location
+        }
+        Invoke-DirectorDockerComposeUp -RepoRoot $RepoRoot
+
+        Push-Location $ApiDir
+        $retry = Invoke-AlembicUpgradeOnce
+        if ($retry.Text.Trim()) { Write-Host $retry.Text.TrimEnd() }
+        if ($retry.ExitCode -ne 0) {
+            throw "alembic failed after local DB reset with exit $($retry.ExitCode)"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
+function Invoke-DirectorDockerComposeUp {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    Push-Location $RepoRoot
+    $prevEa = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        docker compose up -d --wait 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "docker compose --wait failed or unsupported; retrying without --wait…" -ForegroundColor Yellow
+            docker compose up -d 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "docker compose exited with $LASTEXITCODE" }
+            Start-Sleep -Seconds 8
+        }
+    } finally {
+        $ErrorActionPreference = $prevEa
+        Pop-Location
+    }
+}
+
 if (-not $SkipDocker) {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
         Write-Host "Docker CLI not found. Install Docker Desktop and ensure 'docker' is on PATH." -ForegroundColor Red
@@ -101,24 +178,7 @@ if (-not $SkipDocker) {
         Wait-Docker -TimeoutSec $DockerWaitSec
     }
     Write-Host "Starting Compose stack (Postgres, Redis, MinIO)…" -ForegroundColor Cyan
-    Push-Location $RepoRoot
-    try {
-        $prevEa = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-        try {
-            docker compose up -d --wait 2>&1 | Out-Host
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "docker compose --wait failed or unsupported; retrying without --wait…" -ForegroundColor Yellow
-                docker compose up -d 2>&1 | Out-Host
-                if ($LASTEXITCODE -ne 0) { throw "docker compose exited with $LASTEXITCODE" }
-                Start-Sleep -Seconds 8
-            }
-        } finally {
-            $ErrorActionPreference = $prevEa
-        }
-    } finally {
-        Pop-Location
-    }
+    Invoke-DirectorDockerComposeUp -RepoRoot $RepoRoot
 }
 
 $Py = Resolve-PythonExe
@@ -161,13 +221,7 @@ if (-not $SkipVite) {
 
 if (-not $SkipMigrate) {
     Write-Host "Running database migrations…" -ForegroundColor Cyan
-    Push-Location $ApiDir
-    try {
-        & $Py -m alembic upgrade head
-        if ($LASTEXITCODE -ne 0) { throw "alembic failed with exit $LASTEXITCODE" }
-    } finally {
-        Pop-Location
-    }
+    Invoke-DirectorAlembicUpgrade -ApiDir $ApiDir -PythonExe $Py -RepoRoot $RepoRoot
 }
 
 $startMsg = "Starting API, Celery worker"

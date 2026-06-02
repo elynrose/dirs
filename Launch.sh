@@ -128,7 +128,18 @@ fi
 
 if [[ "$SKIP_MIGRATE" != true ]]; then
   echo "Running database migrations…"
-  ( cd "$API_DIR" && "$VENV_PY" -m alembic upgrade head )
+  migrate_out="$(cd "$API_DIR" && "$VENV_PY" -m alembic upgrade head 2>&1)" || migrate_rc=$?
+  if [[ -n "${migrate_out:-}" ]]; then printf '%s\n' "$migrate_out"; fi
+  if [[ "${migrate_rc:-0}" -ne 0 ]]; then
+    if printf '%s' "$migrate_out" | grep -q "Can't locate revision"; then
+      echo "Local DB revision does not match this checkout — resetting Compose Postgres volume…" >&2
+      ( cd "$ROOT" && docker compose down -v && docker compose up -d )
+      sleep 8
+      ( cd "$API_DIR" && "$VENV_PY" -m alembic upgrade head )
+    else
+      exit "${migrate_rc}"
+    fi
+  fi
 fi
 
 mkdir -p "$RUN_DIR"
