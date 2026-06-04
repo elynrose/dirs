@@ -764,96 +764,12 @@ from director_api.tasks.phase3_impl import (  # noqa: E402
     _phase3_scenes_generate,
     _phase3_video_generate,
 )
-from director_api.tasks.phase4_impl import (  # noqa: E402
-    _phase4_chapter_critique,
-    _phase4_scene_critique,
-    _phase4_scene_critic_revision,
-    _phase4_scene_critique_core,
-    _scene_critic_revision_apply_from_latest_report,
+from director_api.tasks.agent_run_control import (
+    agent_run_checkpoint as _agent_run_checkpoint,
+    append_event as _append_event,
+    payload_agent_run_uuid as _payload_agent_run_uuid,
+    pipeline_control_dict as _pipeline_control_dict,
 )
-from director_api.tasks.phase5_impl import _phase5_auto_heal_before_export  # noqa: E402
-
-
-def _append_event(run: AgentRun, step: str, status: str, **extra: Any) -> None:
-    events = list(run.steps_json) if run.steps_json else []
-    row: dict[str, Any] = {
-        "step": step,
-        "status": status,
-        "at": datetime.now(timezone.utc).isoformat(),
-    }
-    for k, v in extra.items():
-        if v is not None:
-            row[k] = v
-    events.append(row)
-    run.steps_json = events
-    flag_modified(run, "steps_json")
-
-
-def _pipeline_control_dict(raw: Any) -> dict[str, bool]:
-    if not isinstance(raw, dict):
-        return {"paused": False, "stop_requested": False}
-    return {
-        "paused": bool(raw.get("paused")),
-        "stop_requested": bool(raw.get("stop_requested")),
-    }
-
-
-def _payload_agent_run_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
-    v = payload.get("agent_run_id")
-    if v is None:
-        return None
-    try:
-        return uuid.UUID(str(v))
-    except (ValueError, TypeError):
-        return None
-
-
-def _merge_pipeline_control(run: AgentRun, **updates: bool) -> None:
-    cur = dict(run.pipeline_control_json) if isinstance(run.pipeline_control_json, dict) else {}
-    for k, v in updates.items():
-        cur[k] = bool(v)
-    run.pipeline_control_json = cur
-    flag_modified(run, "pipeline_control_json")
-
-
-def _agent_run_checkpoint(db: Any, agent_run_uuid: uuid.UUID) -> str:
-    """Honor pause/stop from API.
-
-    While paused, commits DB state and raises `AgentRunPausedYield` so the Celery task can exit
-    and re-queue with a countdown (avoids blocking ``--pool=solo`` with ``time.sleep``).
-
-    Returns 'ok' or 'stop'.
-    """
-    db.expire_all()
-    r = db.get(AgentRun, agent_run_uuid)
-    if not r:
-        return "stop"
-    ctrl = _pipeline_control_dict(r.pipeline_control_json)
-    if ctrl["stop_requested"]:
-        if r.status not in ("cancelled", "failed", "succeeded", "blocked"):
-            r.status = "cancelled"
-            r.error_message = "Stopped by user"
-            r.completed_at = datetime.now(timezone.utc)
-            r.current_step = None
-            _merge_pipeline_control(r, paused=False)
-            _append_event(r, "pipeline", "cancelled", reason="user_stop")
-            db.commit()
-        return "stop"
-    if ctrl["paused"]:
-        if r.status == "running":
-            r.status = "paused"
-            _append_event(r, "pipeline", "paused")
-            db.commit()
-        raise AgentRunPausedYield()
-    if r.status == "paused":
-        r.status = "running"
-        cur = dict(r.pipeline_control_json) if isinstance(r.pipeline_control_json, dict) else {}
-        cur["paused"] = False
-        r.pipeline_control_json = cur
-        flag_modified(r, "pipeline_control_json")
-        _append_event(r, "pipeline", "resumed")
-        db.commit()
-    return "ok"
 
 
 def _latest_dossier(db, project_id: uuid.UUID) -> ResearchDossier | None:
@@ -1019,7 +935,16 @@ def _phase2_research_core(
     db.flush()
 
 
-def _phase2_outline_core(db, project: Project, settings: Any) -> None:
+def _phase2_outline_core(
+    db,
+    project: Project,
+    settings: Any,
+    *,
+    confirm_erase_assets: bool = False,
+) -> None:
+    from director_api.services.erase_consent import assert_outline_erase_consent
+
+    assert_outline_erase_consent(project, consent=confirm_erase_assets)
     text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
     if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
         raise ValueError(
@@ -1027,7 +952,7 @@ def _phase2_outline_core(db, project: Project, settings: Any) -> None:
         )
     if not project.director_output_json:
         raise ValueError("project or director pack missing")
-    director = project.director_output_json
+    director = phase2_svc.normalized_director_pack(project)
     specs: list[dict] | None = None
     if _active_text_llm_configured(settings):
         dossier = _latest_dossier(db, project.id)
@@ -1095,7 +1020,7 @@ def _phase2_chapters_core(
         raise ValueError("no chapters — run outline first")
     dossier = _latest_dossier(db, project.id)
     dossier_body = (dossier.body_json if dossier else {}) or {}
-    director = project.director_output_json or {}
+    director = phase2_svc.normalized_director_pack(project)
     claims = (
         db.scalars(select(ResearchClaim).where(ResearchClaim.dossier_id == dossier.id)).all()
         if dossier
@@ -1292,7 +1217,7 @@ def _phase2_chapter_script_regenerate_core(
         raise ValueError("director pack missing — start the project first")
     dossier = _latest_dossier(db, project.id)
     dossier_body = (dossier.body_json if dossier else {}) or {}
-    director = project.director_output_json or {}
+    director = phase2_svc.normalized_director_pack(project)
     claims = (
         db.scalars(select(ResearchClaim).where(ResearchClaim.dossier_id == dossier.id)).all()
         if dossier
@@ -2918,6 +2843,10 @@ def _run_phase5_job_impl(self, job_id: str) -> None:
                     extra = _final_cut(db, job, settings)
                 elif job.type == "export":
                     extra = _export_bundle(db, job, settings)
+                elif job.type == "scene_precompile":
+                    from director_api.tasks.worker_tasks import _scene_precompile
+
+                    extra = _scene_precompile(db, job, settings)
                 else:
                     raise ValueError(f"unsupported phase5 job type: {job.type}")
                 job.status = "succeeded"
@@ -2969,3 +2898,12 @@ def _run_phase5_job_impl(self, job_id: str) -> None:
 
 # reap_stale_jobs has been extracted to tasks/maintenance_tasks.py
 # It is imported and registered from celery_app.py — do not re-declare here.
+
+from director_api.tasks.phase4_impl import (  # noqa: E402
+    _phase4_chapter_critique,
+    _phase4_scene_critique,
+    _phase4_scene_critic_revision,
+    _phase4_scene_critique_core,
+    _scene_critic_revision_apply_from_latest_report,
+)
+from director_api.tasks.phase5_impl import _phase5_auto_heal_before_export  # noqa: E402

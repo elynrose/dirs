@@ -50,6 +50,7 @@ def compile_mixed_visual_timeline(
     ffprobe_bin: str | None = "ffprobe",
     timeout_sec: float = 900.0,
     image_batch_crossfade_sec: float = 0.0,
+    export_ffmpeg_registry: object | None = None,
 ) -> dict[str, Any]:
     """
     Each segment is either:
@@ -109,6 +110,7 @@ def compile_mixed_visual_timeline(
                 timeout_sec=timeout_sec,
                 motion="none",
                 crossfade_sec=xf,
+                export_ffmpeg_registry=export_ffmpeg_registry,
             )
             temp_encoded.append(tmp_out)
             vpaths.append(tmp_out)

@@ -338,6 +338,10 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
         clean["youtube_share_watch_link_in_telegram"] = bool(clean["youtube_share_watch_link_in_telegram"])
     if "burn_subtitles_in_final_cut_default" in clean:
         clean["burn_subtitles_in_final_cut_default"] = bool(clean["burn_subtitles_in_final_cut_default"])
+    if "scene_precompile_enabled" in clean:
+        clean["scene_precompile_enabled"] = bool(clean["scene_precompile_enabled"])
+    if "ffmpeg_compile_enabled" in clean:
+        clean["ffmpeg_compile_enabled"] = bool(clean["ffmpeg_compile_enabled"])
     if "youtube_default_privacy" in clean:
         pv = str(clean["youtube_default_privacy"] or "").strip().lower()
         if pv not in ("public", "unlisted", "private"):

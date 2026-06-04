@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from director_api.config import Settings
+from director_api.services.project_frame import frame_pixel_size
 
 log = logging.getLogger(__name__)
 
@@ -244,17 +245,30 @@ def _wait_for_history_entry(
     return None, "timeout", f"No history for prompt_id after {timeout:.0f}s"
 
 
+def _resolve_path_under_storage_or_repo(raw: str, *, label: str) -> Path:
+    p = Path(raw)
+    if p.is_file():
+        return p.resolve()
+    try:
+        from director_api.config import get_settings
+
+        storage_root = Path(get_settings().local_storage_root).resolve()
+        p_storage = (storage_root / raw).resolve()
+        if p_storage.is_file():
+            return p_storage
+    except Exception:  # noqa: BLE001
+        pass
+    p_repo = (_REPO_ROOT / raw).resolve()
+    if p_repo.is_file():
+        return p_repo
+    raise FileNotFoundError(f"{label} not found: {raw}")
+
+
 def _resolve_workflow_path(settings: Settings) -> Path:
     raw = (settings.comfyui_workflow_json_path or "").strip()
     if not raw:
         raise FileNotFoundError("comfyui_workflow_json_path is empty (set COMFYUI_WORKFLOW_JSON_PATH)")
-    p = Path(raw)
-    if p.is_file():
-        return p.resolve()
-    p2 = (_REPO_ROOT / raw).resolve()
-    if p2.is_file():
-        return p2
-    raise FileNotFoundError(f"ComfyUI workflow JSON not found: {raw}")
+    return _resolve_path_under_storage_or_repo(raw, label="ComfyUI workflow JSON")
 
 
 def _clip_text_encode_node_ids(workflow: dict[str, Any]) -> list[str]:
@@ -274,6 +288,39 @@ def _clip_text_encode_node_ids(workflow: dict[str, Any]) -> list[str]:
 
     out.sort(key=_sort_key)
     return out
+
+
+def _workflow_negative_uses_clip_text_encode(
+    workflow: dict[str, Any],
+    negative_node_id: str,
+) -> bool:
+    """True when the configured negative node is a real CLIP text encode (not ConditioningZeroOut)."""
+    nid = (negative_node_id or "").strip()
+    if not nid:
+        return False
+    node = workflow.get(nid)
+    if not isinstance(node, dict):
+        return False
+    return str(node.get("class_type") or "") == "CLIPTextEncode"
+
+
+def _append_flux_avoidance_to_positive(
+    prompt: str,
+    merged_negative: str,
+    *,
+    max_len: int = 8000,
+) -> str:
+    """Flux still workflows often zero-out negative conditioning — steer via the positive prompt."""
+    from director_api.services.image_prompt_assembly import compact_avoidance_clause_from_negative
+
+    clause = compact_avoidance_clause_from_negative(merged_negative)
+    if not clause:
+        return prompt[:max_len]
+    lead = "Avoid in image:"
+    if lead.lower() in (prompt or "").lower() and clause[:40].lower() in (prompt or "").lower():
+        return prompt[:max_len]
+    combined = f"{(prompt or '').strip()}\n\n{lead} {clause}"
+    return combined[:max_len]
 
 
 def _inject_prompt(
@@ -601,10 +648,17 @@ def smoke_image(settings: Settings) -> dict[str, Any]:
 
 
 def generate_scene_image_comfyui(
-    settings: Settings, prompt: str, *, negative_prompt: str | None = None
+    settings: Settings,
+    prompt: str,
+    *,
+    negative_prompt: str | None = None,
+    frame_aspect_ratio: str | None = "16:9",
 ) -> dict[str, Any]:
     """
     Run a saved API-format workflow with the scene prompt injected.
+
+    ``frame_aspect_ratio`` (``16:9`` or ``9:16``) sets latent width/height via
+    ``frame_pixel_size`` (default 1280×720 landscape, 720×1280 portrait).
 
     Returns {ok, bytes?, content_type?, error?, detail?, provider, model?}.
     """
@@ -641,6 +695,8 @@ def generate_scene_image_comfyui(
         return {"ok": False, "provider": "comfyui", "error": "workflow_not_object"}
 
     workflow = copy.deepcopy(tpl)
+    fw, fh = frame_pixel_size(frame_aspect_ratio)
+    _apply_frame_dimensions_to_comfyui_workflow(workflow, fw, fh)
     field = (settings.comfyui_prompt_input_key or "text").strip() or "text"
     scene_neg = (negative_prompt or "").strip()
     cfg_neg = (settings.comfyui_default_negative_prompt or "").strip()
@@ -650,10 +706,15 @@ def generate_scene_image_comfyui(
         merged_negative = scene_neg
     else:
         merged_negative = cfg_neg
+    positive_text = str(prompt)
+    if merged_negative and not _workflow_negative_uses_clip_text_encode(
+        workflow, settings.comfyui_negative_node_id
+    ):
+        positive_text = _append_flux_avoidance_to_positive(positive_text, merged_negative)
     try:
         _inject_prompt(
             workflow,
-            str(prompt),
+            positive_text,
             node_id=settings.comfyui_prompt_node_id,
             field=field,
             negative_node_id=settings.comfyui_negative_node_id,
@@ -765,13 +826,7 @@ def _resolve_video_workflow_path(settings: Settings) -> Path:
         raise FileNotFoundError(
             "comfyui_video_workflow_json_path is empty (set COMFYUI_VIDEO_WORKFLOW_JSON_PATH to your WAN / Save Video API JSON)"
         )
-    p = Path(raw)
-    if p.is_file():
-        return p.resolve()
-    p2 = (_REPO_ROOT / raw).resolve()
-    if p2.is_file():
-        return p2
-    raise FileNotFoundError(f"ComfyUI video workflow JSON not found: {raw}")
+    return _resolve_path_under_storage_or_repo(raw, label="ComfyUI video workflow JSON")
 
 
 def _infer_create_video_fps(workflow: dict[str, Any]) -> float:
@@ -788,6 +843,43 @@ def _infer_create_video_fps(workflow: dict[str, Any]) -> float:
         if isinstance(fps, (int, float)) and float(fps) > 0:
             return float(fps)
     return 16.0
+
+
+def _apply_frame_dimensions_to_comfyui_workflow(
+    workflow: dict[str, Any],
+    width: int,
+    height: int,
+) -> bool:
+    """Set ``width`` / ``height`` on Empty* latent nodes (still + video workflows)."""
+    updated = False
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        ct = str(node.get("class_type") or "")
+        if not (
+            "Empty" in ct
+            or ct.endswith("LatentImage")
+            or "LatentVideo" in ct
+        ):
+            continue
+        ins = node.get("inputs")
+        if not isinstance(ins, dict):
+            continue
+        w_in, h_in = ins.get("width"), ins.get("height")
+        if not isinstance(w_in, (int, float)) or not isinstance(h_in, (int, float)):
+            continue
+        if int(w_in) == width and int(h_in) == height:
+            continue
+        ins["width"] = width
+        ins["height"] = height
+        updated = True
+        log.info(
+            "comfyui_frame_dimensions_inject",
+            class_type=ct,
+            width=width,
+            height=height,
+        )
+    return updated
 
 
 def _apply_duration_sec_to_comfyui_video_workflow(
@@ -865,6 +957,7 @@ def generate_scene_video_comfyui(
     *,
     scene_image_path: Path | None = None,
     duration_sec: float | None = None,
+    frame_aspect_ratio: str | None = "16:9",
 ) -> dict[str, Any]:
     """
     Run a ComfyUI API workflow that ends in Save Video / PreviewVideo (e.g. WAN 2.1 i2v).
@@ -874,6 +967,8 @@ def generate_scene_video_comfyui(
 
     ``duration_sec`` (from workspace ``scene_clip_duration_sec``, typically 5 or 10) adjusts
     ``Empty*LatentVideo`` ``length`` so output length tracks Settings (see ``_apply_duration_sec_to_comfyui_video_workflow``).
+
+    ``frame_aspect_ratio`` sets latent width/height (1280×720 for ``16:9``, 720×1280 for ``9:16``).
 
     Returns {ok, bytes?, content_type?, error?, detail?, provider, model?}.
     """
@@ -910,6 +1005,8 @@ def generate_scene_video_comfyui(
         return {"ok": False, "provider": "comfyui_wan", "error": "workflow_not_object"}
 
     workflow = copy.deepcopy(tpl)
+    fw, fh = frame_pixel_size(frame_aspect_ratio)
+    _apply_frame_dimensions_to_comfyui_workflow(workflow, fw, fh)
     _apply_duration_sec_to_comfyui_video_workflow(workflow, duration_sec)
     p_node = (settings.comfyui_video_prompt_node_id or settings.comfyui_prompt_node_id or "").strip()
     neg_node = (settings.comfyui_video_negative_node_id or settings.comfyui_negative_node_id or "").strip()

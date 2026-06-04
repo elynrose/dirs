@@ -9,6 +9,7 @@ from director_api.db.models import Chapter, Project
 from director_api.services.character_prompt import (
     character_prefix_from_chunks as _character_prefix_from_chunks,
 )
+from director_api.services.camera_perspective import scene_camera_image_hint, scene_camera_video_hint
 from director_api.services.project_frame import image_prompt_aspect_phrase
 from director_api.services.research_service import sanitize_jsonb_text
 
@@ -312,7 +313,7 @@ def video_prompt_lead_for_project(project: Project) -> str:
             "Beat context: "
         )
     return (
-        "Cinematic motion: subtle slow push-in, stable framing, shallow depth of field; "
+        "Cinematic motion: varied camera angle and move (not only eye-level); "
         "maintain the same subject and setting as the scene still. Beat context: "
     )
 
@@ -328,6 +329,65 @@ _DEFAULT_SCENE_NEGATIVE_PROMPT = (
     "headless figure, head touching upper frame edge, top of head clipped, hairline clipped, "
     "partial face, partial subject, subject too close to edge, awkward crop, off-center crop"
 )
+
+_THREE_D_ANIMATION_NEGATIVE_PROMPT = (
+    "text, watermark, logo, subtitles, UI, deformed anatomy, extra limbs, blurry, low resolution, "
+    "photoreal live-action, documentary footage, flat 2D cel animation, hand-drawn line art, Disney 2D illustration, "
+    "anime cel shading, storybook cartoon, comic book inking, inked outlines, vector infographic, "
+    "oil painting, watercolor storybook, uncanny realistic human skin, "
+    "collage, split screen, "
+    "cropped head, cropped face, head out of frame, face cut off, decapitated subject, "
+    "headless figure, head touching upper frame edge, top of head clipped, hairline clipped, "
+    "partial face, partial subject, subject too close to edge, awkward crop, off-center crop"
+)
+
+_HAND_DRAWN_2D_NEGATIVE_PROMPT = (
+    "text, watermark, logo, subtitles, UI, deformed anatomy, extra limbs, blurry, low resolution, "
+    "photoreal live-action, 3D CGI render, Pixar-style 3D, plastic doll skin, uncanny valley, "
+    "vector infographic, collage, split screen, "
+    "cropped head, cropped face, head out of frame, face cut off"
+)
+
+
+def resolve_visual_preset_id_for_project(project: Project, settings: Any) -> str:
+    """Preset id from project.visual_style, else workspace visual_style_preset."""
+    pid = _parse_visual_preset_id(getattr(project, "visual_style", None))
+    if pid:
+        return pid
+    from director_api.style_presets import DEFAULT_VISUAL_PRESET, is_valid_visual_preset
+
+    sp = getattr(settings, "visual_style_preset", None)
+    if is_valid_visual_preset(sp):
+        return str(sp).strip()
+    return DEFAULT_VISUAL_PRESET
+
+
+def default_scene_negative_prompt_for_project(project: Project, settings: Any) -> str:
+    """Negative prompt aligned with the project/workspace visual preset (not always photoreal documentary)."""
+    pid = resolve_visual_preset_id_for_project(project, settings)
+    if pid == "three_d_animation":
+        return _THREE_D_ANIMATION_NEGATIVE_PROMPT
+    if pid == "hand_drawn_2d":
+        return _HAND_DRAWN_2D_NEGATIVE_PROMPT
+    return _DEFAULT_SCENE_NEGATIVE_PROMPT
+
+
+def effective_scene_negative_prompt(
+    project: Project,
+    settings: Any,
+    prompt_package_json: dict[str, Any] | None,
+) -> str | None:
+    """Scene negative from package, upgraded when a stored row still uses the photoreal default under an animated preset."""
+    expected = default_scene_negative_prompt_for_project(project, settings)
+    pp = prompt_package_json if isinstance(prompt_package_json, dict) else {}
+    raw = pp.get("negative_prompt")
+    if not isinstance(raw, str) or not raw.strip():
+        return expected
+    stored = raw.strip()
+    pid = resolve_visual_preset_id_for_project(project, settings)
+    if pid in _illustrative_visual_preset_ids() and stored == _DEFAULT_SCENE_NEGATIVE_PROMPT.strip():
+        return expected
+    return stored[:1200]
 
 def chapter_eligible_for_scene_planning(chapter: Chapter, *, min_chars: int = MIN_CHARS_FOR_SCENE_PLANNING) -> bool:
     """True if chapter has enough script_text or a substantive (non-outline) summary for scene planning."""
@@ -579,18 +639,21 @@ def build_scene_plan_batch(
         _boiler = _image_prompt_boilerplate_for_project(project)
         _style_cap = max(120, 4000 - len(_boiler) - len(_tail) - 1000)
         style = sanitize_jsonb_text(resolved_visual, min(3000, _style_cap))
-        head = f"{_boiler}{style}{_tail}"
+        scene_key = f"{chapter.id}:{idx}"
+        cam_img = scene_camera_image_hint(scene_key, idx)
+        cam_vid = scene_camera_video_hint(scene_key, idx)
+        head = f"{cam_img}\n\n{_boiler}{style}{_tail}"
         narr_room = max(200, 4000 - len(head))
         narr_excerpt = narr_clean[: min(1400, narr_room)]
         _v_lead = video_prompt_lead_for_project(project)
-        _vp_room = max(120, 3000 - len(_v_lead))
+        _vp_room = max(120, 3000 - len(_v_lead) - len(cam_vid) - 2)
         pp: dict[str, Any] = {
             "image_prompt": sanitize_jsonb_text(head + narr_excerpt, 4000),
             "video_prompt": sanitize_jsonb_text(
-                _v_lead + narr_clean[: min(900, _vp_room)],
+                f"{cam_vid}\n\n{_v_lead}{narr_clean[: min(900, _vp_room)]}",
                 3000,
             ),
-            "negative_prompt": _DEFAULT_SCENE_NEGATIVE_PROMPT,
+            "negative_prompt": default_scene_negative_prompt_for_project(project, None),
             "chapter_title": chapter.title,
         }
         tags = [chapter_tag, f"scene_{idx + 1}", vtype]
@@ -699,7 +762,7 @@ def build_extend_scene_deterministic(
             _v_lead_e + new_narr[: min(900, _vp_room_e)],
             3000,
         ),
-        "negative_prompt": _DEFAULT_SCENE_NEGATIVE_PROMPT,
+        "negative_prompt": default_scene_negative_prompt_for_project(project, None),
         "chapter_title": chapter.title,
     }
     if character_bible_chunks is not None:

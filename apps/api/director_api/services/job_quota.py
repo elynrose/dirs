@@ -19,6 +19,7 @@ COMPILE_TYPES = frozenset(
         "fine_cut",
         "final_cut",
         "export",
+        "scene_precompile",
         "narration_generate",
         "narration_generate_scene",
         "subtitles_generate",

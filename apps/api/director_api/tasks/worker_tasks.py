@@ -74,6 +74,7 @@ from director_api.providers.media_fal import (
     generate_scene_image,
     generate_scene_video_fal,
 )
+from director_api.services.camera_perspective import inject_camera_perspective_into_prompt
 from director_api.services.character_prompt import (
     character_bible_for_llm_context,
     character_consistency_prefix_for_scene,
@@ -118,6 +119,13 @@ from director_api.services.job_worker_gate import acquire_job_for_work
 from director_api.services.llm_prompt_runtime import llm_prompt_map_scope
 from director_api.services.llm_prompt_service import build_resolved_prompt_map
 from director_api.services.webhook_delivery import notify_job_terminal
+from director_api.services.image_prompt_assembly import (
+    character_consistency_block_for_image,
+    polish_scene_image_prompt,
+    polish_scene_video_prompt,
+    scene_text_for_character_match,
+    strip_redundant_visual_style_clauses,
+)
 from director_api.services.narration_bracket_visual import (
     base_image_prompt_from_scene_fields,
     append_video_character_dialogue_to_prompt,
@@ -151,10 +159,12 @@ from ffmpeg_pipelines.slideshow import compile_image_slideshow
 from ffmpeg_pipelines.still_to_video import encode_image_to_mp4
 
 
-from director_api.tasks.agent_run_control import (
+from director_api.tasks.agent_exceptions import (
     AgentRunBlocked,
     AgentRunPausedYield,
     AgentRunStopRequested,
+)
+from director_api.tasks.agent_run_control import (
     agent_run_checkpoint as _agent_run_checkpoint,
     append_event as _append_event,
     payload_agent_run_uuid as _payload_agent_run_uuid,
@@ -174,6 +184,7 @@ from director_api.tasks.phase4_impl import (
     _phase4_scene_critic_revision,
     _scene_critic_revision_apply_from_latest_report,
 )
+from director_api.tasks.phase5_impl import _phase5_auto_heal_before_export
 
 
 # On Windows ``--pool=solo``, Celery's *hard* time limit can terminate the whole worker, not just the task.
@@ -1000,7 +1011,12 @@ def _normalize_video_bytes_to_dims(settings: Any, data: bytes, target_w: int, ta
         out_path.unlink(missing_ok=True)
 
 
-def _package_negative_prompt(pp: Any) -> str | None:
+def _package_negative_prompt(pp: Any, *, project: Project | None = None, settings: Any | None = None) -> str | None:
+    if project is not None and settings is not None:
+        neg = phase3_svc.effective_scene_negative_prompt(
+            project, settings, pp if isinstance(pp, dict) else None
+        )
+        return sanitize_jsonb_text(neg, 1200) if neg else None
     if not isinstance(pp, dict):
         return None
     n = pp.get("negative_prompt")
@@ -1361,28 +1377,7 @@ def _scene_era_anchor(
 
 
 def _scene_text_for_character_match(db: Any, scene: Scene) -> str:
-    """Concatenate scene narration + purpose + chapter title for per-scene bible filtering.
-
-    The character bible is only prepended when one of these fields actually
-    mentions a character name; otherwise the scene gets no character text and
-    the image/video model is free to render the beat without forcing the cast in.
-    """
-    parts: list[str] = []
-    n = (scene.narration_text or "").strip()
-    if n:
-        parts.append(n)
-    p = (scene.purpose or "").strip()
-    if p:
-        parts.append(p)
-    try:
-        ch = db.get(Chapter, scene.chapter_id) if scene.chapter_id else None
-    except Exception:  # noqa: BLE001
-        ch = None
-    if ch is not None:
-        t = (ch.title or "").strip()
-        if t:
-            parts.append(t)
-    return " ".join(parts)
+    return scene_text_for_character_match(db, scene)
 
 
 def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, settings: Any) -> str:
@@ -1404,13 +1399,17 @@ def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, setti
         visual_style_effective=vis_style,
     )
     prompt = str(prompt).strip()
+    if vis_style:
+        prompt = strip_redundant_visual_style_clauses(prompt, vis_style)
     character_prefix_injected = False
     # See ``_phase3_image_generate`` for why we skip the bible on no-human shots.
     if not _prompt_declares_no_humans(prompt):
-        prefix = character_consistency_prefix_for_scene(
+        scene_match_text = _scene_text_for_character_match(db, scene)
+        prefix = character_consistency_block_for_image(
             db,
             project.id,
-            scene_text=_scene_text_for_character_match(db, scene),
+            scene_text=scene_match_text,
+            base_prompt=prompt,
             max_chars=2000,
         )
         if prefix and not prompt_already_has_character_prefix(prompt, prefix):
@@ -1419,6 +1418,14 @@ def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, setti
             character_prefix_injected = True
         elif prefix:
             character_prefix_injected = True
+
+    prompt = inject_camera_perspective_into_prompt(
+        prompt,
+        scene_key=str(scene.id),
+        order_index=int(scene.order_index),
+        for_video=False,
+        max_total=4000,
+    )
 
     if _should_append_framing_safety_positive(
         prompt, character_prefix_injected=character_prefix_injected
@@ -1436,14 +1443,14 @@ def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, setti
         room_ea = max(0, 4000 - len(prompt) - 2)
         if room_ea > len(era_anchor):
             prompt = f"{prompt}\n\n{era_anchor}"
-    if vis_style:
-        vs = vis_style.strip()
-        if vs:
-            tail = prompt[-min(len(prompt), 800) :] if prompt else ""
-            if vs[:100] not in tail:
-                room_vs = max(0, 4000 - len(prompt) - 24)
-                if room_vs > 80:
-                    prompt = f"{prompt}\n\nVisual style: {vs[:room_vs]}"
+    pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
+    prompt = polish_scene_image_prompt(
+        prompt,
+        vis_style=vis_style,
+        visual_preset_id=pid_vis,
+        max_total=4000,
+        mood=(scene.purpose or "")[:240] or None,
+    )
     return str(prompt)
 
 
@@ -4535,6 +4542,7 @@ def _phase3_scenes_plan_for_chapter(
             character_bible=char_ctx or None,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             visual_style_resolved=vis_prompt,
+            visual_preset_id=phase3_svc.resolve_visual_preset_id_for_project(project, settings),
             usage_sink=llm_u,
             no_narration=bool(getattr(project, "no_narration", False)),
         )
@@ -4691,6 +4699,7 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
             character_bible=char_ctx or None,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             visual_style_resolved=vis_prompt,
+            visual_preset_id=phase3_svc.resolve_visual_preset_id_for_project(project, settings),
             usage_sink=llm_u,
         )
     if not batch:
@@ -4869,6 +4878,8 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
     # prompt budget.
     # ------------------------------------------------------------------
     prompt = str(prompt).strip()
+    if vis_style:
+        prompt = strip_redundant_visual_style_clauses(prompt, vis_style)
     character_prefix_injected = False
 
     # Suppress the character bible whenever the IMAGE PROMPT declares the
@@ -4881,12 +4892,16 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
     # still honoured for callers that set it (coverage [BROLL] variants).
     prompt_excludes_people = _prompt_declares_no_humans(prompt)
     if not bool(payload.get("exclude_character_bible")) and not prompt_excludes_people:
-        prefix = character_consistency_prefix_for_scene(
-            db,
-            project.id,
-            scene_text=_scene_text_for_character_match(db, scene),
-            max_chars=2000,
-        )
+        if "_automation_character_prefix" in payload:
+            prefix = str(payload.get("_automation_character_prefix") or "")[:2000]
+        else:
+            prefix = character_consistency_block_for_image(
+                db,
+                project.id,
+                scene_text=_scene_text_for_character_match(db, scene),
+                base_prompt=prompt,
+                max_chars=2000,
+            )
         if prefix and not prompt_already_has_character_prefix(prompt, prefix):
             room = max(400, 4000 - len(prefix) - 3)
             prompt = f"{str(prompt)[:room]}\n\n{prefix}"
@@ -4895,6 +4910,14 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             # Prefix was already present from a prior assembly pass — still
             # counts as "human subject expected" for framing safety.
             character_prefix_injected = True
+
+    prompt = inject_camera_perspective_into_prompt(
+        prompt,
+        scene_key=str(scene.id),
+        order_index=int(scene.order_index),
+        for_video=False,
+        max_total=4000,
+    )
 
     if _should_append_framing_safety_positive(
         prompt, character_prefix_injected=character_prefix_injected
@@ -4909,16 +4932,18 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         if room_ea > len(era_anchor):
             prompt = f"{prompt}\n\n{era_anchor}"
 
-    if vis_style:
-        vs = vis_style.strip()
-        if vs:
-            tail = prompt[-min(len(prompt), 800) :] if prompt else ""
-            if vs[:100] not in tail:
-                room_vs = max(0, 4000 - len(prompt) - 24)
-                if room_vs > 80:
-                    prompt = f"{prompt}\n\nVisual style: {vs[:room_vs]}"
+    pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
+    prompt = polish_scene_image_prompt(
+        prompt,
+        vis_style=vis_style,
+        visual_preset_id=pid_vis,
+        max_total=4000,
+        mood=(scene.purpose or "")[:240] or None,
+    )
 
-    scene_neg = _merge_framing_safety_negative(_package_negative_prompt(pp))
+    scene_neg = _merge_framing_safety_negative(
+        _package_negative_prompt(pp, project=project, settings=settings)
+    )
 
     payload_override = payload.get("image_provider")
     if isinstance(payload_override, str) and payload_override.strip():
@@ -5154,7 +5179,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
                 settings,
                 str(prompt),
                 negative_prompt=scene_neg,
-                should_stop=stop_signal,
+                frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             )
         else:
             res = generate_scene_image(
@@ -5355,11 +5380,21 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             prompt = f"{prompt}\n\n{era_anchor}"
 
         vis_style = effective_video_visual_style(project.visual_style, settings)
-        if vis_style:
-            room_vs = max(0, 3000 - len(prompt) - 24)
-            if room_vs > 80:
-                prompt = f"{prompt}\n\nStyle: {vis_style.strip()[:room_vs]}"
-        prompt = prompt[:3000]
+        prompt = inject_camera_perspective_into_prompt(
+            prompt,
+            scene_key=str(scene.id),
+            order_index=int(scene.order_index),
+            for_video=True,
+            max_total=3000,
+        )
+        pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
+        prompt = polish_scene_video_prompt(
+            prompt,
+            vis_style=vis_style,
+            visual_preset_id=pid_vis,
+            max_total=3000,
+            mood=(scene.purpose or "")[:240] or None,
+        )
         fal_video_override = payload.get("fal_video_model")
         if not isinstance(fal_video_override, str) or not fal_video_override.strip():
             fal_video_override = None
@@ -5442,8 +5477,11 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                     settings,
                     img_prompt,
                     negative_prompt=_merge_framing_safety_negative(
-                        _package_negative_prompt(scene.prompt_package_json)
+                        _package_negative_prompt(
+                            scene.prompt_package_json, project=project, settings=settings
+                        )
                     ),
+                    frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
                     should_stop=_make_job_stop_signal(
                         agent_run_uuid=ar_uuid,
                         job_uuid=job.id,
@@ -5762,6 +5800,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                     prompt,
                     scene_image_path=scene_comfy_path,
                     duration_sec=duration_sec,
+                    frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
                     should_stop=_make_job_stop_signal(
                         agent_run_uuid=ar_uuid,
                         job_uuid=job.id,
@@ -6070,70 +6109,9 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
     time_limit=_CELERY_PHASE3_HARD_SEC,
 )
 def run_phase3_job(self, job_id: str) -> None:
-    jid = uuid.UUID(job_id)
-    jtype = ""
-    settings = None
-    should_notify = False
-    try:
-        with SessionLocal() as db:
-            job = db.get(Job, jid)
-            if not job:
-                log.error("job_not_found", job_id=job_id)
-                return
-            settings = _worker_runtime_for_job(db, job)
-            jtype = job.type
-            if not acquire_job_for_work(db, job):
-                return
-            should_notify = True
-            try:
-                extra: dict[str, Any] = {}
-                if job.type == "scene_generate":
-                    _phase3_scenes_generate(db, job)
-                elif job.type == "scene_extend":
-                    extra = _phase3_scene_extend(db, job)
-                elif job.type == "scene_generate_image":
-                    extra = _phase3_image_generate(db, job)
-                    if extra.get("ok") is False:
-                        job.status = "failed"
-                        job.completed_at = datetime.now(timezone.utc)
-                        job.result = {"ok": False, "type": job.type, **extra}
-                        job.error_message = str(extra.get("error_message") or "image_generation_failed")[:8000]
-                        db.commit()
-                        log.info("phase3_job_done_failed", job_id=job_id, job_type=job.type)
-                        return
-                elif job.type == "scene_generate_video":
-                    extra = _phase3_video_generate(db, job)
-                else:
-                    raise ValueError(f"unsupported phase3 job type: {job.type}")
-                job.status = "succeeded"
-                job.completed_at = datetime.now(timezone.utc)
-                job.result = {"ok": True, "type": job.type, **extra}
-                db.commit()
-                log.info("phase3_job_done", job_id=job_id, job_type=job.type)
-            except SoftTimeLimitExceeded:
-                db.rollback()
-                raise
-            except Exception as e:  # noqa: BLE001
-                db.rollback()
-                job = db.get(Job, jid)
-                if job:
-                    job.status = "failed"
-                    job.error_message = str(e)[:8000]
-                    job.completed_at = datetime.now(timezone.utc)
-                    db.commit()
-                log.exception("phase3_job_failed", job_id=job_id, job_type=jtype)
-    except SoftTimeLimitExceeded:
-        log.warning("phase3_soft_time_limit", job_id=job_id)
-        with SessionLocal() as db:
-            job = db.get(Job, jid)
-            if job and job.status == "running":
-                job.status = "failed"
-                job.error_message = "exceeded_soft_time_limit"
-                job.completed_at = datetime.now(timezone.utc)
-                db.commit()
-    finally:
-        if should_notify and settings is not None:
-            notify_job_terminal(jid, settings)
+    from director_api.tasks.worker_runtime import _run_phase3_job_impl
+
+    _run_phase3_job_impl(self, job_id)
 
 
 def _agent_run_repair_failing_scenes(
@@ -6965,48 +6943,6 @@ def _final_cut(
     }
 
 
-def _phase5_auto_heal_before_export(
-    db: Any,
-    *,
-    project: Project,
-    tv: TimelineVersion,
-    storage_root: Path,
-    allow_unapproved_media: bool,
-) -> dict[str, int]:
-    """
-    Reconcile timeline clips to viable scene media and auto-approve succeeded assets on disk when
-    export preflight requires approval — persists DB + ``tv.timeline_json`` before readiness checks.
-    """
-    from director_api.services import timeline_image_repair as timeline_image_repair_svc
-
-    stats = timeline_image_repair_svc.auto_heal_project_timeline_for_export(
-        db,
-        project=project,
-        tv=tv,
-        storage_root=storage_root,
-        allow_unapproved_media=allow_unapproved_media,
-    )
-    if (
-        stats.get("relinked_assets")
-        or stats.get("rebound_clips")
-        or stats.get("storyboard_synced_clips")
-        or stats.get("approved_scene_stills")
-        or stats.get("approved_timeline_assets")
-        or stats.get("reconciled_clips")
-    ):
-        if stats.get("reconciled_clips") or stats.get("rebound_clips") or stats.get("storyboard_synced_clips"):
-            flag_modified(tv, "timeline_json")
-        db.commit()
-        db.refresh(tv)
-        log.info(
-            "phase5_export_auto_heal",
-            project_id=str(project.id),
-            timeline_version_id=str(tv.id),
-            **stats,
-        )
-    return stats
-
-
 def _export_bundle(db, job: Job, settings: Any) -> dict[str, Any]:
     payload = job.payload or {}
     tv_id = uuid.UUID(str(payload["timeline_version_id"]))
@@ -7054,6 +6990,102 @@ def _append_timeline_export_warnings(tv: TimelineVersion, messages: list[str]) -
     tj["export_warnings"] = cur
     tv.timeline_json = tj
     flag_modified(tv, "timeline_json")
+
+
+def _rough_cut_apply_precompiled_segments(
+    mixed_segments: list[Any],
+    manifest: list[dict[str, Any]],
+    *,
+    storage_root: Path,
+    project_id: uuid.UUID,
+) -> list[Any]:
+    from director_api.services.scene_precompile import substitute_precompiled_clip_segments
+
+    seg2, substituted = substitute_precompiled_clip_segments(
+        mixed_segments,
+        manifest,
+        storage_root=storage_root,
+        project_id=project_id,
+    )
+    if substituted:
+        log.info(
+            "rough_cut_precompiled_segments",
+            project_id=str(project_id),
+            substituted=substituted,
+            manifest_clips=len(manifest),
+        )
+    return seg2
+
+
+def _scene_precompile(db, job: Job, settings: Any) -> dict[str, Any]:
+    """Encode one scene image/video asset to export-sized MP4 for faster timeline compiles."""
+    from director_api.services.scene_precompile import (
+        asset_source_fingerprint,
+        compile_asset_precompile,
+        precompile_is_current,
+        precompile_storage_fingerprint_for_asset,
+        write_precompile_meta,
+    )
+
+    payload = job.payload or {}
+    asset_id = uuid.UUID(str(payload["asset_id"]))
+    project_id = uuid.UUID(str(payload["project_id"]))
+    tenant = str(payload.get("tenant_id") or settings.default_tenant_id)
+    asset = db.get(Asset, asset_id)
+    if not asset or asset.project_id != project_id or asset.tenant_id != tenant:
+        raise ValueError("asset not found for precompile")
+    project = db.get(Project, project_id)
+    if not project or project.tenant_id != tenant:
+        raise ValueError("project not found")
+    if asset.asset_type not in ("image", "video") or asset.status != "succeeded":
+        return {"skipped": True, "reason": "asset_not_ready"}
+
+    storage_root = Path(settings.local_storage_root).resolve()
+    duration_sec = float(payload.get("duration_sec") or 0)
+    if duration_sec <= 0:
+        from director_api.services.scene_precompile import default_duration_sec_for_asset
+
+        duration_sec = default_duration_sec_for_asset(
+            asset, settings, storage_root=storage_root
+        )
+    fp = str(payload.get("fingerprint") or "").strip() or precompile_storage_fingerprint_for_asset(
+        asset
+    )
+    if precompile_is_current(
+        storage_root=storage_root,
+        project_id=project_id,
+        asset_id=asset.id,
+        fingerprint=fp,
+        clip_duration_sec=duration_sec,
+    ):
+        return {"skipped": True, "reason": "already_current"}
+
+    ew, eh = _project_export_dimensions(project)
+    out = compile_asset_precompile(
+        storage_root=storage_root,
+        project_id=project_id,
+        asset=asset,
+        duration_sec=duration_sec,
+        width=ew,
+        height=eh,
+        settings=settings,
+    )
+    write_precompile_meta(
+        storage_root=storage_root,
+        project_id=project_id,
+        asset=asset,
+        fingerprint=fp,
+        duration_sec=duration_sec,
+        width=ew,
+        height=eh,
+    )
+    return {
+        "ok": True,
+        "asset_id": str(asset.id),
+        "scene_id": str(asset.scene_id) if asset.scene_id else None,
+        "output_path": str(out),
+        "fingerprint": fp,
+    }
 
 
 def _rough_cut(
@@ -7154,6 +7186,12 @@ def _rough_cut(
                     storage_root=storage_root,
                     ffprobe_bin=ffprobe_bin,
                 )
+                mixed_segments = _rough_cut_apply_precompiled_segments(
+                    mixed_segments,
+                    manifest,
+                    storage_root=storage_root,
+                    project_id=project.id,
+                )
                 compile_meta = compile_mixed_visual_timeline(
                     mixed_segments,
                     out_path,
@@ -7182,6 +7220,12 @@ def _rough_cut(
                         mixed_segments.append(("image", lp, float(ds)))
                     else:
                         raise ValueError("ROUGH_CUT_FFMPEG: unsupported asset_type for compile")
+                mixed_segments = _rough_cut_apply_precompiled_segments(
+                    mixed_segments,
+                    manifest,
+                    storage_root=storage_root,
+                    project_id=project.id,
+                )
                 compile_meta = compile_mixed_visual_timeline(
                     mixed_segments,
                     out_path,
@@ -7200,6 +7244,12 @@ def _rough_cut(
                     if lp is None or not path_is_readable_file(lp):
                         raise ValueError(f"missing local video file for asset {m.get('asset_id')}")
                     video_segments.append(_rough_cut_video_segment_tuple(m, lp, ffprobe_bin=ffprobe_bin))
+                video_segments = _rough_cut_apply_precompiled_segments(
+                    video_segments,
+                    manifest,
+                    storage_root=storage_root,
+                    project_id=project.id,
+                )
                 compile_meta = compile_mixed_visual_timeline(
                     video_segments,
                     out_path,
@@ -7212,27 +7262,61 @@ def _rough_cut(
                     export_ffmpeg_registry=export_ffmpeg_registry,
                 )
             elif types == {"image"}:
-                slides: list[tuple[Path, float]] = []
+                from director_api.services.scene_precompile import resolve_precompiled_video_path
+
+                precompiled_only: list[Any] = []
+                all_precompiled = True
                 for m in manifest:
-                    lp = path_from_storage_url(m.get("storage_url"), storage_root=storage_root)
-                    if lp is None or not path_is_readable_file(lp):
-                        raise ValueError(f"missing local image file for asset {m.get('asset_id')}")
-                    ds = m.get("duration_sec")
-                    if ds is None or float(ds) <= 0:
-                        raise ValueError(f"invalid duration_sec for image asset {m.get('asset_id')}")
-                    slides.append((lp, float(ds)))
-                compile_meta = compile_image_slideshow(
-                    slides,
-                    out_path,
-                    width=ew,
-                    height=eh,
-                    ffmpeg_bin=ffmpeg_bin,
-                    timeout_sec=float(settings.ffmpeg_timeout_sec),
-                    motion="pan",
-                    crossfade_sec=clip_xf,
-                    slow_zoom=False,
-                    export_ffmpeg_registry=export_ffmpeg_registry,
-                )
+                    pre = resolve_precompiled_video_path(
+                        storage_root=storage_root,
+                        project_id=project.id,
+                        manifest_row=m,
+                    )
+                    if pre is None:
+                        all_precompiled = False
+                        break
+                    precompiled_only.append(("video", pre, None))
+                if all_precompiled and precompiled_only:
+                    precompiled_only = _rough_cut_apply_precompiled_segments(
+                        precompiled_only,
+                        manifest,
+                        storage_root=storage_root,
+                        project_id=project.id,
+                    )
+                    compile_meta = compile_mixed_visual_timeline(
+                        precompiled_only,
+                        out_path,
+                        width=ew,
+                        height=eh,
+                        ffmpeg_bin=ffmpeg_bin,
+                        ffprobe_bin=ffprobe_bin,
+                        timeout_sec=float(settings.ffmpeg_timeout_sec),
+                        image_batch_crossfade_sec=clip_xf,
+                        export_ffmpeg_registry=export_ffmpeg_registry,
+                    )
+                    compile_meta["precompiled_fast_path"] = True
+                else:
+                    slides: list[tuple[Path, float]] = []
+                    for m in manifest:
+                        lp = path_from_storage_url(m.get("storage_url"), storage_root=storage_root)
+                        if lp is None or not path_is_readable_file(lp):
+                            raise ValueError(f"missing local image file for asset {m.get('asset_id')}")
+                        ds = m.get("duration_sec")
+                        if ds is None or float(ds) <= 0:
+                            raise ValueError(f"invalid duration_sec for image asset {m.get('asset_id')}")
+                        slides.append((lp, float(ds)))
+                    compile_meta = compile_image_slideshow(
+                        slides,
+                        out_path,
+                        width=ew,
+                        height=eh,
+                        ffmpeg_bin=ffmpeg_bin,
+                        timeout_sec=float(settings.ffmpeg_timeout_sec),
+                        motion="none",
+                        crossfade_sec=clip_xf,
+                        slow_zoom=False,
+                        export_ffmpeg_registry=export_ffmpeg_registry,
+                    )
             else:
                 raise ValueError("ROUGH_CUT_FFMPEG: unsupported asset_type for compile")
             compile_meta["invoked"] = True
@@ -7467,6 +7551,8 @@ def run_phase5_job(self, job_id: str) -> None:
                     extra = _final_cut(db, job, settings)
                 elif job.type == "export":
                     extra = _export_bundle(db, job, settings)
+                elif job.type == "scene_precompile":
+                    extra = _scene_precompile(db, job, settings)
                 else:
                     raise ValueError(f"unsupported phase5 job type: {job.type}")
                 job.status = "succeeded"

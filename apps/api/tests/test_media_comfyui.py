@@ -80,3 +80,32 @@ def test_spawn_ws_watcher_returns_event_or_none(
         base, client_id, prompt_id, deadline=__import__("time").monotonic() + 0.5
     )
     assert ev is None or hasattr(ev, "is_set")
+
+
+def test_apply_frame_dimensions_landscape_16_9() -> None:
+    wf = {
+        "a": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+        },
+        "b": {
+            "class_type": "EmptyHunyuanLatentVideo",
+            "inputs": {"width": 832, "height": 512, "length": 33, "batch_size": 1},
+        },
+    }
+    assert mc._apply_frame_dimensions_to_comfyui_workflow(wf, 1280, 720) is True
+    assert wf["a"]["inputs"]["width"] == 1280
+    assert wf["a"]["inputs"]["height"] == 720
+    assert wf["b"]["inputs"]["width"] == 1280
+    assert wf["b"]["inputs"]["height"] == 720
+
+
+def test_apply_frame_dimensions_portrait_9_16() -> None:
+    wf = {
+        "a": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {"width": 1280, "height": 720, "batch_size": 1},
+        },
+    }
+    assert mc._apply_frame_dimensions_to_comfyui_workflow(wf, 720, 1280) is True
+    assert wf["a"]["inputs"] == {"width": 720, "height": 1280, "batch_size": 1}

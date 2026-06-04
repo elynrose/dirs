@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ffmpeg_pipelines.errors import FFmpegCompileError
+from ffmpeg_pipelines.ffmpeg_tracked import run_ffmpeg_tracked
 from ffmpeg_pipelines.ken_burns import build_crop_pan_vf, build_slow_zoom_vf
 from ffmpeg_pipelines.nt_staging import (
     concat_should_use_short_temp,
@@ -57,6 +58,7 @@ def compile_image_slideshow(
     slow_zoom: bool = False,
     motion: MotionMode | None = None,
     crossfade_sec: float = 0.75,
+    export_ffmpeg_registry: object | None = None,
 ) -> dict[str, Any]:
     """
     Each slide is shown for ``duration`` seconds (looping the still).
@@ -109,6 +111,7 @@ def compile_image_slideshow(
                     slow_zoom=slow_zoom,
                     motion=motion,
                     crossfade_sec=crossfade_sec,
+                    export_ffmpeg_registry=export_ffmpeg_registry,
                 )
                 chunk_paths.append(chunk_out)
             # Chunks are already the correct codec/dimensions — stream-copy join avoids
@@ -224,7 +227,11 @@ def compile_image_slideshow(
             ]
         )
 
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout_sec)
+        proc = run_ffmpeg_tracked(
+            args,
+            timeout_sec=timeout_sec,
+            export_ffmpeg_registry=export_ffmpeg_registry,
+        )
         if proc.returncode != 0:
             unlink_optional(part)
             tail = (proc.stderr or proc.stdout or "")[-4000:]

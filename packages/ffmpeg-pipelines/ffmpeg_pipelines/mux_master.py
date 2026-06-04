@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from ffmpeg_pipelines.errors import FFmpegCompileError
+from ffmpeg_pipelines.ffmpeg_tracked import run_ffmpeg_tracked
 from ffmpeg_pipelines.nt_staging import (
     audio_should_use_short_temp,
     copy_short_to_destination,
@@ -33,6 +33,7 @@ def mux_video_with_narration_and_music(
     ffmpeg_bin: str = "ffmpeg",
     ffprobe_bin: str = "ffprobe",
     timeout_sec: float = 900.0,
+    export_ffmpeg_registry: object | None = None,
 ) -> dict[str, Any]:
     """
     Input video: **only the video stream is used** (``0:v``); any audio on the file is ignored.
@@ -167,7 +168,11 @@ def mux_video_with_narration_and_music(
             ]
         )
 
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout_sec)
+        proc = run_ffmpeg_tracked(
+            args,
+            timeout_sec=timeout_sec,
+            export_ffmpeg_registry=export_ffmpeg_registry,
+        )
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "")[-5000:]
             raise FFmpegCompileError(tail.strip() or "ffmpeg mux failed")

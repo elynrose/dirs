@@ -25,10 +25,18 @@ from director_api.providers.media_fal import (
     generate_scene_image,
     generate_scene_video_fal,
 )
+from director_api.services.camera_perspective import inject_camera_perspective_into_prompt
 from director_api.services.character_prompt import (
     character_bible_for_llm_context,
     character_consistency_prefix,
     prompt_already_has_character_prefix,
+)
+from director_api.services.image_prompt_assembly import (
+    character_consistency_block_for_image,
+    polish_scene_image_prompt,
+    polish_scene_video_prompt,
+    scene_text_for_character_match,
+    strip_redundant_visual_style_clauses,
 )
 from director_api.services import phase3 as phase3_svc
 from director_api.services import agent_resume as agent_resume_svc
@@ -51,6 +59,19 @@ from ffmpeg_pipelines.slideshow import compile_image_slideshow
 from ffmpeg_pipelines.still_to_video import encode_image_to_mp4
 
 log = structlog.get_logger(__name__)
+
+
+def _schedule_scene_precompile(db: Session, settings: Any, asset: Asset) -> None:
+    try:
+        from director_api.services.scene_precompile_enqueue import schedule_scene_precompile_for_asset
+
+        schedule_scene_precompile_for_asset(db, settings, asset)
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "scene_precompile_schedule_failed",
+            asset_id=str(asset.id),
+            error=str(e)[:400],
+        )
 
 _WT = None
 
@@ -194,7 +215,12 @@ def _normalize_video_bytes_to_dims(settings: Any, data: bytes, target_w: int, ta
         return data
     finally:
         in_path.unlink(missing_ok=True)
-def _package_negative_prompt(pp: Any) -> str | None:
+def _package_negative_prompt(pp: Any, *, project: Project | None = None, settings: Any | None = None) -> str | None:
+    if project is not None and settings is not None:
+        neg = phase3_svc.effective_scene_negative_prompt(
+            project, settings, pp if isinstance(pp, dict) else None
+        )
+        return sanitize_jsonb_text(neg, 1200) if neg else None
     if not isinstance(pp, dict):
         return None
     n = pp.get("negative_prompt")
@@ -205,27 +231,7 @@ def _package_negative_prompt(pp: Any) -> str | None:
 
 def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, settings: Any) -> str:
     """Same prompt recipe as scene image generation (Flux / Comfy still), without job payload overrides."""
-    pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
-    vis_style = effective_visual_style(project.visual_style, settings)
-    prompt, _, _ = base_image_prompt_from_scene_fields(
-        narration_text=scene.narration_text,
-        prompt_package_json=pp,
-        image_prompt_override=None,
-        visual_style_effective=vis_style,
-    )
-    prefix = character_consistency_prefix(db, project.id, max_chars=2000)
-    if prefix and not prompt_already_has_character_prefix(prompt, prefix):
-        room = max(400, 4000 - len(prefix) - 3)
-        prompt = f"{prefix}\n\n{str(prompt)[:room]}"
-    if vis_style:
-        vs = vis_style.strip()
-        if vs:
-            tail = prompt[-min(len(prompt), 800) :] if prompt else ""
-            if vs[:100] not in tail:
-                room_vs = max(0, 4000 - len(prompt) - 24)
-                if room_vs > 80:
-                    prompt = f"{prompt}\n\nVisual style: {vs[:room_vs]}"
-    return str(maybe_prepend_topic_setting_anchor(prompt, project.topic, max_total=4000))
+    return _wt()._scene_still_prompt_for_comfy(db, scene, project, settings)
 
 def _resolve_phase3_video_text_prompt(
     scene: Scene,
@@ -371,6 +377,7 @@ def _phase3_scenes_plan_for_chapter(
             character_bible=char_ctx or None,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             visual_style_resolved=vis_prompt,
+            visual_preset_id=phase3_svc.resolve_visual_preset_id_for_project(project, settings),
             usage_sink=llm_u,
             no_narration=bool(getattr(project, "no_narration", False)),
         )
@@ -533,6 +540,7 @@ def _phase3_scene_extend(db, job: Job) -> dict[str, Any]:
             character_bible=char_ctx or None,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             visual_style_resolved=vis_prompt,
+            visual_preset_id=phase3_svc.resolve_visual_preset_id_for_project(project, settings),
             usage_sink=llm_u,
         )
     if not batch:
@@ -691,26 +699,43 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             "used_bracket_hints": used_brackets,
         }
 
+    prompt = str(prompt).strip()
+    if vis_style:
+        prompt = strip_redundant_visual_style_clauses(prompt, vis_style)
+
     if not bool(payload.get("exclude_character_bible")):
         if "_automation_character_prefix" in payload:
             prefix = str(payload.get("_automation_character_prefix") or "")[:2000]
         else:
-            prefix = character_consistency_prefix(db, project.id, max_chars=2000)
+            prefix = character_consistency_block_for_image(
+                db,
+                project.id,
+                scene_text=scene_text_for_character_match(db, scene),
+                base_prompt=prompt,
+                max_chars=2000,
+            )
         if prefix and not prompt_already_has_character_prefix(prompt, prefix):
-            room = max(400, 4000 - len(prefix) - 3)
-            prompt = f"{prefix}\n\n{str(prompt)[:room]}"
+            room = max(400, 4000 - len(prompt) - 3)
+            prompt = f"{str(prompt)[:room]}\n\n{prefix}"
 
-    if vis_style:
-        vs = vis_style.strip()
-        if vs:
-            tail = prompt[-min(len(prompt), 800) :] if prompt else ""
-            if vs[:100] not in tail:
-                room_vs = max(0, 4000 - len(prompt) - 24)
-                if room_vs > 80:
-                    prompt = f"{prompt}\n\nVisual style: {vs[:room_vs]}"
+    prompt = inject_camera_perspective_into_prompt(
+        prompt,
+        scene_key=str(scene.id),
+        order_index=int(scene.order_index),
+        for_video=False,
+        max_total=4000,
+    )
     prompt = maybe_prepend_topic_setting_anchor(prompt, project.topic, max_total=4000)
+    pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
+    prompt = polish_scene_image_prompt(
+        prompt,
+        vis_style=vis_style,
+        visual_preset_id=pid_vis,
+        max_total=4000,
+        mood=(scene.purpose or "")[:240] or None,
+    )
 
-    scene_neg = _package_negative_prompt(pp)
+    scene_neg = _package_negative_prompt(pp, project=project, settings=settings)
 
     payload_override = payload.get("image_provider")
     if isinstance(payload_override, str) and payload_override.strip():
@@ -912,7 +937,12 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
     )
 
     if resolved_provider == "comfyui":
-        res = generate_scene_image_comfyui(settings, str(prompt), negative_prompt=scene_neg)
+        res = generate_scene_image_comfyui(
+            settings,
+            str(prompt),
+            negative_prompt=scene_neg,
+            frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+        )
     else:
         res = generate_scene_image(
             settings,
@@ -951,6 +981,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             asset.status = "succeeded"
             asset.error_message = None
             scene.status = "image_ready"
+            _schedule_scene_precompile(db, settings, asset)
             _wt()._record_usage(
                 db,
                 tenant_id=tenant_id,
@@ -1050,11 +1081,21 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                 room = max(400, 3000 - len(vprefix) - 3)
                 prompt = f"{vprefix}\n\n{str(prompt)[:room]}"
         vis_style = effective_visual_style(project.visual_style, settings)
-        if vis_style:
-            room_vs = max(0, 4000 - len(prompt) - 24)
-            if room_vs > 80:
-                prompt = f"{prompt}\n\nVisual style: {vis_style.strip()[:room_vs]}"
-        prompt = maybe_prepend_topic_setting_anchor(prompt, project.topic, max_total=3000)
+        prompt = inject_camera_perspective_into_prompt(
+            prompt,
+            scene_key=str(scene.id),
+            order_index=int(scene.order_index),
+            for_video=True,
+            max_total=3000,
+        )
+        pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
+        prompt = polish_scene_video_prompt(
+            prompt,
+            vis_style=vis_style,
+            visual_preset_id=pid_vis,
+            max_total=3000,
+            mood=(scene.purpose or "")[:240] or None,
+        )
         fal_video_override = payload.get("fal_video_model")
         if not isinstance(fal_video_override, str) or not fal_video_override.strip():
             fal_video_override = None
@@ -1130,7 +1171,12 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                     workflow_hint=wf_still[:120],
                 )
                 ires = generate_scene_image_comfyui(
-                    settings, img_prompt, negative_prompt=_package_negative_prompt(scene.prompt_package_json)
+                    settings,
+                    img_prompt,
+                    negative_prompt=_package_negative_prompt(
+                        scene.prompt_package_json, project=project, settings=settings
+                    ),
+                    frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
                 )
                 if not ires.get("ok") or not ires.get("bytes"):
                     err = str(ires.get("detail") or ires.get("error") or "comfyui_still_failed")[:8000]
@@ -1251,6 +1297,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                 img_asset.status = "succeeded"
                 img_asset.error_message = None
                 scene.status = "image_ready"
+                _schedule_scene_precompile(db, settings, img_asset)
                 _wt()._record_usage(
                     db,
                     tenant_id=tenant_id,
@@ -1416,6 +1463,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                 prompt,
                 scene_image_path=scene_comfy_path,
                 duration_sec=duration_sec,
+                frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
             )
         if vres.get("ok") and vres.get("bytes"):
             storage = FilesystemStorage(settings.local_storage_root)
@@ -1425,6 +1473,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             _wt()._bind_asset_local_file(asset, url, key)
             asset.status = "succeeded"
             asset.error_message = None
+            _schedule_scene_precompile(db, settings, asset)
             _wt()._record_usage(
                 db,
                 tenant_id=tenant_id,
@@ -1660,6 +1709,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
     _wt()._bind_asset_local_file(asset, url, key)
     asset.status = "succeeded"
     asset.error_message = None
+    _schedule_scene_precompile(db, settings, asset)
     _wt()._record_usage(
         db,
         tenant_id=tenant_id,

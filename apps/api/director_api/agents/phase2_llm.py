@@ -286,6 +286,15 @@ def enrich_director_pack(
     frame_aspect_ratio: str | None = None,
 ) -> dict[str, Any]:
     """Return validated-shaped director pack; on failure return input."""
+    from director_api.services import phase2 as phase2_svc
+
+    if phase2_svc.narrative_arc_looks_generic(pack.get("narrative_arc")):
+        pack = {
+            **pack,
+            "narrative_arc": phase2_svc.topic_narrative_arc_fallback(
+                topic=topic, title=project_title
+            ),
+        }
     sys = get_llm_prompt_text("phase2_director_enrich")
     far = (frame_aspect_ratio or "").strip()
     if far in ("16:9", "9:16"):
@@ -306,11 +315,22 @@ def enrich_director_pack(
         settings, system=sys, user=user, service_type="phase2_director_enrich", usage_sink=usage_sink
     )
     if not out or out.get("schema_id") != "director-pack/v1":
+        if phase2_svc.narrative_arc_looks_generic(pack.get("narrative_arc")):
+            pack = {
+                **pack,
+                "narrative_arc": phase2_svc.topic_narrative_arc_fallback(
+                    topic=topic, title=project_title
+                ),
+            }
         return pack
     out["title"] = sanitize_jsonb_text(str(out.get("title") or project_title), 500)
     out["topic"] = sanitize_jsonb_text(str(out.get("topic") or topic), 8000)
     if not isinstance(out.get("narrative_arc"), list):
         return pack
+    if phase2_svc.narrative_arc_looks_generic(out.get("narrative_arc")):
+        out["narrative_arc"] = phase2_svc.topic_narrative_arc_fallback(
+            topic=topic, title=project_title
+        )
     return out
 
 

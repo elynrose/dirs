@@ -29,6 +29,7 @@ import {
   apiSceneNarrationContentUrl,
   apiSceneNarrationSubtitlesUrl,
   apiChatterboxVoiceRefContentUrl,
+  apiComfyuiWorkflowTestOutputUrl,
   downloadEditorExportZip,
 } from "./lib/api.js";
 import {
@@ -407,6 +408,61 @@ function estAssetCoverSec(asset, clipSec) {
   const t = String(asset?.asset_type || "").toLowerCase();
   if (t === "video" || t === "image") return clipSec;
   return 0;
+}
+
+function paramsJsonStringField(pj, key) {
+  if (!pj || typeof pj !== "object") return "";
+  const v = pj[key];
+  return typeof v === "string" && v.trim() ? v.trim() : "";
+}
+
+/** Prompt text stored on the asset when it was generated (image/video). */
+function assetGenerationPrompt(asset) {
+  const pj = asset?.params_json;
+  if (!pj || typeof pj !== "object") return "";
+  const at = String(asset?.asset_type || "").toLowerCase();
+  if (at === "image") {
+    const used = paramsJsonStringField(pj, "image_prompt_used");
+    if (used) return used;
+    const pp = pj.prompt_package_json;
+    if (pp && typeof pp === "object" && typeof pp.image_prompt === "string" && pp.image_prompt.trim()) {
+      return pp.image_prompt.trim();
+    }
+    return "";
+  }
+  if (at === "video") {
+    return (
+      paramsJsonStringField(pj, "prompt_used") ||
+      paramsJsonStringField(pj, "video_prompt_resolved") ||
+      paramsJsonStringField(pj, "video_prompt_base") ||
+      ""
+    );
+  }
+  return paramsJsonStringField(pj, "image_prompt_used") || paramsJsonStringField(pj, "prompt_used");
+}
+
+async function copyTextToClipboard(text) {
+  const s = text == null ? "" : String(text);
+  if (!s) return false;
+  try {
+    await navigator.clipboard.writeText(s);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
 }
 
 /**
@@ -2106,6 +2162,12 @@ export default function App() {
   const [chatterboxVoiceRef, setChatterboxVoiceRef] = useState(null);
   const [chatterboxVoiceRefBusy, setChatterboxVoiceRefBusy] = useState(false);
   const [chatterboxVoiceRefErr, setChatterboxVoiceRefErr] = useState("");
+  /** GET /v1/settings/comfyui-workflows */
+  const [comfyuiWorkflows, setComfyuiWorkflows] = useState(null);
+  const [comfyuiWorkflowsBusy, setComfyuiWorkflowsBusy] = useState(false);
+  const [comfyuiWorkflowsErr, setComfyuiWorkflowsErr] = useState("");
+  const [comfyuiTestBusy, setComfyuiTestBusy] = useState(false);
+  const [comfyuiTestOutputBust, setComfyuiTestOutputBust] = useState("");
   const [chatterboxRecording, setChatterboxRecording] = useState(false);
   const chatterboxMediaStreamRef = useRef(null);
   const chatterboxMediaRecRef = useRef(null);
@@ -3468,6 +3530,122 @@ export default function App() {
     }
   }, [loadAppSettings]);
 
+  const loadComfyuiWorkflows = useCallback(async () => {
+    setComfyuiWorkflowsErr("");
+    try {
+      const r = await api("/v1/settings/comfyui-workflows");
+      const body = await parseJson(r);
+      if (!r.ok) {
+        setComfyuiWorkflowsErr(apiErrorMessage(body));
+        setComfyuiWorkflows(null);
+        return;
+      }
+      setComfyuiWorkflows(body.data || null);
+    } catch (e) {
+      setComfyuiWorkflowsErr(formatUserFacingError(e));
+      setComfyuiWorkflows(null);
+    }
+  }, []);
+
+  const uploadComfyuiWorkflowFile = useCallback(
+    async (role, file) => {
+      if (!file) return;
+      setComfyuiWorkflowsBusy(true);
+      setComfyuiWorkflowsErr("");
+      try {
+        const fd = new FormData();
+        fd.append("file", file, file.name || "workflow.json");
+        const r = await apiForm(`/v1/settings/comfyui-workflows/${role}`, {
+          method: "POST",
+          body: fd,
+        });
+        const body = await parseJson(r);
+        if (!r.ok) {
+          setComfyuiWorkflowsErr(apiErrorMessage(body));
+          return;
+        }
+        await loadComfyuiWorkflows();
+        await loadAppSettings();
+        showToast(`ComfyUI ${role} workflow saved.`, { type: "success" });
+      } catch (e) {
+        setComfyuiWorkflowsErr(formatUserFacingError(e));
+      } finally {
+        setComfyuiWorkflowsBusy(false);
+      }
+    },
+    [loadAppSettings, loadComfyuiWorkflows, showToast],
+  );
+
+  const deleteComfyuiWorkflow = useCallback(
+    async (role) => {
+      setComfyuiWorkflowsBusy(true);
+      setComfyuiWorkflowsErr("");
+      try {
+        const r = await api(`/v1/settings/comfyui-workflows/${role}`, { method: "DELETE" });
+        const body = await parseJson(r);
+        if (!r.ok) {
+          setComfyuiWorkflowsErr(apiErrorMessage(body));
+          return;
+        }
+        await loadComfyuiWorkflows();
+        await loadAppSettings();
+      } catch (e) {
+        setComfyuiWorkflowsErr(formatUserFacingError(e));
+      } finally {
+        setComfyuiWorkflowsBusy(false);
+      }
+    },
+    [loadAppSettings, loadComfyuiWorkflows],
+  );
+
+  const runComfyuiWorkflowTest = useCallback(
+    async (mode) => {
+      if (comfyuiTestBusy) return;
+      setComfyuiTestBusy(true);
+      setComfyuiWorkflowsErr("");
+      try {
+        const r = await api("/v1/settings/comfyui-workflows/test", {
+          method: "POST",
+          body: JSON.stringify({ mode }),
+        });
+        const body = await parseJson(r);
+        if (!r.ok) {
+          showToast(apiErrorMessage(body) || "ComfyUI test failed", { type: "error", durationMs: 10000 });
+          return;
+        }
+        const d = body.data || {};
+        if (d.ok) {
+          if (mode === "image" || mode === "video") {
+            setComfyuiTestOutputBust(String(Date.now()));
+          }
+          const extra =
+            mode === "connection"
+              ? d.result?.workflow_env_ok === false
+                ? " — check workflow node ids"
+                : ""
+              : d.bytes_written
+                ? ` (${Math.round(d.bytes_written / 1024)} KB)`
+                : "";
+          showToast(`ComfyUI ${mode} test OK${extra}`, {
+            type: "success",
+            durationMs: mode === "video" ? 8000 : 6000,
+          });
+        } else {
+          showToast(
+            humanizeErrorText(d.detail || d.error || "ComfyUI test failed"),
+            { type: "error", durationMs: 12000 },
+          );
+        }
+        await loadComfyuiWorkflows();
+      } catch (e) {
+        showToast(formatUserFacingError(e), { type: "error", durationMs: 10000 });
+      } finally {
+        setComfyuiTestBusy(false);
+      }
+    },
+    [comfyuiTestBusy, loadComfyuiWorkflows, showToast],
+  );
+
   const stopChatterboxMedia = useCallback(() => {
     chatterboxDiscardRecordingRef.current = true;
     const rec = chatterboxMediaRecRef.current;
@@ -3548,6 +3726,12 @@ export default function App() {
     void loadChatterboxVoiceRef();
     return undefined;
   }, [settingsTab, loadChatterboxVoiceRef, stopChatterboxMedia]);
+
+  useEffect(() => {
+    if (settingsTab !== "integrations") return undefined;
+    void loadComfyuiWorkflows();
+    return undefined;
+  }, [settingsTab, loadComfyuiWorkflows]);
 
   const loadNarrationStylesLibrary = useCallback(async () => {
     setNarrationStylesLibBusy(true);
@@ -8021,6 +8205,21 @@ export default function App() {
                 }))
               }
             />
+            <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", marginTop: 14 }}>
+              <input
+                type="checkbox"
+                checked={appConfig.scene_precompile_enabled !== false}
+                onChange={(e) =>
+                  setAppConfig((p) => ({ ...p, scene_precompile_enabled: e.target.checked }))
+                }
+              />
+              <span style={{ fontSize: "0.88rem", lineHeight: 1.45 }}>
+                <strong>Background scene precompile</strong> — after each scene image or video succeeds, encode a
+                timeline-ready clip in the background so rough and final cuts are faster. Uses extra disk under{" "}
+                <code>precompiled/</code> until you download the final MP4. Turn off on slower machines or to reduce
+                background CPU use.
+              </span>
+            </label>
                     </div>
                   </div>
                   )}
@@ -8709,6 +8908,7 @@ export default function App() {
                         { provider: "fal", label: "FAL" },
                         { provider: "gemini", label: "Gemini" },
                         { provider: "google", label: "Google" },
+                        { provider: "comfyui", label: "ComfyUI" },
                       ].map(({ provider, label }) => (
                         <button
                           key={provider}
@@ -9645,6 +9845,143 @@ export TELEGRAM_WEBHOOK_SECRET='…'
               value={appConfig.comfyui_workflow_json_path || ""}
               onChange={(e) => setAppConfig((p) => ({ ...p, comfyui_workflow_json_path: e.target.value }))}
             />
+            <div className="settings-subblock" style={{ marginTop: 10, marginBottom: 12 }}>
+              <p className="subtle" style={{ marginBottom: 8 }}>
+                Upload ComfyUI <strong>API format</strong> JSON (Workflow → Export API). Saved under workspace storage
+                and wired to the path above automatically.
+              </p>
+              {comfyuiWorkflowsErr ? <p className="err">{comfyuiWorkflowsErr}</p> : null}
+              <div className="action-row" style={{ flexWrap: "wrap", gap: 8 }}>
+                <label className="secondary" style={{ display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
+                  <span style={{ marginRight: 8 }}>Upload still workflow</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    disabled={comfyuiWorkflowsBusy}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = "";
+                      if (f) void uploadComfyuiWorkflowFile("image", f);
+                    }}
+                  />
+                </label>
+                <label className="secondary" style={{ display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
+                  <span style={{ marginRight: 8 }}>Upload video workflow</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    disabled={comfyuiWorkflowsBusy}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = "";
+                      if (f) void uploadComfyuiWorkflowFile("video", f);
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={comfyuiWorkflowsBusy || !comfyuiWorkflows?.roles?.find((r) => r.role === "image")?.has_workflow}
+                  onClick={() => void deleteComfyuiWorkflow("image")}
+                >
+                  Clear still JSON
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={comfyuiWorkflowsBusy || !comfyuiWorkflows?.roles?.find((r) => r.role === "video")?.has_workflow}
+                  onClick={() => void deleteComfyuiWorkflow("video")}
+                >
+                  Clear video JSON
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={comfyuiWorkflowsBusy}
+                  onClick={() => void loadComfyuiWorkflows()}
+                >
+                  Refresh workflows
+                </button>
+              </div>
+              {comfyuiWorkflows?.roles?.length ? (
+                <ul className="subtle" style={{ marginTop: 10, paddingLeft: 20, lineHeight: 1.5 }}>
+                  {comfyuiWorkflows.roles.map((row) => (
+                    <li key={row.role}>
+                      <strong>{row.role}</strong>:{" "}
+                      {row.has_workflow ? (
+                        <>
+                          {row.node_count ?? "?"} nodes
+                          {row.workflow_env && !row.workflow_env.ok ? (
+                            <span className="err"> — env check: {(row.workflow_env.errors || []).join(", ")}</span>
+                          ) : row.workflow_env?.ok ? (
+                            <span> — env OK</span>
+                          ) : null}
+                        </>
+                      ) : (
+                        "no file uploaded"
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <div className="action-row" style={{ flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={comfyuiTestBusy || settingsBusy}
+                  onClick={() => void runComfyuiWorkflowTest("connection")}
+                >
+                  Test connection
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={comfyuiTestBusy || settingsBusy}
+                  onClick={() => void runComfyuiWorkflowTest("image")}
+                >
+                  Test still generation
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={comfyuiTestBusy || settingsBusy}
+                  onClick={() => void runComfyuiWorkflowTest("video")}
+                >
+                  Test video generation
+                </button>
+              </div>
+              <p className="subtle" style={{ marginTop: 8 }}>
+                Connection checks ComfyUI reachability and workflow node ids. Image/video tests queue a real render on
+                your ComfyUI server (can take minutes). Save settings first so base URL and node overrides apply.
+              </p>
+              {comfyuiWorkflows?.roles?.some((r) => r.has_test_output) ? (
+                <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
+                  {comfyuiWorkflows.roles
+                    .filter((r) => r.has_test_output)
+                    .map((row) =>
+                      row.role === "image" ? (
+                        <figure key={row.role} style={{ margin: 0 }}>
+                          <figcaption className="subtle">Last still test</figcaption>
+                          <img
+                            alt="ComfyUI test still"
+                            src={apiComfyuiWorkflowTestOutputUrl("image", comfyuiTestOutputBust || "1")}
+                            style={{ maxWidth: 280, maxHeight: 200, borderRadius: 6, display: "block" }}
+                          />
+                        </figure>
+                      ) : (
+                        <figure key={row.role} style={{ margin: 0 }}>
+                          <figcaption className="subtle">Last video test</figcaption>
+                          <video
+                            controls
+                            src={apiComfyuiWorkflowTestOutputUrl("video", comfyuiTestOutputBust || "1")}
+                            style={{ maxWidth: 320, maxHeight: 200, borderRadius: 6, display: "block" }}
+                          />
+                        </figure>
+                      ),
+                    )}
+                </div>
+              ) : null}
+            </div>
             <label htmlFor="cfg-comfy-timeout">Still timeout (seconds)</label>
             <input
               id="cfg-comfy-timeout"
@@ -11230,6 +11567,8 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                           const at = String(a.asset_type || "").toLowerCase();
                           const thumbSrc = apiAssetContentUrl(a.id, a.updated_at || a.created_at || a.id);
                           const isSelected = selectedAssetIds.has(String(a.id));
+                          const generationPrompt = assetGenerationPrompt(a);
+                          const canCopyPrompt = Boolean(generationPrompt);
                           return (
                           <div
                             key={a.id}
@@ -11254,6 +11593,35 @@ export TELEGRAM_WEBHOOK_SECRET='…'
                                   accentColor: "var(--accent, #6c63ff)",
                                 }}
                               />
+                              <button
+                                type="button"
+                                className="scene-asset-copy-prompt-btn"
+                                disabled={!canCopyPrompt}
+                                title={
+                                  canCopyPrompt
+                                    ? "Copy generation prompt"
+                                    : "No generation prompt stored for this asset"
+                                }
+                                aria-label={
+                                  canCopyPrompt
+                                    ? `Copy ${at || "asset"} generation prompt`
+                                    : "No generation prompt to copy"
+                                }
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  void (async () => {
+                                    const ok = await copyTextToClipboard(generationPrompt);
+                                    if (ok) {
+                                      showToast("Generation prompt copied", { type: "success", durationMs: 2500 });
+                                    } else {
+                                      showToast("Could not copy prompt", { type: "error", durationMs: 4000 });
+                                    }
+                                  })();
+                                }}
+                              >
+                                <i className="fa-solid fa-copy" aria-hidden="true" />
+                              </button>
                               {a.status === "succeeded" && at === "image" ? (
                                 <img key={thumbSrc} className="scene-asset-thumb" alt="" src={thumbSrc} />
                               ) : a.status === "succeeded" && at === "video" ? (

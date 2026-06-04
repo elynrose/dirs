@@ -26,6 +26,23 @@ from director_api.services.chatterbox_voice_ref import (
     voice_ref_absolute_path,
     voice_ref_storage_key,
 )
+from director_api.services.comfyui_workflow_storage import (
+    ComfyuiWorkflowRole,
+    delete_workflow_file,
+    parse_comfyui_api_workflow_json,
+    save_workflow_json,
+    test_output_absolute_path,
+    test_output_storage_key,
+    workflow_config_key,
+    workflow_role_info,
+    workflow_storage_key,
+)
+from director_api.providers.media_comfyui import (
+    _workflow_env_report_from_path,
+    generate_scene_image_comfyui,
+    generate_scene_video_comfyui,
+    smoke_image,
+)
 from director_api.services.runtime_settings import (
     PLATFORM_CREDENTIAL_SETTING_KEYS,
     get_or_create_app_settings,
@@ -52,6 +69,9 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 log = structlog.get_logger(__name__)
 
 _CHATTERBOX_REF_MAX_BYTES = 25 * 1024 * 1024
+_COMFYUI_WORKFLOW_MAX_BYTES = 5 * 1024 * 1024
+_COMFYUI_TEST_IMAGE_PROMPT = "Directely ComfyUI test — a calm documentary still, soft natural light"
+_COMFYUI_TEST_VIDEO_PROMPT = "Directely ComfyUI test — gentle camera drift over a quiet landscape"
 
 
 def _merge_env_credential_presence(cred_present: dict[str, bool], base_env: Settings) -> None:
@@ -404,6 +424,306 @@ async def upload_chatterbox_voice_ref(
         },
         "meta": meta,
     }
+
+
+def _comfyui_workflow_role_or_404(role: str) -> ComfyuiWorkflowRole:
+    r = (role or "").strip().lower()
+    if r in ("image", "still"):
+        return "image"
+    if r in ("video", "wan"):
+        return "video"
+    raise HTTPException(
+        status_code=404,
+        detail={"code": "UNKNOWN_ROLE", "message": "role must be image or video"},
+    )
+
+
+def _comfyui_workflows_payload(
+    *,
+    db: Session,
+    settings: Settings,
+    auth: AuthContext,
+) -> dict[str, Any]:
+    tenant_id = str(settings.default_tenant_id)
+    row = get_or_create_app_settings(db, tenant_id)
+    rt = resolve_runtime_settings(
+        db, get_settings(), tenant_id, user_id=auth_user_id_int(auth)
+    )
+    root = Path(settings.local_storage_root).resolve()
+    image_path = (getattr(rt, "comfyui_workflow_json_path", None) or "").strip()
+    video_path = (getattr(rt, "comfyui_video_workflow_json_path", None) or "").strip()
+    roles: list[dict[str, Any]] = []
+    for role in ("image", "video"):
+        info = workflow_role_info(
+            storage_root=root,
+            tenant_id=tenant_id,
+            role=role,
+            configured_path=image_path if role == "image" else video_path,
+        )
+        wf_path_str = info.get("resolved_path")
+        if wf_path_str and info.get("has_workflow"):
+            try:
+                wf_path = Path(wf_path_str)
+                if role == "image":
+                    field = (rt.comfyui_prompt_input_key or "text").strip() or "text"
+                    info["workflow_env"] = _workflow_env_report_from_path(
+                        "image",
+                        wf_path,
+                        prompt_node_id=rt.comfyui_prompt_node_id,
+                        prompt_field=field,
+                        negative_node_id=rt.comfyui_negative_node_id,
+                        require_load_image=False,
+                    )
+                else:
+                    field = (
+                        (rt.comfyui_video_prompt_input_key or rt.comfyui_prompt_input_key or "text").strip()
+                        or "text"
+                    )
+                    info["workflow_env"] = _workflow_env_report_from_path(
+                        "video",
+                        wf_path,
+                        prompt_node_id=(rt.comfyui_video_prompt_node_id or rt.comfyui_prompt_node_id or ""),
+                        prompt_field=field,
+                        negative_node_id=(rt.comfyui_video_negative_node_id or rt.comfyui_negative_node_id or ""),
+                        load_image_node_id=rt.comfyui_video_load_image_node_id,
+                        require_load_image=bool(rt.comfyui_video_use_scene_image),
+                    )
+            except OSError:
+                pass
+        test_out = test_output_absolute_path(storage_root=root, tenant_id=tenant_id, role=role)
+        info["has_test_output"] = test_out.is_file()
+        if test_out.is_file():
+            info["test_output_storage_key"] = test_output_storage_key(tenant_id, role)
+        roles.append(info)
+    return {
+        "roles": roles,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@router.get("/comfyui-workflows")
+def get_comfyui_workflows(
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Whether image/video ComfyUI API workflow JSON files are saved for this workspace."""
+    data = _comfyui_workflows_payload(db=db, settings=settings, auth=auth)
+    return {"data": data, "meta": meta}
+
+
+class ComfyuiWorkflowTestIn(BaseModel):
+    mode: Literal["connection", "image", "video"] = Field(
+        default="connection",
+        description="connection = ping + workflow env; image/video = run a short generation",
+    )
+    prompt: str | None = Field(
+        default=None,
+        max_length=8000,
+        description="Prompt for image/video test (defaults provided)",
+    )
+    duration_sec: float | None = Field(
+        default=None,
+        ge=1.0,
+        le=30.0,
+        description="Clip length hint for video test (uses workspace scene_clip_duration_sec if unset)",
+    )
+
+
+@router.post("/comfyui-workflows/test")
+def test_comfyui_workflow(
+    body: ComfyuiWorkflowTestIn | None = None,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Test ComfyUI connectivity or run a short image/video generation using saved workspace settings."""
+    payload = body or ComfyuiWorkflowTestIn()
+    tenant_id = str(settings.default_tenant_id)
+    rt = resolve_runtime_settings(
+        db, get_settings(), tenant_id, user_id=auth_user_id_int(auth)
+    )
+    mode = payload.mode
+    root = Path(settings.local_storage_root).resolve()
+
+    if mode == "connection":
+        smoke = smoke_image(rt)
+        return {"data": {"mode": mode, "ok": bool(smoke.get("configured")), "result": smoke}, "meta": meta}
+
+    if mode == "image":
+        prompt = (payload.prompt or _COMFYUI_TEST_IMAGE_PROMPT).strip()
+        res = generate_scene_image_comfyui(rt, prompt, frame_aspect_ratio="16:9")
+        out: dict[str, Any] = {
+            "mode": mode,
+            "ok": bool(res.get("ok")),
+            "provider": res.get("provider"),
+            "error": res.get("error"),
+            "detail": (res.get("detail") or "")[:2000] or None,
+            "model": res.get("model"),
+        }
+        if res.get("ok") and res.get("bytes"):
+            dest = test_output_absolute_path(storage_root=root, tenant_id=tenant_id, role="image")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(res["bytes"])
+            out["test_output_storage_key"] = test_output_storage_key(tenant_id, "image")
+            out["content_type"] = res.get("content_type") or "image/png"
+            out["bytes_written"] = len(res["bytes"])
+        return {"data": out, "meta": meta}
+
+    if mode == "video":
+        prompt = (payload.prompt or _COMFYUI_TEST_VIDEO_PROMPT).strip()
+        dur = payload.duration_sec
+        if dur is None:
+            dur = float(getattr(rt, "scene_clip_duration_sec", 5) or 5)
+        if bool(rt.comfyui_video_use_scene_image):
+            return {
+                "data": {
+                    "mode": mode,
+                    "ok": False,
+                    "error": "scene_image_required",
+                    "detail": (
+                        "Video test with scene image enabled requires a scene still. "
+                        "Uncheck “Use scene image for video” in ComfyUI settings, or test from a project scene."
+                    ),
+                },
+                "meta": meta,
+            }
+        res = generate_scene_video_comfyui(
+            rt, prompt, scene_image_path=None, duration_sec=dur, frame_aspect_ratio="16:9"
+        )
+        out = {
+            "mode": mode,
+            "ok": bool(res.get("ok")),
+            "provider": res.get("provider"),
+            "error": res.get("error"),
+            "detail": (res.get("detail") or "")[:2000] or None,
+            "model": res.get("model"),
+            "duration_sec": dur,
+        }
+        if res.get("ok") and res.get("bytes"):
+            dest = test_output_absolute_path(storage_root=root, tenant_id=tenant_id, role="video")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(res["bytes"])
+            out["test_output_storage_key"] = test_output_storage_key(tenant_id, "video")
+            out["content_type"] = res.get("content_type") or "video/mp4"
+            out["bytes_written"] = len(res["bytes"])
+        return {"data": out, "meta": meta}
+
+    raise HTTPException(status_code=422, detail={"code": "INVALID_MODE", "message": "mode must be connection, image, or video"})
+
+
+@router.post("/comfyui-workflows/{role}")
+async def upload_comfyui_workflow(
+    role: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Upload ComfyUI **API format** workflow JSON; sets ``comfyui_workflow_json_path`` or ``comfyui_video_workflow_json_path``."""
+    wf_role = _comfyui_workflow_role_or_404(role)
+    tenant_id = str(settings.default_tenant_id)
+    raw_parts: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _COMFYUI_WORKFLOW_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "TOO_LARGE", "message": "workflow JSON exceeds 5 MB"},
+            )
+        raw_parts.append(chunk)
+    raw = b"".join(raw_parts)
+    try:
+        workflow = parse_comfyui_api_workflow_json(raw)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_WORKFLOW", "message": str(e)[:800]},
+        ) from e
+
+    root = Path(settings.local_storage_root).resolve()
+    key = save_workflow_json(storage_root=root, tenant_id=tenant_id, role=wf_role, workflow=workflow)
+    cfg_key = workflow_config_key(wf_role)
+    row = get_or_create_app_settings(db, tenant_id)
+    prior = dict(row.config_json or {})
+    prior[cfg_key] = key
+    row.config_json = sanitize_overrides(prior)
+    db.commit()
+    db.refresh(row)
+    invalidate_runtime_settings_cache_after_tenant_config_persisted(get_settings(), tenant_id)
+
+    return {
+        "data": {
+            "role": wf_role,
+            "storage_key": key,
+            "config_key": cfg_key,
+            "node_count": len(workflow),
+            "original_filename": (file.filename or "").strip() or None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        },
+        "meta": meta,
+    }
+
+
+@router.delete("/comfyui-workflows/{role}")
+def delete_comfyui_workflow(
+    role: str,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Remove saved workflow JSON for this role and clear the path in workspace settings."""
+    wf_role = _comfyui_workflow_role_or_404(role)
+    tenant_id = str(settings.default_tenant_id)
+    root = Path(settings.local_storage_root).resolve()
+    delete_workflow_file(storage_root=root, tenant_id=tenant_id, role=wf_role)
+    cfg_key = workflow_config_key(wf_role)
+    row = get_or_create_app_settings(db, tenant_id)
+    prior = dict(row.config_json or {})
+    key = (prior.get(cfg_key) or "").strip()
+    if key == workflow_storage_key(tenant_id, wf_role):
+        prior.pop(cfg_key, None)
+    row.config_json = sanitize_overrides(prior)
+    db.commit()
+    db.refresh(row)
+    invalidate_runtime_settings_cache_after_tenant_config_persisted(get_settings(), tenant_id)
+    return {
+        "data": workflow_role_info(
+            storage_root=root,
+            tenant_id=tenant_id,
+            role=wf_role,
+            configured_path="",
+        ),
+        "meta": meta,
+    }
+
+
+@router.get("/comfyui-workflows/{role}/test-output")
+def get_comfyui_test_output(
+    role: str,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+) -> FileResponse:
+    """Binary from the latest successful image/video test generation for this workspace."""
+    wf_role = _comfyui_workflow_role_or_404(role)
+    tenant_id = str(settings.default_tenant_id)
+    root = Path(settings.local_storage_root).resolve()
+    path = test_output_absolute_path(storage_root=root, tenant_id=tenant_id, role=wf_role)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NO_TEST_OUTPUT", "message": "run POST /v1/settings/comfyui-workflows/test first"},
+        )
+    media = "image/png" if wf_role == "image" else "video/mp4"
+    filename = "comfyui_test.png" if wf_role == "image" else "comfyui_test.mp4"
+    return FileResponse(path=path, media_type=media, filename=filename)
 
 
 @router.delete("/chatterbox-voice-ref")

@@ -388,6 +388,13 @@ def get_project_timeline_compiled_video(
                 "message": "No compiled video on disk for this timeline — run rough cut, final cut, or export first.",
             },
         )
+    if download and p.name == "final_cut.mp4":
+        try:
+            from director_api.services.scene_precompile import delete_project_precompiles
+
+            delete_project_precompiles(root, project_id)
+        except Exception:  # noqa: BLE001
+            pass
     return file_response_local_media(
         p,
         content_disposition_type="attachment" if download else None,
@@ -523,6 +530,19 @@ def patch_timeline_version(
         tv.output_url = body.output_url
     db.commit()
     db.refresh(tv)
+    if body.timeline_json is not None:
+        try:
+            from director_api.services.scene_precompile_enqueue import schedule_precompile_for_timeline
+
+            schedule_precompile_for_timeline(
+                db,
+                settings,
+                project_id=tv.project_id,
+                timeline_json=tv.timeline_json if isinstance(tv.timeline_json, dict) else {},
+            )
+            db.commit()
+        except Exception:  # noqa: BLE001
+            pass
     return {"data": TimelineVersionOut.model_validate(tv).model_dump(mode="json"), "meta": meta}
 
 

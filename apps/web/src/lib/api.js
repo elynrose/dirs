@@ -142,6 +142,16 @@ export function apiChatterboxVoiceRefContentUrl(cacheBust) {
   return apiPath(`/v1/settings/chatterbox-voice-ref/content?${params.toString()}`);
 }
 
+/** Latest ComfyUI test image/video from Settings → ComfyUI test generation. */
+export function apiComfyuiWorkflowTestOutputUrl(role, cacheBust) {
+  const r = role === "video" ? "video" : "image";
+  const v = cacheBust != null && String(cacheBust).trim() !== "" ? String(cacheBust) : "0";
+  const params = new URLSearchParams();
+  params.set("t", v);
+  appendMediaAuthQueryParams(params);
+  return apiPath(`/v1/settings/comfyui-workflows/${r}/test-output?${params.toString()}`);
+}
+
 // ---------------------------------------------------------------------------
 // Core fetch helper
 // ---------------------------------------------------------------------------

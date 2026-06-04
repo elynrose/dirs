@@ -48,30 +48,46 @@ def compose_bracket_visual_prompt(
     return sanitize_jsonb_text(base, 4000)
 
 
+def _append_image_prompt_suffix(prompt: str, image_prompt_suffix: str | None) -> str:
+    suffix = (image_prompt_suffix or "").strip()
+    if not suffix:
+        return prompt
+    base = (prompt or "").strip()
+    combined = f"{base}\n\n{suffix}" if base else suffix
+    return sanitize_jsonb_text(combined, 4000)
+
+
 def base_image_prompt_from_scene_fields(
     *,
     narration_text: str | None,
     prompt_package_json: dict[str, Any] | None,
     image_prompt_override: str | None,
+    visual_style_effective: str | None = None,
+    image_prompt_suffix: str | None = None,
 ) -> tuple[str, bool, list[str]]:
     """Return ``(prompt, used_bracket_hints, bracket_phrases)`` before character/style prefixes.
 
     Precedence: explicit job override → ``[bracket]`` hints in narration → ``image_prompt`` in package → narration excerpt.
+    ``visual_style_effective`` is accepted for API compatibility; callers typically append style after character bible.
     """
+    del visual_style_effective  # applied by phase-3 worker after character prefix
+
     if isinstance(image_prompt_override, str) and image_prompt_override.strip():
-        return sanitize_jsonb_text(image_prompt_override.strip(), 4000), False, []
+        p = sanitize_jsonb_text(image_prompt_override.strip(), 4000)
+        return _append_image_prompt_suffix(p, image_prompt_suffix), False, []
 
     pp = prompt_package_json if isinstance(prompt_package_json, dict) else {}
     narr = narration_text or ""
     phrases = extract_bracket_phrases(narr)
     if phrases:
         p = compose_bracket_visual_prompt(phrases, narration_full=narr, for_video_motion_hint=False)
-        return p, True, phrases
+        return _append_image_prompt_suffix(p, image_prompt_suffix), True, phrases
 
     prompt = pp.get("image_prompt") if isinstance(pp.get("image_prompt"), str) else None
     if not prompt:
         prompt = narr[:1200]
-    return sanitize_jsonb_text(str(prompt), 4000), False, []
+    p = sanitize_jsonb_text(str(prompt), 4000)
+    return _append_image_prompt_suffix(p, image_prompt_suffix), False, []
 
 
 def video_text_prompt_from_scene_fields(
@@ -81,6 +97,7 @@ def video_text_prompt_from_scene_fields(
     visual_type: str | None,
     prompt_package_json: dict[str, Any] | None,
     video_prompt_override: str | None,
+    visual_style_effective: str | None = None,
 ) -> str:
     """Resolve text for video models: override → ``video_prompt`` → ``[bracket]`` hints → VO/purpose."""
     if isinstance(video_prompt_override, str) and video_prompt_override.strip():
@@ -97,7 +114,13 @@ def video_text_prompt_from_scene_fields(
             3000,
         )
     base = narr or purpose or visual_type or "cinematic documentary scene"
-    return sanitize_jsonb_text(str(base)[:3000], 3000)
+    out = sanitize_jsonb_text(str(base)[:3000], 3000)
+    vs = (visual_style_effective or "").strip()
+    if vs and vs[:100] not in (out[-min(len(out), 800) :] if out else ""):
+        room = max(0, 3000 - len(out) - 24)
+        if room > 80:
+            out = sanitize_jsonb_text(f"{out}\n\nVisual style: {vs[:room]}", 3000)
+    return out
 
 
 def append_video_character_dialogue_to_prompt(
@@ -121,3 +144,21 @@ def append_video_character_dialogue_to_prompt(
     room = max(0, cap - len(suffix))
     trimmed = base[:room] if room else ""
     return sanitize_jsonb_text(trimmed + suffix, cap)
+
+
+def maybe_prepend_topic_setting_anchor(
+    prompt: str,
+    topic: str | None,
+    *,
+    max_total: int = 4000,
+) -> str:
+    """Append a short project-topic anchor when it is not already present (legacy phase-3 helper)."""
+    p = sanitize_jsonb_text(str(prompt or "").strip(), max_total)
+    t = sanitize_jsonb_text(str(topic or "").strip(), 200)
+    if not p or not t:
+        return p
+    if t.lower() in p.lower():
+        return p
+    suffix = f" | Setting: {t}"
+    room = max(0, max_total - len(suffix))
+    return sanitize_jsonb_text(p[:room] + suffix, max_total)

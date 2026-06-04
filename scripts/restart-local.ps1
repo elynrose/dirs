@@ -58,10 +58,10 @@ New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 $winPool = if ($IsWindows -or $env:OS -eq "Windows_NT") { " --pool=solo" } else { "" }
 $celeryExe = Join-Path (Split-Path -Parent $Py) "celery.exe"
 if (Test-Path -LiteralPath $celeryExe) {
-    $celeryCmd = "Set-Location -LiteralPath '$ApiDir'; & '$celeryExe' -A director_api.tasks.celery_app worker -l info$winPool 2>&1 | Tee-Object -FilePath '$RunDir\director-worker.log' -Append"
+    $celeryCmd = "Set-Location -LiteralPath '$ApiDir'; & '$celeryExe' -A director_api.tasks.celery_app worker -Q text,media,compile -l info$winPool 2>&1 | Tee-Object -FilePath '$RunDir\director-worker.log' -Append"
     $beatCmd = "Set-Location -LiteralPath '$ApiDir'; & '$celeryExe' -A director_api.tasks.celery_app beat -l info 2>&1 | Tee-Object -FilePath '$RunDir\director-beat.log' -Append"
 } else {
-    $celeryCmd = "Set-Location -LiteralPath '$ApiDir'; & '$Py' -m celery -A director_api.tasks.celery_app worker -l info$winPool 2>&1 | Tee-Object -FilePath '$RunDir\director-worker.log' -Append"
+    $celeryCmd = "Set-Location -LiteralPath '$ApiDir'; & '$Py' -m celery -A director_api.tasks.celery_app worker -Q text,media,compile -l info$winPool 2>&1 | Tee-Object -FilePath '$RunDir\director-worker.log' -Append"
     $beatCmd = "Set-Location -LiteralPath '$ApiDir'; & '$Py' -m celery -A director_api.tasks.celery_app beat -l info 2>&1 | Tee-Object -FilePath '$RunDir\director-beat.log' -Append"
 }
 

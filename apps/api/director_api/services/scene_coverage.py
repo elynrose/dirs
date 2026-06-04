@@ -14,6 +14,21 @@ _COVERAGE_VARIANTS: list[dict[str, Any]] = [
         "exclude_character_bible": False,
     },
     {
+        "image_suffix": "High-angle shot looking down on the scene, same location and continuity.",
+        "video_suffix": "Slow crane down or tilt, high angle, same environment.",
+        "exclude_character_bible": False,
+    },
+    {
+        "image_suffix": "View from behind the subject toward what they face, same wardrobe and era.",
+        "video_suffix": "Slow follow from behind, same subject and setting.",
+        "exclude_character_bible": False,
+    },
+    {
+        "image_suffix": "Side profile three-quarter framing, same scene and wardrobe.",
+        "video_suffix": "Lateral truck along the profile, shallow depth of field.",
+        "exclude_character_bible": False,
+    },
+    {
         "image_suffix": "Medium shot, alternate framing, same scene and wardrobe.",
         "video_suffix": "Subtle handheld movement, medium shot, shallow depth of field.",
         "exclude_character_bible": False,

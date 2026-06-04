@@ -91,9 +91,10 @@ _VISUAL: dict[str, tuple[str, str, str]] = {
         "Stylized 3D Animation",
         "INTENTIONALLY NON-PHOTOGRAPHIC: stylized 3D feature animation — rounded forms, expressive eyes, smooth shaded "
         "surfaces, saturated color, global illumination. Clearly CG characters, not real actors.",
-        "STYLIZED 3D ANIMATED FILM STILL — clearly computer-generated characters and worlds (Pixar/DreamWorks-style "
-        "family animation): soft rounded forms, large expressive eyes, smooth surfaces, saturated color, cinematic GI and "
-        "subsurface scattering. Do NOT blend toward photoreal humans or documentary footage; avoid uncanny live-action mix.",
+        "STYLIZED 3D ANIMATED FILM STILL — clearly computer-generated characters and worlds (Pixar/DreamWorks 3D CGI only): "
+        "soft rounded sculptural forms, large expressive eyes, smooth shaded surfaces, saturated color, cinematic GI and "
+        "subsurface scattering. STRICTLY FORBIDDEN: 2D hand-drawn cel animation, flat cartoon illustration, inked line art, "
+        "or Disney/Aladdin-style 2D frames. Do NOT blend toward photoreal humans or documentary footage.",
     ),
     "hand_drawn_2d": (
         "Hand-Drawn 2D",
@@ -330,6 +331,11 @@ def effective_visual_style(stored: str | None, settings: Any) -> str:
         return visual_prompt_for_preset(pid, settings)
     sp = getattr(settings, "visual_style_preset", None)
     return visual_prompt_for_preset(sp if is_valid_visual_preset(sp) else None, settings)
+
+
+def effective_video_visual_style(stored: str | None, settings: Any) -> str:
+    """Visual style clause for generative video prompts (same resolver as stills today)."""
+    return effective_visual_style(stored, settings)
 
 
 def style_presets_public_payload() -> dict[str, Any]:

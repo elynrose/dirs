@@ -630,6 +630,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ffmpeg_min_major_version", "FFMPEG_MIN_MAJOR_VERSION"),
     )
     ffmpeg_compile_enabled: bool = True
+    scene_precompile_enabled: bool = Field(
+        default=True,
+        description=(
+            "Background FFmpeg precompile per scene asset for faster rough/final cuts. "
+            "Overridable in Studio Settings (Export); env SCENE_PRECOMPILE_ENABLED sets the default."
+        ),
+        validation_alias=AliasChoices("scene_precompile_enabled", "SCENE_PRECOMPILE_ENABLED"),
+    )
     ffmpeg_slideshow_default_sec: float = 3.0
     scene_clip_duration_sec: int = Field(default=10, ge=5, le=10, description="5 or 10 seconds")
     scene_plan_target_scenes_per_chapter: int = Field(default=0, ge=0, le=48)

@@ -10,16 +10,65 @@ from director_api.config import Settings
 from director_api.db.models import Project
 from director_api.services import research_service
 
+# Default seed arc copied into every project until enrichment; detect and replace.
+_GENERIC_NARRATIVE_ARC_PHRASES: tuple[str, ...] = (
+    "establish the world and stakes",
+    "develop evidence and tension",
+    "resolution and perspective",
+    "act i —",
+    "act ii —",
+    "act iii —",
+    "replace: topic-specific",
+)
+
+
+def narrative_arc_looks_generic(arc: Any) -> bool:
+    """True when arc is empty or still the boilerplate three-act / placeholder spine."""
+    if not isinstance(arc, list) or not arc:
+        return True
+    joined = " ".join(str(x).strip().lower() for x in arc if str(x).strip())
+    if not joined:
+        return True
+    hits = sum(1 for p in _GENERIC_NARRATIVE_ARC_PHRASES if p in joined)
+    if hits >= 2:
+        return True
+    if len(arc) == 3 and all(str(x).strip().lower().startswith("act ") for x in arc):
+        return True
+    return False
+
+
+def topic_narrative_arc_fallback(*, topic: str, title: str) -> list[str]:
+    """Non-template spine when LLM enrichment is unavailable or returns generic acts."""
+    anchor = (topic or title or "this story").strip()
+    short = anchor[:160]
+    return [
+        f"Cold open — the question «{short}» forces on screen",
+        f"Before the turn — context that makes later events legible",
+        f"Pressure — conflict, evidence, or consequence in motion",
+        f"Pivot — the beat that changes what the audience understands",
+        f"Aftermath — cost, legacy, or open threads tied to {short[:80]}",
+    ]
+
+
+def normalized_director_pack(project: Project) -> dict[str, Any]:
+    """Director JSON for LLM phases, replacing boilerplate narrative_arc when detected."""
+    director = dict(project.director_output_json or {})
+    if narrative_arc_looks_generic(director.get("narrative_arc")):
+        director["narrative_arc"] = topic_narrative_arc_fallback(
+            topic=str(project.topic or ""),
+            title=str(project.title or ""),
+        )
+    return director
+
 
 def build_director_pack_from_project(project: Project) -> dict[str, Any]:
+    topic = (project.topic or project.title or "").strip()
     return {
         "schema_id": "director-pack/v1",
         "title": project.title,
         "topic": project.topic,
         "narrative_arc": [
-            "Act I — Establish the world and stakes",
-            "Act II — Develop evidence and tension",
-            "Act III — Resolution and perspective",
+            f"Topic spine (enrichment must replace): {topic[:240] or project.title}",
         ],
         "style_notes": {
             "tone": project.tone,
@@ -223,15 +272,20 @@ def chapter_outline_from_director(director: dict[str, Any], project: Project) ->
     total_sec = max(300, (project.target_runtime_minutes or 10) * 60)
     per = max(60, total_sec // max(1, len(arcs)))
     chapters: list[dict[str, Any]] = []
-    for idx, title in enumerate(arcs):
+    topic_snip = (project.topic or "")[:220].strip()
+    for idx, beat_title in enumerate(arcs):
+        beat = str(beat_title)[:500]
         chapters.append(
             {
                 "order_index": idx,
-                "title": str(title)[:500],
+                "title": beat,
                 # LLM hint only — must not be read as VO; phase3 rejects this pattern without script_text.
                 "summary": (
-                    f"Producer note (do not use as narration): Expand «{str(title)[:500]}» into full spoken script; "
-                    f"target ~{per}s at ~130 wpm. Program: «{project.title}»."
+                    f"Producer note (do not use as narration): Chapter {idx + 1} — «{beat}». "
+                    f"Give this beat a distinct documentary angle (not the same logline as other chapters). "
+                    f"Program «{project.title}»"
+                    + (f"; subject: {topic_snip}" if topic_snip else "")
+                    + f". Target ~{per}s VO at ~130 wpm."
                 ),
                 "target_duration_sec": per,
             }

@@ -42,11 +42,30 @@ def refine_scene_plan_batch(
     character_bible: str | None = None,
     frame_aspect_ratio: str | None = None,
     visual_style_resolved: str | None = None,
+    visual_preset_id: str | None = None,
     usage_sink: list[dict[str, Any]] | None = None,
     no_narration: bool = False,
 ) -> dict[str, Any] | None:
     """Return scene-plan-batch/v1 or None to keep seed."""
     sys = get_llm_prompt_text("phase3_scene_plan_refine_base")
+    vp = (visual_preset_id or "").strip().lower()
+    if vp == "three_d_animation":
+        sys += (
+            " VISUAL MEDIUM (hard rule): project uses stylized 3D CG feature animation only. "
+            "Every image_prompt and video_prompt must describe STYLIZED 3D CGI (rounded forms, soft shading, "
+            "subsurface scattering)—never photoreal live-action documentary, never flat 2D cel or hand-drawn line art. "
+            "Preserve the full visual_style_resolved clause from user JSON at the start of each image_prompt."
+        )
+    elif vp == "hand_drawn_2d":
+        sys += (
+            " VISUAL MEDIUM (hard rule): project uses hand-drawn 2D animation only—never 3D CGI, never photoreal "
+            "live-action. Preserve visual_style_resolved in each image_prompt."
+        )
+    elif vp in ("flat_infographic",):
+        sys += (
+            " VISUAL MEDIUM (hard rule): flat vector / infographic look only—not photoreal, not 3D CGI. "
+            "Preserve visual_style_resolved in each image_prompt."
+        )
     if no_narration:
         sys += (
             " NO_NARRATION MODE (hard rule): this project has no voice-over. Set every scene's "
@@ -89,6 +108,10 @@ def refine_scene_plan_batch(
             f" User JSON includes frame_aspect_ratio={far!r}: compose every image_prompt and video_prompt for this "
             "delivery shape—widescreen landscape (16:9) vs vertical portrait (9:16). Do not assume the other format."
         )
+    sys += (
+        " Vary camera angle and perspective across scenes in the chapter (low/high angle, side, from behind, "
+        "overhead, ground level)—not only eye-level medium shots. image_prompt and video_prompt must agree on angle."
+    )
     user_obj: dict[str, Any] = {
         "seed": seed_batch,
         "chapter_title": chapter_title,
@@ -97,6 +120,8 @@ def refine_scene_plan_batch(
     vsr = (visual_style_resolved or "").strip()
     if vsr:
         user_obj["visual_style_resolved"] = vsr[:4000]
+    if vp:
+        user_obj["visual_preset_id"] = vp
     if far in ("16:9", "9:16"):
         user_obj["frame_aspect_ratio"] = far
     if target_duration_sec is not None and int(target_duration_sec) > 0:
@@ -152,10 +177,16 @@ def extend_scene_plan_batch(
     character_bible: str | None = None,
     frame_aspect_ratio: str | None = None,
     visual_style_resolved: str | None = None,
+    visual_preset_id: str | None = None,
     usage_sink: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Return scene-plan-batch/v1 with exactly one new scene appended in narrative terms, or None on failure."""
     sys = get_llm_prompt_text("phase3_scene_extend_base")
+    vp_x = (visual_preset_id or "").strip().lower()
+    if vp_x == "three_d_animation":
+        sys += " Match stylized 3D CG animation only—never 2D cel or photoreal live-action."
+    elif vp_x == "hand_drawn_2d":
+        sys += " Match hand-drawn 2D animation only—never 3D CGI or photoreal."
     if target_duration_sec is not None and int(target_duration_sec) > 0:
         t = int(target_duration_sec)
         sys += (
@@ -174,6 +205,9 @@ def extend_scene_plan_batch(
             f" User JSON includes frame_aspect_ratio={far!r}: compose image_prompt and video_prompt for this delivery "
             "shape (16:9 landscape vs 9:16 portrait)."
         )
+    sys += (
+        " Pick a camera angle that differs from the previous scene when possible (not only eye-level medium shots)."
+    )
     user_obj: dict[str, Any] = {
         "existing_scenes": existing_scenes,
         "chapter_title": chapter_title,
@@ -185,6 +219,8 @@ def extend_scene_plan_batch(
     vsr_x = (visual_style_resolved or "").strip()
     if vsr_x:
         user_obj["visual_style_resolved"] = vsr_x[:4000]
+    if vp_x:
+        user_obj["visual_preset_id"] = vp_x
     if far in ("16:9", "9:16"):
         user_obj["frame_aspect_ratio"] = far
     if target_duration_sec is not None and int(target_duration_sec) > 0:
