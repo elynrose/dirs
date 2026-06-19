@@ -332,6 +332,8 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             clean.pop("telegram_chat_id", None)
     if "telegram_notify_pipeline_failures" in clean:
         clean["telegram_notify_pipeline_failures"] = bool(clean["telegram_notify_pipeline_failures"])
+    if "telegram_notify_phase_completions" in clean:
+        clean["telegram_notify_phase_completions"] = bool(clean["telegram_notify_phase_completions"])
     if "youtube_auto_upload_after_export" in clean:
         clean["youtube_auto_upload_after_export"] = bool(clean["youtube_auto_upload_after_export"])
     if "youtube_share_watch_link_in_telegram" in clean:
@@ -373,6 +375,7 @@ PLATFORM_CREDENTIAL_SETTING_KEYS = frozenset(
         "webhook_signing_secret",
         "telegram_bot_token",
         "telegram_webhook_secret",
+        "youtube_client_id",
         "youtube_client_secret",
         "youtube_refresh_token",
     }

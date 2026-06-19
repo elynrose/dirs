@@ -40,3 +40,37 @@ def test_encode_image_to_mp4(tmp_path: Path) -> None:
     assert out.is_file()
     assert meta.get("bytes", 0) > 100
     assert meta.get("slow_zoom") is False
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not on PATH")
+def test_encode_image_to_mp4_pan_motion(tmp_path: Path) -> None:
+    img = tmp_path / "pan.png"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=128x128",
+            "-frames:v",
+            "1",
+            str(img),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    out = tmp_path / "pan.mp4"
+    meta = encode_image_to_mp4(
+        img,
+        out,
+        duration_sec=0.5,
+        width=320,
+        height=240,
+        motion="pan",
+        ffmpeg_bin="ffmpeg",
+        timeout_sec=90.0,
+    )
+    assert out.is_file()
+    assert meta.get("motion") == "pan"

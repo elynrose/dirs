@@ -41,6 +41,13 @@ from director_api.services.scene_timeline_duration import (
     effective_scene_visual_budget_sec,
 )
 from director_api.services.pexels_scene_fill import maybe_fill_pexels_for_project_scenes
+from director_api.services.publish_youtube import resolve_publish_to_youtube
+from director_api.services import pipeline_fallback_events as pipeline_fallback_svc
+from director_api.tasks.agent_publish_steps import (
+    run_agent_opening_hook_step,
+    run_agent_outro_step,
+    run_agent_thumbnail_step,
+)
 from director_api.services.timeline_image_repair import list_export_ready_scene_visuals_ordered
 from director_api.services.research_service import sanitize_jsonb_text
 from director_api.tasks.agent_exceptions import AgentRunBlocked, AgentRunStopRequested
@@ -168,9 +175,19 @@ def _auto_scene_coverage_pass(
     clip_sec = float(_wt()._scene_clip_duration_sec(settings))
     prefer_video = bool(getattr(settings, "agent_run_auto_generate_scene_videos", False))
     extra_total = 0
-    for sc in all_scenes:
+    scenes_total = len(all_scenes)
+    for scene_idx, sc in enumerate(all_scenes, start=1):
         if _wt()._agent_run_checkpoint(db, agent_run_uuid) == "stop":
             return None
+        from director_api.tasks.agent_run_control import touch_agent_run_progress
+
+        touch_agent_run_progress(
+            db,
+            agent_run_uuid,
+            "auto_scene_coverage",
+            scene_index=scene_idx,
+            scenes_total=scenes_total,
+        )
         budget = effective_scene_visual_budget_sec(
             db,
             scene=sc,
@@ -196,7 +213,7 @@ def _auto_scene_coverage_pass(
                     "tenant_id": tenant_id,
                     "generation_tier": "preview",
                     "agent_run_id": str(agent_run_uuid),
-                    "video_prompt_override": cov["video_prompt_override"],
+                    "video_prompt_suffix": cov["video_prompt_override"],
                     "exclude_character_bible": bool(cov.get("exclude_character_bible")),
                 }
                 if automation_character_prefix:
@@ -233,7 +250,7 @@ def _auto_scene_coverage_pass(
                     "tenant_id": tenant_id,
                     "generation_tier": "preview",
                     "agent_run_id": str(agent_run_uuid),
-                    "image_prompt_override": cov["image_prompt_override"],
+                    "image_prompt_suffix": cov["image_prompt_override"],
                     "exclude_character_bible": bool(cov.get("exclude_character_bible")),
                 }
                 if automation_character_prefix:
@@ -691,7 +708,7 @@ def _run_agent_full_pipeline_tail(
                 payload={
                     "scene_id": str(sc.id),
                     "tenant_id": tenant_id,
-                    "generation_tier": "preview",
+                    "generation_tier": "production",
                     "agent_run_id": str(agent_run_uuid),
                     "_automation_character_prefix": automation_tail_character_prefix,
                 },
@@ -728,7 +745,7 @@ def _run_agent_full_pipeline_tail(
                     payload={
                         "scene_id": str(scene_id),
                         "tenant_id": tenant_id,
-                        "generation_tier": "preview",
+                        "generation_tier": "production",
                         "agent_run_id": str(agent_run_uuid),
                         "_automation_character_prefix": automation_tail_character_prefix,
                     },
@@ -785,9 +802,19 @@ def _run_agent_full_pipeline_tail(
         img_conc = int(auto_images_max_concurrency)
         if img_conc <= 1:
             failed_ids: list[uuid.UUID] = []
-            for sc in target_scenes:
+            scenes_total = len(target_scenes)
+            for scene_idx, sc in enumerate(target_scenes, start=1):
                 if _wt()._agent_run_checkpoint(db, agent_run_uuid) == "stop":
                     return None
+                from director_api.tasks.agent_run_control import touch_agent_run_progress
+
+                touch_agent_run_progress(
+                    db,
+                    agent_run_uuid,
+                    "auto_images",
+                    scene_index=scene_idx,
+                    scenes_total=scenes_total,
+                )
                 scene_failed = False
                 while _scene_succeeded_image_count(db, sc.id) < min_scene_images:
                     if _wt()._agent_run_checkpoint(db, agent_run_uuid) == "stop":
@@ -838,6 +865,17 @@ def _run_agent_full_pipeline_tail(
                 project_id=str(pid),
                 concurrency=len(chunk),
                 scene_ids=[str(sc.id) for sc in chunk],
+            )
+            from director_api.tasks.agent_run_control import touch_agent_run_progress
+
+            scene_pos = len(target_scenes) - len(unders) + 1
+            touch_agent_run_progress(
+                db,
+                agent_run_uuid,
+                "auto_images",
+                scene_index=scene_pos,
+                scenes_total=len(target_scenes),
+                parallel_batch=len(chunk),
             )
             with ThreadPoolExecutor(max_workers=min(img_conc, len(chunk))) as pool:
                 futures = {pool.submit(_parallel_gen_scene_still, sc.id): sc for sc in chunk}
@@ -1144,6 +1182,10 @@ def _run_agent_full_pipeline_tail(
                     note=(
                         "Some scenes still lack enough succeeded video assets after retries; continuing to timeline and export. "
                         "Re-generate failed clips in Studio, or set agent_run_abort_on_auto_video_failure (or pipeline_options.abort_on_auto_video_failure) to stop the run on this condition."
+                    ),
+                    **pipeline_fallback_svc.auto_videos_partial_failed_extra(
+                        generated=video_generated,
+                        failed_scene_count=len(vid_failed),
                     ),
                 )
             else:
@@ -1460,15 +1502,42 @@ def _run_agent_full_pipeline_tail(
             "tenant_id": tenant_id,
             "allow_unapproved_media": allow_unapproved_media,
             "burn_subtitles_into_video": bool(getattr(settings, "burn_subtitles_in_final_cut_default", False)),
+            "publish_to_youtube": resolve_publish_to_youtube(project, run_opts_pre),
         },
     )
-    _wt()._final_cut(db, fj, settings)
+    fc_result = _wt()._final_cut(db, fj, settings)
     project = db.get(Project, pid)
     if project:
         project.workflow_phase = "final_video_ready"
     run = db.get(AgentRun, agent_run_uuid)
     if run:
         _wt()._append_event(run, "auto_final_cut", "succeeded", timeline_version_id=str(tv_id))
+        yt = fc_result.get("youtube_upload") if isinstance(fc_result, dict) else None
+        if isinstance(yt, dict):
+            if yt.get("ok"):
+                _wt()._append_event(
+                    run,
+                    "publish_youtube",
+                    "succeeded",
+                    watch_url=str(yt.get("watch_url") or ""),
+                    video_id=str(yt.get("video_id") or ""),
+                )
+            elif yt.get("skipped_reason") == "upload_not_requested":
+                pass
+            elif yt.get("skipped_reason"):
+                _wt()._append_event(
+                    run,
+                    "publish_youtube",
+                    "skipped",
+                    reason=str(yt.get("skipped_reason") or ""),
+                )
+            elif yt.get("error"):
+                _wt()._append_event(
+                    run,
+                    "publish_youtube",
+                    "warning",
+                    error=str(yt.get("error") or ""),
+                )
         db.commit()
     log.info(
         "agent_full_video_tail_timing",
@@ -1523,6 +1592,9 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
             run.status = "running"
             if run.started_at is None:
                 run.started_at = datetime.now(timezone.utc)
+            from director_api.services.agent_run_orphan_recovery import stamp_agent_run_worker
+
+            stamp_agent_run_worker(run)
             run.current_step = "director"
             run.block_code = None
             run.block_message = None
@@ -1934,7 +2006,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                     run = db.get(AgentRun, aid)
                     if run:
                         _wt()._append_event(run, "chapters", "skipped", reason="scripts_already_done")
-                        run.current_step = "scenes"
+                        run.current_step = "thumbnail"
                         db.commit()
                 else:
                     try:
@@ -1954,7 +2026,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                         run = db.get(AgentRun, aid)
                         if run:
                             _wt()._append_event(run, "chapters", "succeeded")
-                            run.current_step = "scenes"
+                            run.current_step = "thumbnail"
                             db.commit()
                     except Exception as e:  # noqa: BLE001
                         run = db.get(AgentRun, aid)
@@ -1987,6 +2059,34 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                     return
 
                 project = db.get(Project, run_project_id)
+                run = db.get(AgentRun, aid)
+                if not project or not run:
+                    return
+                for step_fn in (run_agent_thumbnail_step, run_agent_opening_hook_step):
+                    res = step_fn(
+                        db,
+                        run=run,
+                        aid=aid,
+                        agent_run_id=agent_run_id,
+                        project=project,
+                        settings=settings,
+                        cont=cont,
+                        oversight_earliest=oversight_earliest,
+                        force_steps=force_steps,
+                        halt=halt,
+                        wt=_wt(),
+                    )
+                    if res != "ok":
+                        return
+                    project = db.get(Project, run_project_id)
+                    run = db.get(AgentRun, aid)
+                    if not project or not run:
+                        return
+
+                if halt():
+                    return
+
+                project = db.get(Project, run_project_id)
                 if project and pipeline_oversight_svc.effective_resume_skip_with_force(
                     cont,
                     oversight_earliest,
@@ -2003,7 +2103,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                     run = db.get(AgentRun, aid)
                     if run:
                         _wt()._append_event(run, "scenes", "skipped", reason="scenes_already_planned")
-                        run.current_step = "story_research_review"
+                        run.current_step = "outro"
                         db.commit()
                 else:
                     try:
@@ -2095,13 +2195,37 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                                 chapters_skipped_short_script=skipped_short_script,
                                 chapters_skipped_existing_scenes=chapters_skipped_existing_scenes,
                             )
-                            run.current_step = "story_research_review"
+                            run.current_step = "outro"
                             db.commit()
                     except Exception as e:  # noqa: BLE001
                         run = db.get(AgentRun, aid)
                         if run:
                             _wt()._agent_run_mark_failed(db, run, "scenes", e)
                         log.exception("agent_run_scenes_failed", agent_run_id=agent_run_id)
+                        return
+
+                if halt():
+                    return
+
+                project = db.get(Project, run_project_id)
+                run = db.get(AgentRun, aid)
+                if project and run:
+                    opts_raw = run.pipeline_options_json if isinstance(run.pipeline_options_json, dict) else {}
+                    res = run_agent_outro_step(
+                        db,
+                        run=run,
+                        aid=aid,
+                        agent_run_id=agent_run_id,
+                        project=project,
+                        settings=settings,
+                        pipeline_options=opts_raw,
+                        cont=cont,
+                        oversight_earliest=oversight_earliest,
+                        force_steps=force_steps,
+                        halt=halt,
+                        wt=_wt(),
+                    )
+                    if res != "ok":
                         return
 
                 if halt():

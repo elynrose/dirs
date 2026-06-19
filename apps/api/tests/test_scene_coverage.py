@@ -14,3 +14,16 @@ def test_pick_coverage_payload_keys() -> None:
     assert "image_prompt_override" in p and "video_prompt_override" in p
     assert "exclude_character_bible" in p
     assert isinstance(p["exclude_character_bible"], bool)
+
+
+def test_base_image_prompt_appends_suffix_not_override():
+    from director_api.services.narration_bracket_visual import base_image_prompt_from_scene_fields
+
+    p, _, _ = base_image_prompt_from_scene_fields(
+        narration_text="Victoria wakes in bed.",
+        prompt_package_json={"image_prompt": "Victoria in her bedroom at dawn."},
+        image_prompt_override=None,
+        image_prompt_suffix="Side profile three-quarter framing, same scene and wardrobe.",
+    )
+    assert "Victoria in her bedroom at dawn." in p
+    assert "Side profile three-quarter framing" in p

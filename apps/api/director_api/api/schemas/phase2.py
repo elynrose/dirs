@@ -64,3 +64,17 @@ class ChapterPatch(BaseModel):
         ):
             raise ValueError("at least one of title, summary, target_duration_sec, script_text is required")
         return self
+
+
+class ManualChapterImportBody(BaseModel):
+    """Step-by-step manual import: one chapter; each non-empty line becomes one scene."""
+
+    title: str = Field(..., min_length=1, max_length=500)
+    text: str = Field(..., min_length=1, max_length=500_000)
+    summary: str | None = Field(default=None, max_length=80_000)
+    target_duration_sec: int | None = Field(default=None, ge=30, le=7200)
+
+
+class ManualChapterImportOut(BaseModel):
+    chapter: ChapterOut
+    scene_count: int

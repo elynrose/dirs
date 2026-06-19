@@ -90,6 +90,15 @@ def base_image_prompt_from_scene_fields(
     return _append_image_prompt_suffix(p, image_prompt_suffix), False, []
 
 
+def _append_video_prompt_suffix(prompt: str, video_prompt_suffix: str | None) -> str:
+    suffix = (video_prompt_suffix or "").strip()
+    if not suffix:
+        return prompt
+    base = (prompt or "").strip()
+    combined = f"{base}\n\n{suffix}" if base else suffix
+    return sanitize_jsonb_text(combined, 3000)
+
+
 def video_text_prompt_from_scene_fields(
     *,
     narration_text: str | None,
@@ -98,21 +107,26 @@ def video_text_prompt_from_scene_fields(
     prompt_package_json: dict[str, Any] | None,
     video_prompt_override: str | None,
     visual_style_effective: str | None = None,
+    video_prompt_suffix: str | None = None,
 ) -> str:
     """Resolve text for video models: override → ``video_prompt`` → ``[bracket]`` hints → VO/purpose."""
     if isinstance(video_prompt_override, str) and video_prompt_override.strip():
-        return sanitize_jsonb_text(video_prompt_override.strip(), 3000)
+        return _append_video_prompt_suffix(
+            sanitize_jsonb_text(video_prompt_override.strip(), 3000),
+            video_prompt_suffix,
+        )
     pp = prompt_package_json if isinstance(prompt_package_json, dict) else {}
     vp = pp.get("video_prompt") if isinstance(pp.get("video_prompt"), str) else None
     if vp and str(vp).strip():
-        return sanitize_jsonb_text(str(vp).strip(), 3000)
+        return _append_video_prompt_suffix(sanitize_jsonb_text(str(vp).strip(), 3000), video_prompt_suffix)
     narr = narration_text or ""
     phrases = extract_bracket_phrases(narr)
     if phrases:
-        return sanitize_jsonb_text(
+        out = sanitize_jsonb_text(
             compose_bracket_visual_prompt(phrases, narration_full=narr, for_video_motion_hint=True),
             3000,
         )
+        return _append_video_prompt_suffix(out, video_prompt_suffix)
     base = narr or purpose or visual_type or "cinematic documentary scene"
     out = sanitize_jsonb_text(str(base)[:3000], 3000)
     vs = (visual_style_effective or "").strip()
@@ -120,7 +134,7 @@ def video_text_prompt_from_scene_fields(
         room = max(0, 3000 - len(out) - 24)
         if room > 80:
             out = sanitize_jsonb_text(f"{out}\n\nVisual style: {vs[:room]}", 3000)
-    return out
+    return _append_video_prompt_suffix(out, video_prompt_suffix)
 
 
 def append_video_character_dialogue_to_prompt(

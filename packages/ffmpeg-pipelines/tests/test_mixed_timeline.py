@@ -122,6 +122,29 @@ def test_mixed_batches_three_consecutive_static_images(tmp_path: Path) -> None:
     assert 0.55 <= d <= 0.75, f"expected ~0.6s total, got {d}"
 
 
+def test_mixed_two_images_with_zoom_motion(tmp_path: Path) -> None:
+    """Ken Burns zoom on a batched still run."""
+    _require_ffmpeg()
+    paths = []
+    for i, color in enumerate(("red", "blue")):
+        p = tmp_path / f"z{i}.png"
+        _solid_png(p, color=color)
+        paths.append(p)
+    out = tmp_path / "zoom_stills.mp4"
+    meta = compile_mixed_visual_timeline(
+        [
+            ("image", paths[0], 0.35, "zoom"),
+            ("image", paths[1], 0.35, "zoom"),
+        ],
+        out,
+        width=320,
+        height=180,
+        timeout_sec=180.0,
+    )
+    assert meta.get("mode") == "mixed_visual_timeline"
+    assert out.is_file() and out.stat().st_size > 64
+
+
 def test_mixed_requires_image_duration(tmp_path: Path) -> None:
     _require_ffmpeg()
     img = tmp_path / "s.png"

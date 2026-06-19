@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from ffmpeg_pipelines.encode import VideoEncodeConfig, append_video_encode_args, effective_encode_config
 from ffmpeg_pipelines.errors import FFmpegCompileError
 from ffmpeg_pipelines.nt_staging import (
     audio_should_use_short_temp,
@@ -28,6 +29,7 @@ def encode_black_title_card_mp4(
     fps: int = 30,
     crf: int = 23,
     preset: str = "veryfast",
+    encode_config: VideoEncodeConfig | None = None,
     ffmpeg_bin: str = "ffmpeg",
     timeout_sec: float = 120.0,
 ) -> dict[str, Any]:
@@ -49,6 +51,7 @@ def encode_black_title_card_mp4(
         else:
             mkdir_parent(output_path)
 
+        enc = effective_encode_config(encode_config, crf=crf, preset=preset)
         cmd = [
             ffmpeg_bin,
             "-y",
@@ -64,21 +67,20 @@ def encode_black_title_card_mp4(
             f"{dur:.3f}",
             "-vf",
             vf,
-            "-c:v",
-            "libx264",
-            "-preset",
-            preset,
-            "-crf",
-            str(crf),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-movflags",
-            "+faststart",
-            "-shortest",
-            ffmpeg_argv_path(out_write),
         ]
+        append_video_encode_args(cmd, enc)
+        cmd.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-movflags",
+                "+faststart",
+                "-shortest",
+                ffmpeg_argv_path(out_write),
+            ]
+        )
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "")[-4000:]

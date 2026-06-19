@@ -25,6 +25,23 @@ def append_event(run: AgentRun, step: str, status: str, **extra: Any) -> None:
     events.append(row)
     run.steps_json = events
     flag_modified(run, "steps_json")
+    run.updated_at = datetime.now(timezone.utc)
+
+
+def touch_agent_run_progress(
+    db: Any,
+    agent_run_uuid: uuid.UUID,
+    step: str,
+    *,
+    status: str = "progress",
+    **extra: Any,
+) -> None:
+    """Lightweight heartbeat during long inline steps (coverage, ComfyUI batches)."""
+    run = db.get(AgentRun, agent_run_uuid)
+    if run is None or run.status not in ("running", "paused", "queued"):
+        return
+    append_event(run, step, status, **extra)
+    db.commit()
 
 
 def pipeline_control_dict(raw: Any) -> dict[str, bool]:

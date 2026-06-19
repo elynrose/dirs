@@ -41,15 +41,12 @@ router = APIRouter(prefix="/ideas", tags=["ideas"])
 log = structlog.get_logger(__name__)
 
 
-def _tid(settings: Settings) -> str:
-    return settings.default_tenant_id
-
-
 @router.post("/generate")
 def generate_ideas(
     body: IdeaGenerateIn,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     items, err = generate_idea_items(settings, body.topic)
@@ -70,9 +67,10 @@ def generate_ideas(
 def list_ideas(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    rows = list_ideas_for_tenant(db, _tid(settings))
+    rows = list_ideas_for_tenant(db, auth.tenant_id)
     return {
         "data": [ProjectIdeaOut.model_validate(r).model_dump(mode="json") for r in rows],
         "meta": meta,
@@ -90,10 +88,10 @@ def save_idea(
     auth_on = bool(get_settings().director_auth_enabled)
     from director_api.services.tenant_entitlements import assert_can_create_project
 
-    assert_can_create_project(db, _tid(settings), auth_enabled=auth_on)
+    assert_can_create_project(db, auth.tenant_id, auth_enabled=auth_on)
     row = ProjectIdea(
         id=uuid.uuid4(),
-        tenant_id=_tid(settings),
+        tenant_id=auth.tenant_id,
         source_topic=body.source_topic.strip(),
         title=body.title.strip(),
         description=body.description.strip(),
@@ -119,7 +117,7 @@ def run_idea_instant(
         p, run = create_project_and_start_agent_run(
             db,
             settings=settings,
-            tenant_id=_tid(settings),
+            tenant_id=auth.tenant_id,
             title=body.title.strip(),
             topic=body.description.strip(),
             target_runtime_minutes=body.target_runtime_minutes,
@@ -157,7 +155,7 @@ def run_idea(
     meta: dict = Depends(meta_dep),
 ) -> dict:
     idea = db.get(ProjectIdea, idea_id)
-    if not idea or idea.tenant_id != _tid(settings):
+    if not idea or idea.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "idea not found"})
     auth_on = bool(get_settings().director_auth_enabled)
     rt = body.target_runtime_minutes if body else 10
@@ -166,7 +164,7 @@ def run_idea(
         p, run = create_project_and_start_agent_run(
             db,
             settings=settings,
-            tenant_id=_tid(settings),
+            tenant_id=auth.tenant_id,
             title=idea.title,
             topic=idea.description,
             target_runtime_minutes=rt,
@@ -204,7 +202,7 @@ def schedule_idea(
     meta: dict = Depends(meta_dep),
 ) -> dict:
     idea = db.get(ProjectIdea, idea_id)
-    if not idea or idea.tenant_id != _tid(settings):
+    if not idea or idea.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "idea not found"})
     when = body.scheduled_at
     if when.tzinfo is None:
@@ -218,11 +216,11 @@ def schedule_idea(
             status_code=422,
             detail={"code": "SCHEDULE_PAST", "message": "scheduled_at must be in the future"},
         )
-    cancel_pending_schedules_for_idea(db, _tid(settings), idea_id)
+    cancel_pending_schedules_for_idea(db, auth.tenant_id, idea_id)
     uid = int(auth.user_id) if auth.user_id else None
     row = IdeaScheduledRun(
         id=uuid.uuid4(),
-        tenant_id=_tid(settings),
+        tenant_id=auth.tenant_id,
         idea_id=idea.id,
         scheduled_at=when,
         status="pending",
@@ -238,10 +236,11 @@ def schedule_idea(
 def list_schedules(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
     status: str | None = None,
 ) -> dict:
-    q = select(IdeaScheduledRun).where(IdeaScheduledRun.tenant_id == _tid(settings))
+    q = select(IdeaScheduledRun).where(IdeaScheduledRun.tenant_id == auth.tenant_id)
     if status:
         q = q.where(IdeaScheduledRun.status == status.strip())
     rows = list(db.scalars(q.order_by(desc(IdeaScheduledRun.scheduled_at)).limit(100)).all())
@@ -256,10 +255,11 @@ def cancel_schedule(
     schedule_id: uuid.UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     row = db.get(IdeaScheduledRun, schedule_id)
-    if not row or row.tenant_id != _tid(settings):
+    if not row or row.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "schedule not found"})
     if row.status != "pending":
         raise HTTPException(
@@ -276,10 +276,11 @@ def delete_idea(
     idea_id: uuid.UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     row = db.get(ProjectIdea, idea_id)
-    if not row or row.tenant_id != _tid(settings):
+    if not row or row.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "idea not found"})
     db.delete(row)
     db.commit()

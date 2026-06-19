@@ -166,6 +166,7 @@ def maybe_fill_pexels_after_chapter_scene_plan(
                     settings,
                     sc.id,
                     body,
+                    tenant_id=project.tenant_id,
                     api_key=api_key,
                 )
             )

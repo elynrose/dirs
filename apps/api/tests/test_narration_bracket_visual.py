@@ -52,6 +52,19 @@ def test_video_uses_brackets_when_no_video_prompt():
     assert "motion" in t.lower() or "documentary" in t.lower()
 
 
+def test_video_prompt_suffix_appended():
+    t = video_text_prompt_from_scene_fields(
+        narration_text="Wide shot of the harbor.",
+        purpose=None,
+        visual_type=None,
+        prompt_package_json={},
+        video_prompt_override=None,
+        video_prompt_suffix="slow push-in, golden hour",
+    )
+    assert "harbor" in t.lower()
+    assert "slow push-in" in t
+
+
 def test_append_dialogue_off_unchanged():
     base = "cinematic shot of a door"
     out = append_video_character_dialogue_to_prompt(

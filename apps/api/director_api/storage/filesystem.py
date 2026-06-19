@@ -5,6 +5,36 @@ from pathlib import Path
 from director_api.config import get_settings
 
 
+def _legacy_and_tenant_scoped_keys(key: str, tenant_id: str | None) -> list[str]:
+    """Return storage keys to try: primary first, then tenant-scoped / legacy alternates."""
+    safe = key.lstrip("/").replace("..", "")
+    if not safe.startswith("assets/") or not tenant_id:
+        return [safe]
+    parts = safe.split("/")
+    keys = [safe]
+    # legacy assets/<project>/… → tenant assets/<tenant>/<project>/…
+    if len(parts) >= 3 and parts[1] != tenant_id:
+        keys.append(f"assets/{tenant_id}/{'/'.join(parts[1:])}")
+    # tenant-scoped → legacy
+    elif len(parts) >= 4 and parts[1] == tenant_id:
+        keys.append(f"assets/{'/'.join(parts[2:])}")
+    return keys
+
+
+def resolve_storage_path(
+    storage: "FilesystemStorage",
+    key: str,
+    *,
+    tenant_id: str | None = None,
+) -> Path | None:
+    """Return first existing on-disk path for ``key``, dual-reading legacy vs tenant-scoped layouts."""
+    for candidate in _legacy_and_tenant_scoped_keys(key, tenant_id):
+        path = storage.get_path(candidate)
+        if path.is_file():
+            return path
+    return None
+
+
 class FilesystemStorage:
     def __init__(self, root: str | None = None) -> None:
         self.root = Path(root or get_settings().local_storage_root).resolve()

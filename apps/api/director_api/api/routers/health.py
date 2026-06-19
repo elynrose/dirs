@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from director_api.api.deps import meta_dep, settings_dep
 from director_api.api.security_ops import assert_ops_route_allowed
+from director_api.auth.context import AuthContext
+from director_api.auth.deps import auth_context_dep
 from director_api.config import Settings, get_settings
 from director_api.db.session import get_db
 from director_api.db.models import Job
@@ -75,6 +77,7 @@ def metrics(
 ) -> dict:
     assert_ops_route_allowed(request)
     settings = get_settings()
+    # Ops metrics: platform default tenant only (not session-scoped).
     rows = db.execute(
         select(Job.status, func.count(Job.id)).where(Job.tenant_id == settings.default_tenant_id).group_by(Job.status)
     ).all()
@@ -101,11 +104,12 @@ def metrics(
 def celery_status(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Ping Celery workers; if ping fails during a long solo-pool task, infer *online* from DB."""
     return {
-        "data": build_celery_status_data(db, settings.default_tenant_id),
+        "data": build_celery_status_data(db, auth.tenant_id),
         "meta": meta,
     }
 

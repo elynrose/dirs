@@ -36,7 +36,7 @@ def clip_seconds_for_scene(
 
     p = (provider or "").strip().lower()
     if p in ("comfyui_wan", "comfyui"):
-        return min(sec, 6.0)
+        return min(sec, 4.0)
     if p == "fal":
         _ = fal_model
         return min(sec, 15.0)

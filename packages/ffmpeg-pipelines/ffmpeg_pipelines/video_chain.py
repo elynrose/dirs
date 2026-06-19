@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ffmpeg_pipelines.encode import VideoEncodeConfig, append_video_encode_args, effective_encode_config
 from ffmpeg_pipelines.errors import FFmpegCompileError, ffmpeg_cli_excerpt
 from ffmpeg_pipelines.nt_staging import (
     concat_should_use_short_temp,
@@ -81,6 +82,7 @@ def _compile_video_concat_single_invocation(
     fps: int,
     crf: int,
     preset: str,
+    encode_config: VideoEncodeConfig | None,
     ffmpeg_bin: str,
     ffprobe_bin: str | None,
     timeout_sec: float,
@@ -128,18 +130,18 @@ def _compile_video_concat_single_invocation(
         concat = f"{concat_inputs}concat=n={n}:v=1:a=0[outv]"
         filter_complex = ";".join(scaled) + ";" + concat
 
+        enc = effective_encode_config(encode_config, crf=crf, preset=preset)
         args.extend(
             [
                 "-filter_complex",
                 filter_complex,
                 "-map",
                 "[outv]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                preset,
-                "-crf",
-                str(crf),
+            ]
+        )
+        append_video_encode_args(args, enc)
+        args.extend(
+            [
                 "-movflags",
                 "+faststart",
                 "-an",
@@ -253,6 +255,7 @@ def compile_video_concat(
     fps: int = 30,
     crf: int = 23,
     preset: str = "veryfast",
+    encode_config: VideoEncodeConfig | None = None,
     ffmpeg_bin: str = "ffmpeg",
     ffprobe_bin: str | None = "ffprobe",
     timeout_sec: float = 900.0,
@@ -286,17 +289,20 @@ def compile_video_concat(
             fps=fps,
             crf=crf,
             preset=preset,
+            encode_config=encode_config,
             ffmpeg_bin=ffmpeg_bin,
             ffprobe_bin=ffprobe_bin,
             timeout_sec=timeout_sec,
             run_ffprobe_preflight=not _intermediate,
         )
+        enc = effective_encode_config(encode_config, crf=crf, preset=preset)
         return {
             "output_path": str(output),
             "bytes": path_stat(output).st_size,
             "input_count": original_n,
             "mode": "video_concat",
             "chunked_concat": original_n > len(paths),
+            **enc.as_compile_meta(),
         }
 
     if os.name == "nt":
@@ -317,6 +323,7 @@ def compile_video_concat(
                 fps=fps,
                 crf=crf,
                 preset=preset,
+                encode_config=encode_config,
                 ffmpeg_bin=ffmpeg_bin,
                 ffprobe_bin=ffprobe_bin,
                 timeout_sec=timeout_sec,
@@ -327,12 +334,14 @@ def compile_video_concat(
         # Merge chunk files with stream-copy (no re-encode) — all partials are already
         # the correct codec / dimensions / fps so a second encode is unnecessary.
         _stream_copy_join(partials, output, ffmpeg_bin=ffmpeg_bin, timeout_sec=timeout_sec)
+        enc = effective_encode_config(encode_config, crf=crf, preset=preset)
         return {
             "output_path": str(output),
             "bytes": path_stat(output).st_size,
             "input_count": original_n,
             "mode": "video_concat",
             "chunked_concat": True,
+            **enc.as_compile_meta(),
         }
     finally:
         shutil.rmtree(work, ignore_errors=True)

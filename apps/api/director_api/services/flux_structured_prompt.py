@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from director_api.services.camera_perspective import prompt_already_specifies_camera_angle
 from director_api.services.research_service import sanitize_jsonb_text
 from director_api.style_presets import DEFAULT_VISUAL_PRESET, visual_preset_ids
 
@@ -163,6 +164,18 @@ def _first_nonempty_line(text: str) -> str:
     return ""
 
 
+def _extract_framing_from_subject(subject: str) -> str:
+    """Pull an explicit shot/framing clause out of the subject when present (e.g. Dutch angle, wide establishing)."""
+    s = (subject or "").strip()
+    if not s or not prompt_already_specifies_camera_angle(s):
+        return ""
+    # Prefer the opening sentence — scene planners usually lead with framing.
+    first = s.split(".")[0].strip()
+    if first and prompt_already_specifies_camera_angle(first):
+        return first[:240]
+    return ""
+
+
 def _extract_camera_line(body: str, *, for_video: bool) -> tuple[str, str]:
     p = body or ""
     pat = _CAMERA_VIDEO_RE if for_video else _CAMERA_IMAGE_RE
@@ -271,7 +284,13 @@ def build_flux_structured_prompt(
         if char.upper().startswith("CHARACTER CONSISTENCY"):
             char = re.sub(r"^CHARACTER CONSISTENCY\s*—\s*", "", char, flags=re.I).strip()
         subj_parts.append(char)
-    subject_line = ". ".join(p for p in subj_parts if p)[:1800]
+    scene_text = (subj_parts[0] if subj_parts else "")[:1600]
+    if len(subj_parts) > 1:
+        room = max(0, 1800 - len(scene_text) - 2)
+        char_trim = (subj_parts[1] or "")[:room] if room > 80 else ""
+        subject_line = f"{scene_text}. {char_trim}".strip(". ")[:1800] if char_trim else scene_text[:1800]
+    else:
+        subject_line = scene_text[:1800]
 
     style = blocks["style_design"]
     vs = (visual_style_resolved or "").strip()
@@ -280,7 +299,15 @@ def build_flux_structured_prompt(
         style = vs[:900]
 
     env = environment.strip() or "As described in the subject and story context"
-    comp = composition.strip() or ("Eye-level medium shot, balanced cinematic framing" if not for_video else "Slow push-in, stable cinematic framing")
+    comp = composition.strip()
+    if not comp and subject_line:
+        comp = _extract_framing_from_subject(subject_line)
+    if not comp:
+        comp = (
+            "Eye-level medium shot, balanced cinematic framing"
+            if not for_video
+            else "Slow push-in, stable cinematic framing"
+        )
     light = blocks["lighting"]
     render = blocks["rendering"]
     mood_line = (mood or "").strip() or blocks.get("mood_default") or _DEFAULT_MOOD

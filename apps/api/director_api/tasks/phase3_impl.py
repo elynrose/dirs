@@ -6,8 +6,6 @@ circular imports during Celery/API startup.
 from __future__ import annotations
 
 import shutil
-import subprocess
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -16,7 +14,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from director_api.agents import phase3_llm
+from director_api.tasks.worker_helpers import worker_tenant_id
 from director_api.db.models import Asset, Chapter, Job, Project, Scene
 from director_api.providers.media_comfyui import generate_scene_image_comfyui, generate_scene_video_comfyui
 from director_api.providers.media_fal import (
@@ -38,13 +36,12 @@ from director_api.services.image_prompt_assembly import (
     scene_text_for_character_match,
     strip_redundant_visual_style_clauses,
 )
+from director_api.agents import phase3_llm
 from director_api.services import phase3 as phase3_svc
 from director_api.services import agent_resume as agent_resume_svc
 from director_api.services.narration_bracket_visual import (
     base_image_prompt_from_scene_fields,
     maybe_prepend_topic_setting_anchor,
-    append_video_character_dialogue_to_prompt,
-    video_text_prompt_from_scene_fields,
 )
 from director_api.services.prompt_enhance import refine_bracket_visual_prompt_llm
 from director_api.services.research_service import sanitize_jsonb_text
@@ -57,6 +54,18 @@ from ffmpeg_pipelines.errors import FFmpegCompileError
 from ffmpeg_pipelines.paths import path_from_storage_url, path_is_readable_file
 from ffmpeg_pipelines.slideshow import compile_image_slideshow
 from ffmpeg_pipelines.still_to_video import encode_image_to_mp4
+from director_api.tasks.media_normalize_helpers import (
+    _image_bytes_magic_ok,
+    _normalize_image_bytes_to_dims,
+    _normalize_video_bytes_to_dims,
+    _package_negative_prompt,
+    _project_export_dimensions,
+)
+from director_api.tasks.prompt_runtime_helpers import (
+    _local_ffmpeg_motion_from_video_prompt,
+    _resolve_phase3_video_text_prompt,
+    _scene_still_prompt_for_comfy,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -86,228 +95,13 @@ def _wt():
     return _WT
 
 
-def _image_bytes_magic_ok(data: bytes) -> bool:
-    """Best-effort image signature check for pass-through bytes (before/without successful ffmpeg normalize)."""
-    if not data or len(data) < 4:
-        return False
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return True
-    # JPEG: SOI is FF D8; next byte varies (E0, E1, DB, …).
-    if data[:2] == b"\xff\xd8":
-        return True
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return True
-    if data[:6] in (b"GIF87a", b"GIF89a"):
-        return True
-    # TIFF (common from some decoders)
-    if data[:4] in (b"II*\x00", b"MM\x00*"):
-        return True
-    # BMP
-    if data[:2] == b"BM" and len(data) >= 14:
-        return True
-    # JPEG 2000 (rare)
-    if len(data) >= 12 and data[4:8] == b"jP  ":
-        return True
-    # AVIF / HEIF (ISO BMFF): ftyp not always at offset 4; scan first 512 bytes.
-    window = data[: min(512, len(data))]
-    if b"ftyp" in window:
-        i = window.find(b"ftyp")
-        if i >= 0 and i + 12 <= len(data):
-            brands = data[i : i + 32]
-            if b"avif" in brands or b"avis" in brands or b"mif1" in brands or b"msf1" in brands or b"heic" in brands:
-                return True
-    return False
-
-def _normalize_image_bytes_to_dims(
-    settings: Any,
-    data: bytes,
-    content_type: str | None,
-    target_w: int,
-    target_h: int,
-) -> tuple[bytes, str, bool]:
-    """Crop/scale to target_w×target_h via ffmpeg. Returns (bytes, content_type, ffmpeg_output_trusted).
-
-    If ffmpeg runs and writes a non-trivial output file, we trust it (explicit mjpeg) even if magic
-    checks would fail on exotic inputs. If ffmpeg fails or writes empty output, we fall back to raw
-    bytes and set trusted False.
-    """
-    ffmpeg_bin = (getattr(settings, "ffmpeg_bin", None) or "ffmpeg").strip() or "ffmpeg"
-    if not shutil.which(ffmpeg_bin):
-        return data, (content_type or "image/jpeg"), False
-    in_suffix = ".jpg"
-    ct = (content_type or "").lower()
-    if "png" in ct:
-        in_suffix = ".png"
-    elif "webp" in ct:
-        in_suffix = ".webp"
-    elif "avif" in ct or "heif" in ct or "heic" in ct:
-        in_suffix = ".avif"
-    with tempfile.NamedTemporaryFile(suffix=in_suffix, delete=False) as fin:
-        fin.write(data)
-        in_path = Path(fin.name)
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as fout:
-        out_path = Path(fout.name)
-    try:
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-i",
-            str(in_path),
-            "-vf",
-            f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}",
-            "-frames:v",
-            "1",
-            "-c:v",
-            "mjpeg",
-            "-q:v",
-            "2",
-            str(out_path),
-        ]
-        subprocess.run(cmd, capture_output=True, check=True, timeout=120)
-        out_b = out_path.read_bytes()
-        if len(out_b) >= 32:
-            return out_b, "image/jpeg", True
-        log.warning("ffmpeg_normalize_empty_or_tiny_output", out_len=len(out_b))
-        return data, (content_type or "image/jpeg"), False
-    except Exception as e:
-        log.warning("ffmpeg_normalize_failed", error=str(e)[:300])
-        return data, (content_type or "image/jpeg"), False
-    finally:
-        in_path.unlink(missing_ok=True)
-        out_path.unlink(missing_ok=True)
-
-def _normalize_video_bytes_to_dims(settings: Any, data: bytes, target_w: int, target_h: int) -> bytes:
-    ffmpeg_bin = (getattr(settings, "ffmpeg_bin", None) or "ffmpeg").strip() or "ffmpeg"
-    if not shutil.which(ffmpeg_bin):
-        return data
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as fin:
-        fin.write(data)
-        in_path = Path(fin.name)
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as fout:
-        out_path = Path(fout.name)
-    try:
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-i",
-            str(in_path),
-            "-vf",
-            f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},setsar=1",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "20",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            str(out_path),
-        ]
-        subprocess.run(cmd, capture_output=True, check=True, timeout=240)
-        return out_path.read_bytes()
-    except Exception:
-        return data
-    finally:
-        in_path.unlink(missing_ok=True)
-def _package_negative_prompt(pp: Any, *, project: Project | None = None, settings: Any | None = None) -> str | None:
-    if project is not None and settings is not None:
-        neg = phase3_svc.effective_scene_negative_prompt(
-            project, settings, pp if isinstance(pp, dict) else None
-        )
-        return sanitize_jsonb_text(neg, 1200) if neg else None
-    if not isinstance(pp, dict):
-        return None
-    n = pp.get("negative_prompt")
-    if not isinstance(n, str) or not n.strip():
-        return None
-    return sanitize_jsonb_text(n.strip(), 1200)
+def _phase3_video_job_result(asset: Asset) -> dict[str, Any]:
+    out: dict[str, Any] = {"asset_id": str(asset.id), "ok": asset.status == "succeeded"}
+    if asset.status != "succeeded" and asset.error_message:
+        out["error_message"] = str(asset.error_message)[:2000]
+    return out
 
 
-def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, settings: Any) -> str:
-    """Same prompt recipe as scene image generation (Flux / Comfy still), without job payload overrides."""
-    return _wt()._scene_still_prompt_for_comfy(db, scene, project, settings)
-
-def _resolve_phase3_video_text_prompt(
-    scene: Scene,
-    pp: dict[str, Any],
-    *,
-    override: Any = None,
-    project: Project | None = None,
-    settings: Any | None = None,
-) -> str:
-    """Text sent to generative video models; optional job override, else package, else ``[bracket]`` hints, else VO/purpose.
-
-    When ``project.include_spoken_dialogue_in_video_prompt`` and ``pp["video_character_dialogue"]`` are set, appends a
-    ``saying: "…"`` fragment for native video+audio models (e.g. Veo).
-    """
-    vis_eff: str | None = None
-    if project is not None and settings is not None:
-        vis_eff = effective_visual_style(project.visual_style, settings)
-    base = video_text_prompt_from_scene_fields(
-        narration_text=scene.narration_text,
-        purpose=scene.purpose,
-        visual_type=scene.visual_type,
-        prompt_package_json=pp if isinstance(pp, dict) else {},
-        video_prompt_override=override if isinstance(override, str) else None,
-        visual_style_effective=vis_eff,
-    )
-    if project is None:
-        return base
-    dial = pp.get("video_character_dialogue") if isinstance(pp.get("video_character_dialogue"), str) else None
-    return append_video_character_dialogue_to_prompt(
-        base,
-        include_spoken_dialogue_in_video_prompt=bool(
-            getattr(project, "include_spoken_dialogue_in_video_prompt", False)
-        ),
-        video_character_dialogue=dial,
-    )
-def _local_ffmpeg_motion_from_video_prompt(prompt: str) -> tuple[bool, str, str]:
-    """Coarse motion hints from natural-language ``video_prompt`` for still→MP4 / slideshow.
-
-    Returns ``(slow_zoom, ken_burns_direction 'in'|'out', slideshow_motion 'none'|'pan'|'zoom')``.
-    """
-    t = (prompt or "").lower()
-    has_pan = any(
-        p in t
-        for p in (
-            "pan left",
-            "pan right",
-            "panning",
-            "camera pans",
-            "lateral move",
-            "truck left",
-            "truck right",
-            "whip pan",
-        )
-    )
-    zoom_out = any(p in t for p in ("zoom out", "pull out", "pull back", "dolly out", "pull-back", "widen"))
-    zoom_in = any(
-        p in t
-        for p in (
-            "zoom in",
-            "push in",
-            "push-in",
-            "dolly in",
-            "slow zoom",
-            "creep in",
-            "tighter",
-            "closing in",
-            "push closer",
-        )
-    )
-    if has_pan and not zoom_in and not zoom_out and "zoom" not in t:
-        return False, "in", "pan"
-    if zoom_out:
-        return True, "out", "zoom"
-    if zoom_in or ("zoom" in t and not zoom_out):
-        return True, "in", "zoom"
-    return False, "in", "none"
 def _phase3_scenes_plan_for_chapter(
     db,
     chapter: Chapter,
@@ -646,7 +440,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         raise ValueError("project not found")
     if project.tenant_id != job.tenant_id:
         raise ValueError("job tenant does not match project")
-    tenant_id = str(payload.get("tenant_id") or project.tenant_id)
+    tenant_id = worker_tenant_id(job, payload)
     exp_w, exp_h = _wt()._project_export_dimensions(project)
 
     ar_uuid = _wt()._payload_agent_run_uuid(payload)
@@ -942,6 +736,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             str(prompt),
             negative_prompt=scene_neg,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+            generation_tier=tier,
         )
     else:
         res = generate_scene_image(
@@ -1032,7 +827,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         raise ValueError("project not found")
     if project.tenant_id != job.tenant_id:
         raise ValueError("job tenant does not match project")
-    tenant_id = str(payload.get("tenant_id") or project.tenant_id)
+    tenant_id = worker_tenant_id(job, payload)
     exp_w, exp_h = _wt()._project_export_dimensions(project)
 
     ar_uuid = _wt()._payload_agent_run_uuid(payload)
@@ -1041,7 +836,12 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
 
     pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
     base_video_text_prompt = _resolve_phase3_video_text_prompt(
-        scene, pp, override=payload.get("video_prompt_override"), project=project, settings=settings
+        scene,
+        pp,
+        override=payload.get("video_prompt_override"),
+        project=project,
+        settings=settings,
+        suffix=payload.get("video_prompt_suffix"),
     )
     payload_override = payload.get("video_provider")
     if isinstance(payload_override, str) and payload_override.strip():
@@ -1163,7 +963,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                         meta={"ok": False, "reason": "no_still_workflow", "tier": tier},
                     )
                     db.flush()
-                    return {"asset_id": str(fail.id)}
+                    return _phase3_video_job_result(fail)
                 img_prompt = _scene_still_prompt_for_comfy(db, scene, project, settings)
                 log.info(
                     "comfyui_wan_auto_still",
@@ -1212,7 +1012,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                         meta={"ok": False, "reason": "auto_still_failed", "tier": tier},
                     )
                     db.flush()
-                    return {"asset_id": str(fail.id)}
+                    return _phase3_video_job_result(fail)
                 storage = FilesystemStorage(settings.local_storage_root)
                 img_wf_name = (settings.comfyui_model_name or "").strip() or Path(wf_still).name
                 img_asset = Asset(
@@ -1289,7 +1089,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                         meta={"ok": False, "reason": "auto_still_invalid_bytes", "tier": tier},
                     )
                     db.flush()
-                    return {"asset_id": str(fail.id)}
+                    return _phase3_video_job_result(fail)
                 ext = "png" if "png" in ct.lower() else "jpg"
                 ikey = f"assets/{project.id}/{scene.id}/{img_asset.id}.{ext}"
                 iurl = storage.put_bytes(ikey, img_bytes)
@@ -1420,7 +1220,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                         meta={"ok": False, "reason": "i2v_no_scene_image", "tier": tier},
                     )
                     db.flush()
-                    return {"asset_id": str(asset.id)}
+                    return _phase3_video_job_result(asset)
                 ip_f = path_from_storage_url(pick_f[0].storage_url, storage_root=storage_root_f)
                 if ip_f is None or not path_is_readable_file(ip_f):
                     asset.status = "failed"
@@ -1439,7 +1239,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                         meta={"ok": False, "reason": "i2v_image_not_on_disk", "tier": tier},
                     )
                     db.flush()
-                    return {"asset_id": str(asset.id)}
+                    return _phase3_video_job_result(asset)
                 scene_image_bytes = ip_f.read_bytes()
                 suf = ip_f.suffix.lower()
                 if suf == ".png":
@@ -1464,6 +1264,11 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                 scene_image_path=scene_comfy_path,
                 duration_sec=duration_sec,
                 frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
+                should_stop=_wt()._make_job_stop_signal(
+                    agent_run_uuid=ar_uuid,
+                    job_uuid=job.id,
+                    project_uuid=project.id,
+                ),
             )
         if vres.get("ok") and vres.get("bytes"):
             storage = FilesystemStorage(settings.local_storage_root)
@@ -1499,7 +1304,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
                 meta={"ok": False, "error": err[:500], "tier": tier},
             )
         db.flush()
-        return {"asset_id": str(asset.id)}
+        return _phase3_video_job_result(asset)
 
     ffmpeg_bin = (settings.ffmpeg_bin or "ffmpeg").strip() or "ffmpeg"
     if not shutil.which(ffmpeg_bin):
@@ -1534,7 +1339,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             meta={"ok": False, "reason": "ffmpeg_missing", "tier": tier},
         )
         db.flush()
-        return {"asset_id": str(asset.id)}
+        return _phase3_video_job_result(asset)
 
     imgs = list(
         db.scalars(
@@ -1581,7 +1386,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             meta={"ok": False, "reason": "no_source_image", "tier": tier},
         )
         db.flush()
-        return {"asset_id": str(asset.id)}
+        return _phase3_video_job_result(asset)
 
     storage_root = Path(settings.local_storage_root).resolve()
     resolved_paths: list[tuple[Asset, Path]] = []
@@ -1703,7 +1508,7 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
             meta={"ok": False, "error": err[:500], "tier": tier},
         )
         db.flush()
-        return {"asset_id": str(asset.id)}
+        return _phase3_video_job_result(asset)
 
     url = out_path.resolve().as_uri()
     _wt()._bind_asset_local_file(asset, url, key)
@@ -1726,4 +1531,4 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         },
     )
     db.flush()
-    return {"asset_id": str(asset.id)}
+    return _phase3_video_job_result(asset)

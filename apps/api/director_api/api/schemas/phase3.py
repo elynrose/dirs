@@ -57,6 +57,20 @@ class ScenesGenerateBody(BaseModel):
     replace_existing_scenes: bool = False
 
 
+class ManualScenesImportBody(BaseModel):
+    """Step-by-step manual import: each non-empty line becomes one scene."""
+
+    text: str = Field(..., min_length=1, max_length=500_000)
+    replace_existing_scenes: bool = True
+    confirm_erase_assets: bool = False
+    update_script_text: bool = True
+
+
+class ManualScenesImportOut(BaseModel):
+    chapter_id: UUID
+    scene_count: int
+
+
 class SceneImageGenBody(BaseModel):
     generation_tier: Literal["preview", "production"] = "preview"
     image_prompt_override: str | None = Field(default=None, max_length=4000)

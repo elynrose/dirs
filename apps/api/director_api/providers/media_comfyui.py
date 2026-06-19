@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -28,7 +28,13 @@ from director_api.services.project_frame import frame_pixel_size
 
 log = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+# Only one local WAN render at a time — concurrent prompts queue-block and look "stuck".
+_COMFYUI_VIDEO_LOCK = threading.Lock()
+
+_COMFYUI_IMAGE_STEPS_BY_TIER: dict[str, int] = {
+    "preview": 20,
+    "production": 32,
+}
 
 _CLOUD_DEFAULT_BASE = "https://cloud.comfy.org"
 
@@ -189,11 +195,20 @@ def _wait_for_history_entry(
     poll: float,
     *,
     client_id: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
     """Poll until workflow outputs are available. Returns (entry, error_code, detail)."""
     deadline = time.monotonic() + timeout
     cloud = _is_cloud(settings)
     last_hr: httpx.Response | None = None
+
+    def _stop_requested() -> bool:
+        if should_stop is None:
+            return False
+        try:
+            return bool(should_stop())
+        except Exception:  # noqa: BLE001
+            return False
 
     ws_done: threading.Event | None = None
     if (
@@ -205,6 +220,8 @@ def _wait_for_history_entry(
 
     if cloud:
         while time.monotonic() < deadline:
+            if _stop_requested():
+                return None, "cancelled", "Stop requested"
             sr = http.get(f"{base}/api/job/{prompt_id}/status")
             if sr.status_code == 200:
                 try:
@@ -215,6 +232,8 @@ def _wait_for_history_entry(
                 if st == "completed":
                     hist_deadline = time.monotonic() + min(120.0, max(30.0, timeout * 0.25))
                     while time.monotonic() < hist_deadline:
+                        if _stop_requested():
+                            return None, "cancelled", "Stop requested"
                         last_hr = http.get(f"{base}/api/history_v2/{prompt_id}")
                         entry = _history_response_to_entry(last_hr, prompt_id)
                         if entry is not None:
@@ -228,6 +247,8 @@ def _wait_for_history_entry(
         return None, "timeout", f"Job did not complete within {timeout:.0f}s"
 
     while time.monotonic() < deadline:
+        if _stop_requested():
+            return None, "cancelled", "Stop requested"
         hr = http.get(f"{base}/history/{prompt_id}")
         if hr.status_code == 200:
             try:
@@ -653,6 +674,8 @@ def generate_scene_image_comfyui(
     *,
     negative_prompt: str | None = None,
     frame_aspect_ratio: str | None = "16:9",
+    generation_tier: str | None = "preview",
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """
     Run a saved API-format workflow with the scene prompt injected.
@@ -697,6 +720,7 @@ def generate_scene_image_comfyui(
     workflow = copy.deepcopy(tpl)
     fw, fh = frame_pixel_size(frame_aspect_ratio)
     _apply_frame_dimensions_to_comfyui_workflow(workflow, fw, fh)
+    _apply_generation_tier_to_comfyui_image_workflow(workflow, generation_tier)
     field = (settings.comfyui_prompt_input_key or "text").strip() or "text"
     scene_neg = (negative_prompt or "").strip()
     cfg_neg = (settings.comfyui_default_negative_prompt or "").strip()
@@ -752,7 +776,14 @@ def generate_scene_image_comfyui(
                 return {"ok": False, "provider": "comfyui", "model": model, "error": "no_prompt_id"}
 
             entry, wait_err, wait_detail = _wait_for_history_entry(
-                http, settings, base, prompt_id, timeout, poll, client_id=client_id
+                http,
+                settings,
+                base,
+                prompt_id,
+                timeout,
+                poll,
+                client_id=client_id,
+                should_stop=should_stop,
             )
             if wait_err:
                 return {
@@ -882,6 +913,37 @@ def _apply_frame_dimensions_to_comfyui_workflow(
     return updated
 
 
+def _apply_generation_tier_to_comfyui_image_workflow(
+    workflow: dict[str, Any],
+    generation_tier: str | None,
+) -> bool:
+    """Raise KSampler ``steps`` for ``production`` tier (``preview`` keeps workflow defaults)."""
+    tier = (generation_tier or "preview").strip().lower()
+    steps = _COMFYUI_IMAGE_STEPS_BY_TIER.get(tier)
+    if steps is None or tier == "preview":
+        # Preview: honor workflow JSON defaults (typically 20 for Flux Dev).
+        steps = _COMFYUI_IMAGE_STEPS_BY_TIER["preview"]
+    updated = False
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("class_type") or "") != "KSampler":
+            continue
+        ins = node.get("inputs")
+        if not isinstance(ins, dict):
+            continue
+        cur = ins.get("steps")
+        if not isinstance(cur, (int, float)):
+            continue
+        target = int(steps)
+        if int(cur) == target:
+            continue
+        ins["steps"] = target
+        updated = True
+        log.info("comfyui_image_steps_inject", tier=tier, steps=target)
+    return updated
+
+
 def _apply_duration_sec_to_comfyui_video_workflow(
     workflow: dict[str, Any],
     duration_sec: float | None,
@@ -958,6 +1020,7 @@ def generate_scene_video_comfyui(
     scene_image_path: Path | None = None,
     duration_sec: float | None = None,
     frame_aspect_ratio: str | None = "16:9",
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """
     Run a ComfyUI API workflow that ends in Save Video / PreviewVideo (e.g. WAN 2.1 i2v).
@@ -990,192 +1053,193 @@ def generate_scene_video_comfyui(
     timeout = max(60.0, float(settings.comfyui_video_timeout_sec))
     poll = max(0.2, min(5.0, float(settings.comfyui_poll_interval_sec)))
     hdr = _comfyui_request_headers(settings)
+    with _COMFYUI_VIDEO_LOCK:
 
-    try:
-        wf_path = _resolve_video_workflow_path(settings)
-    except OSError as e:
-        return {"ok": False, "provider": "comfyui_wan", "error": "workflow_path", "detail": str(e)}
+        try:
+            wf_path = _resolve_video_workflow_path(settings)
+        except OSError as e:
+            return {"ok": False, "provider": "comfyui_wan", "error": "workflow_path", "detail": str(e)}
 
-    try:
-        tpl = json.loads(wf_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-        return {"ok": False, "provider": "comfyui_wan", "error": "workflow_json", "detail": str(e)[:800]}
+        try:
+            tpl = json.loads(wf_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            return {"ok": False, "provider": "comfyui_wan", "error": "workflow_json", "detail": str(e)[:800]}
 
-    if not isinstance(tpl, dict):
-        return {"ok": False, "provider": "comfyui_wan", "error": "workflow_not_object"}
+        if not isinstance(tpl, dict):
+            return {"ok": False, "provider": "comfyui_wan", "error": "workflow_not_object"}
 
-    workflow = copy.deepcopy(tpl)
-    fw, fh = frame_pixel_size(frame_aspect_ratio)
-    _apply_frame_dimensions_to_comfyui_workflow(workflow, fw, fh)
-    _apply_duration_sec_to_comfyui_video_workflow(workflow, duration_sec)
-    p_node = (settings.comfyui_video_prompt_node_id or settings.comfyui_prompt_node_id or "").strip()
-    neg_node = (settings.comfyui_video_negative_node_id or settings.comfyui_negative_node_id or "").strip()
-    neg_text = (settings.comfyui_video_default_negative_prompt or settings.comfyui_default_negative_prompt or "").strip()
-    field = (
-        (settings.comfyui_video_prompt_input_key or settings.comfyui_prompt_input_key or "text").strip() or "text"
-    )
+        workflow = copy.deepcopy(tpl)
+        fw, fh = frame_pixel_size(frame_aspect_ratio)
+        _apply_frame_dimensions_to_comfyui_workflow(workflow, fw, fh)
+        _apply_duration_sec_to_comfyui_video_workflow(workflow, duration_sec)
+        p_node = (settings.comfyui_video_prompt_node_id or settings.comfyui_prompt_node_id or "").strip()
+        neg_node = (settings.comfyui_video_negative_node_id or settings.comfyui_negative_node_id or "").strip()
+        neg_text = (settings.comfyui_video_default_negative_prompt or settings.comfyui_default_negative_prompt or "").strip()
+        field = (
+            (settings.comfyui_video_prompt_input_key or settings.comfyui_prompt_input_key or "text").strip() or "text"
+        )
 
-    use_img = bool(settings.comfyui_video_use_scene_image)
-    load_nid = (settings.comfyui_video_load_image_node_id or "").strip()
-    model = (settings.comfyui_video_model_name or "").strip() or wf_path.name
+        use_img = bool(settings.comfyui_video_use_scene_image)
+        load_nid = (settings.comfyui_video_load_image_node_id or "").strip()
+        model = (settings.comfyui_video_model_name or "").strip() or wf_path.name
 
-    try:
-        with httpx.Client(timeout=timeout, headers=hdr, follow_redirects=True) as http:
-            if use_img:
-                if scene_image_path is None or not scene_image_path.is_file():
-                    return {
-                        "ok": False,
-                        "provider": "comfyui_wan",
-                        "model": model,
-                        "error": "scene_image_required",
-                        "detail": "comfyui_video_use_scene_image is true but no local scene image path was provided",
-                    }
-                if not load_nid:
-                    return {
-                        "ok": False,
-                        "provider": "comfyui_wan",
-                        "model": model,
-                        "error": "load_image_node_required",
-                        "detail": "Set COMFYUI_VIDEO_LOAD_IMAGE_NODE_ID to your LoadImage node id (API JSON)",
-                    }
-                img_bytes = scene_image_path.read_bytes()
-                up = _upload_image_to_comfyui(
-                    http,
-                    settings,
-                    base,
-                    img_bytes,
-                    scene_image_path.name or "director_scene.jpg",
-                )
-                if not up.get("ok"):
-                    return {
-                        "ok": False,
-                        "provider": "comfyui_wan",
-                        "model": model,
-                        "error": str(up.get("error") or "upload_failed"),
-                        "detail": str(up.get("detail") or "")[:800],
-                    }
-                lnode = workflow.get(load_nid)
-                if not isinstance(lnode, dict):
-                    return {
-                        "ok": False,
-                        "provider": "comfyui_wan",
-                        "model": model,
-                        "error": "load_image_node_missing",
-                        "detail": f"Node {load_nid} not in workflow",
-                    }
-                lnode.setdefault("inputs", {})["image"] = up["name"]
+        try:
+            with httpx.Client(timeout=timeout, headers=hdr, follow_redirects=True) as http:
+                if use_img:
+                    if scene_image_path is None or not scene_image_path.is_file():
+                        return {
+                            "ok": False,
+                            "provider": "comfyui_wan",
+                            "model": model,
+                            "error": "scene_image_required",
+                            "detail": "comfyui_video_use_scene_image is true but no local scene image path was provided",
+                        }
+                    if not load_nid:
+                        return {
+                            "ok": False,
+                            "provider": "comfyui_wan",
+                            "model": model,
+                            "error": "load_image_node_required",
+                            "detail": "Set COMFYUI_VIDEO_LOAD_IMAGE_NODE_ID to your LoadImage node id (API JSON)",
+                        }
+                    img_bytes = scene_image_path.read_bytes()
+                    up = _upload_image_to_comfyui(
+                        http,
+                        settings,
+                        base,
+                        img_bytes,
+                        scene_image_path.name or "director_scene.jpg",
+                    )
+                    if not up.get("ok"):
+                        return {
+                            "ok": False,
+                            "provider": "comfyui_wan",
+                            "model": model,
+                            "error": str(up.get("error") or "upload_failed"),
+                            "detail": str(up.get("detail") or "")[:800],
+                        }
+                    lnode = workflow.get(load_nid)
+                    if not isinstance(lnode, dict):
+                        return {
+                            "ok": False,
+                            "provider": "comfyui_wan",
+                            "model": model,
+                            "error": "load_image_node_missing",
+                            "detail": f"Node {load_nid} not in workflow",
+                        }
+                    lnode.setdefault("inputs", {})["image"] = up["name"]
 
-            try:
-                _inject_prompt(
-                    workflow,
-                    str(prompt),
-                    node_id=p_node,
-                    field=field,
-                    negative_node_id=neg_node,
-                    negative_prompt=neg_text,
-                )
-            except ValueError as e:
-                return {"ok": False, "provider": "comfyui_wan", "model": model, "error": "prompt_inject", "detail": str(e)}
-
-            client_id = str(uuid.uuid4())
-            pr = http.post(
-                f"{base}{_prompt_path(settings)}",
-                json={"prompt": workflow, "client_id": client_id},
-            )
-            if pr.status_code >= 400:
                 try:
-                    detail = json.dumps(pr.json())[:2000]
+                    _inject_prompt(
+                        workflow,
+                        str(prompt),
+                        node_id=p_node,
+                        field=field,
+                        negative_node_id=neg_node,
+                        negative_prompt=neg_text,
+                    )
+                except ValueError as e:
+                    return {"ok": False, "provider": "comfyui_wan", "model": model, "error": "prompt_inject", "detail": str(e)}
+
+                client_id = str(uuid.uuid4())
+                pr = http.post(
+                    f"{base}{_prompt_path(settings)}",
+                    json={"prompt": workflow, "client_id": client_id},
+                )
+                if pr.status_code >= 400:
+                    try:
+                        detail = json.dumps(pr.json())[:2000]
+                    except Exception:
+                        detail = pr.text[:2000]
+                    return {
+                        "ok": False,
+                        "provider": "comfyui_wan",
+                        "model": model,
+                        "error": f"http_{pr.status_code}",
+                        "detail": detail,
+                    }
+                try:
+                    q = pr.json()
                 except Exception:
-                    detail = pr.text[:2000]
-                return {
-                    "ok": False,
-                    "provider": "comfyui_wan",
-                    "model": model,
-                    "error": f"http_{pr.status_code}",
-                    "detail": detail,
-                }
-            try:
-                q = pr.json()
-            except Exception:
-                return {"ok": False, "provider": "comfyui_wan", "model": model, "error": "prompt_bad_json"}
-            prompt_id = str(q.get("prompt_id") or "")
-            if not prompt_id:
-                return {"ok": False, "provider": "comfyui_wan", "model": model, "error": "no_prompt_id"}
+                    return {"ok": False, "provider": "comfyui_wan", "model": model, "error": "prompt_bad_json"}
+                prompt_id = str(q.get("prompt_id") or "")
+                if not prompt_id:
+                    return {"ok": False, "provider": "comfyui_wan", "model": model, "error": "no_prompt_id"}
 
-            entry, wait_err, wait_detail = _wait_for_history_entry(
-                http, settings, base, prompt_id, timeout, poll, client_id=client_id
-            )
-            if wait_err:
-                return {
-                    "ok": False,
-                    "provider": "comfyui_wan",
-                    "model": model,
-                    "error": wait_err,
-                    "detail": wait_detail or "",
-                }
-            if not isinstance(entry, dict):
-                return {
-                    "ok": False,
-                    "provider": "comfyui_wan",
-                    "model": model,
-                    "error": "no_history_entry",
-                    "detail": "Unexpected empty history",
-                }
+                entry, wait_err, wait_detail = _wait_for_history_entry(
+                    http, settings, base, prompt_id, timeout, poll, client_id=client_id, should_stop=should_stop
+                )
+                if wait_err:
+                    return {
+                        "ok": False,
+                        "provider": "comfyui_wan",
+                        "model": model,
+                        "error": wait_err,
+                        "detail": wait_detail or "",
+                    }
+                if not isinstance(entry, dict):
+                    return {
+                        "ok": False,
+                        "provider": "comfyui_wan",
+                        "model": model,
+                        "error": "no_history_entry",
+                        "detail": "Unexpected empty history",
+                    }
 
-            status = entry.get("status")
-            if isinstance(status, dict) and status.get("status_str") == "error":
-                msgs = status.get("messages") or []
-                return {
-                    "ok": False,
-                    "provider": "comfyui_wan",
-                    "model": model,
-                    "error": "comfyui_execution_error",
-                    "detail": str(msgs)[:2000],
-                }
+                status = entry.get("status")
+                if isinstance(status, dict) and status.get("status_str") == "error":
+                    msgs = status.get("messages") or []
+                    return {
+                        "ok": False,
+                        "provider": "comfyui_wan",
+                        "model": model,
+                        "error": "comfyui_execution_error",
+                        "detail": str(msgs)[:2000],
+                    }
 
-            ref = _pick_output_video(entry)
-            if not ref:
-                ref = _pick_output_image(entry)
-                if ref and not any(str(ref.get("filename") or "").lower().endswith(ext) for ext in _VIDEO_EXTS):
-                    ref = None
-            if not ref:
-                return {
-                    "ok": False,
-                    "provider": "comfyui_wan",
-                    "model": model,
-                    "error": "no_output_video",
-                    "detail": str(list((entry.get("outputs") or {}).keys()))[:500],
-                }
+                ref = _pick_output_video(entry)
+                if not ref:
+                    ref = _pick_output_image(entry)
+                    if ref and not any(str(ref.get("filename") or "").lower().endswith(ext) for ext in _VIDEO_EXTS):
+                        ref = None
+                if not ref:
+                    return {
+                        "ok": False,
+                        "provider": "comfyui_wan",
+                        "model": model,
+                        "error": "no_output_video",
+                        "detail": str(list((entry.get("outputs") or {}).keys()))[:500],
+                    }
 
-            vr = http.get(
-                f"{base}{_view_path(settings)}",
-                params={
-                    "filename": ref["filename"],
-                    "subfolder": ref["subfolder"],
-                    "type": ref["type"],
-                },
-            )
-            if vr.status_code >= 400:
+                vr = http.get(
+                    f"{base}{_view_path(settings)}",
+                    params={
+                        "filename": ref["filename"],
+                        "subfolder": ref["subfolder"],
+                        "type": ref["type"],
+                    },
+                )
+                if vr.status_code >= 400:
+                    return {
+                        "ok": False,
+                        "provider": "comfyui_wan",
+                        "model": model,
+                        "error": f"view_http_{vr.status_code}",
+                        "detail": vr.text[:400],
+                    }
+                ct = vr.headers.get("content-type") or "video/mp4"
                 return {
-                    "ok": False,
+                    "ok": True,
                     "provider": "comfyui_wan",
                     "model": model,
-                    "error": f"view_http_{vr.status_code}",
-                    "detail": vr.text[:400],
+                    "bytes": vr.content,
+                    "content_type": ct.split(";")[0].strip(),
                 }
-            ct = vr.headers.get("content-type") or "video/mp4"
+        except httpx.RequestError as e:
             return {
-                "ok": True,
+                "ok": False,
                 "provider": "comfyui_wan",
                 "model": model,
-                "bytes": vr.content,
-                "content_type": ct.split(";")[0].strip(),
+                "error": "request_failed",
+                "detail": str(e)[:800],
             }
-    except httpx.RequestError as e:
-        return {
-            "ok": False,
-            "provider": "comfyui_wan",
-            "model": model,
-            "error": "request_failed",
-            "detail": str(e)[:800],
-        }

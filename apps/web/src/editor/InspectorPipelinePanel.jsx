@@ -7,7 +7,10 @@ import {
   agentRunMinSceneImages,
   agentRunMinSceneVideos,
 } from "../lib/constants.js";
-import { summarizeAgentRunFailure } from "../lib/apiHelpers.js";
+import { formatPipelineStageSummary, PIPELINE_SPEED_SELECT_OPTIONS } from "../lib/studioLabels.js";
+import { AgentRunFailureAlert } from "../components/AgentRunFailureAlert.jsx";
+import { AgentRunWarningAlert } from "../components/AgentRunWarningAlert.jsx";
+import { ProjectPublishPanel } from "./ProjectPublishPanel.jsx";
 
 // ---------------------------------------------------------------------------
 // Per-step elapsed time
@@ -118,6 +121,7 @@ export function InspectorPipelinePanel({ p }) {
   const showProgress = Boolean(p.projectId && Array.isArray(p.pipelineStatus?.steps));
   const stepTimingMap = buildStepTimingMap(p.run?.steps_json);
   const [pipelineStallModal, setPipelineStallModal] = useState(null);
+  const [showPhaseTechnical, setShowPhaseTechnical] = useState(false);
   const showReviews =
     Boolean(p.blocked) ||
     Boolean(p.run?.status === "failed" && p.failedReadinessIssues?.length > 0) ||
@@ -127,18 +131,33 @@ export function InspectorPipelinePanel({ p }) {
 
   return (
     <section className="panel inspector-panel">
-      <h2 id="studio-pipeline-panel">Pipeline &amp; agent</h2>
+      <h2 id="studio-pipeline-panel">Pipeline</h2>
       <EditorCardColumn
         column="right"
         sections={[
           {
             id: "progress",
-            title: "Project progress",
+            title: "Pipeline status",
             show: showProgress,
             children: showProgress ? (
               <div className="pipeline-status-block pipeline-status-block--scrollable">
-                <div className="mono pipeline-phase-pill">
-                  phase: {p.pipelineStatus.workflow_phase || "—"} · rank {p.pipelineStatus.phase_rank ?? "—"}
+                <div className="pipeline-phase-summary" style={{ marginBottom: 10 }}>
+                  <p style={{ margin: 0, fontSize: "0.85rem", fontWeight: 600 }}>
+                    {formatPipelineStageSummary(p.pipelineStatus.workflow_phase, p.pipelineStatus.phase_rank)}
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary"
+                    style={{ marginTop: 6, fontSize: "0.72rem", padding: "2px 8px" }}
+                    onClick={() => setShowPhaseTechnical((v) => !v)}
+                  >
+                    {showPhaseTechnical ? "Hide technical details" : "Technical details"}
+                  </button>
+                  {showPhaseTechnical ? (
+                    <div className="mono pipeline-phase-pill" style={{ marginTop: 8, fontSize: "0.72rem" }}>
+                      phase: {p.pipelineStatus.workflow_phase || "—"} · rank {p.pipelineStatus.phase_rank ?? "—"}
+                    </div>
+                  ) : null}
                 </div>
                 {p.run?.status === "cancelled" ? (
                   <p className="subtle pipeline-stopped-hint" style={{ margin: "0 0 10px" }}>
@@ -252,8 +271,7 @@ export function InspectorPipelinePanel({ p }) {
                         {pipelineStallModal.body}
                       </p>
                       <p className="subtle mono" style={{ marginTop: 10, fontSize: "0.72rem", lineHeight: 1.45 }}>
-                        No server heartbeat for {pipelineStallModal.stallLabel} (from run timestamps; scene planning also considers
-                        per-chapter progress when present).
+                        No server heartbeat for {pipelineStallModal.stallLabel} (from run timestamps; scene planning, narration, coverage, and image passes also consider per-scene progress when present).
                       </p>
                       <div style={{ marginTop: 14 }}>
                         <button type="button" className="secondary" onClick={() => setPipelineStallModal(null)}>
@@ -267,28 +285,48 @@ export function InspectorPipelinePanel({ p }) {
             ) : null,
           },
           {
-            id: "brief",
-            title: "Project brief",
+            id: "publish",
+            title: "Publish pack",
+            show: Boolean(p.projectId),
             info: (
               <>
-                <strong>New project:</strong> fill title &amp; topic, pick Manual / Auto / Hands-off, then <strong>Start</strong>.{" "}
-                <strong>Automate</strong> only runs when a project is open in the list — it continues that project, not the brief alone.
+                Thumbnail, YouTube title/description, and <strong>The Hook</strong> run after chapter scripts in automation. Optional subscribe
+                outro becomes the last scene when enabled.
+              </>
+            ),
+            children: (
+              <ProjectPublishPanel
+                projectId={p.projectId}
+                busy={p.busy}
+                setBusy={p.setBusy}
+                setError={p.setError}
+                setMessage={p.setMessage}
+                idem={p.idem || (() => crypto.randomUUID())}
+                onScenesReload={p.onScenesReload}
+              />
+            ),
+          },
+          {
+            id: "brief",
+            title: "Get started",
+            info: (
+              <>
+                <strong>New project:</strong> enter title and topic, choose how far automation should go, then <strong>Create project</strong>.{" "}
+                <strong>Continue pipeline</strong> resumes an existing project from the list.
               </>
             ),
             children: (
               <>
                 {p.run?.status === "failed" && p.run?.error_message ? (
-                  <div className="pipeline-run-failed-alert" role="alert" style={{ marginBottom: 14 }}>
-                    <i className="fa-solid fa-circle-xmark" aria-hidden="true" />
-                    <div>
-                      <strong>Automation failed</strong>
-                      <div style={{ marginTop: 6 }}>{summarizeAgentRunFailure(p.run.error_message)}</div>
-                      <div className="subtle" style={{ marginTop: 8, fontSize: "0.78rem" }}>
-                        Check <strong>Settings → text provider / API keys</strong>. Use connection test, then start a new run.
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
+                  <AgentRunFailureAlert
+                    run={p.run}
+                    eraseConfirmation={Boolean(p.eraseConfirmationFailure)}
+                    onConfirmErase={p.onConfirmEraseAndRetry}
+                    busy={p.busy}
+                  />
+                ) : (
+                  <AgentRunWarningAlert run={p.run} />
+                )}
                 <label htmlFor="title">Title</label>
                 <input id="title" value={p.title} onChange={(e) => p.setTitle(e.target.value)} />
                 <label htmlFor="topic">Topic</label>
@@ -314,9 +352,9 @@ export function InspectorPipelinePanel({ p }) {
                   <span>No narration</span>
                 </label>
                 <p className="subtle" style={{ margin: "4px 0 0", fontSize: "0.78rem", lineHeight: 1.45 }}>
-                  music-only slideshow: scene images or clips are timed to your clip length, with an optional music bed in the final mix. no tts step.
+                  Music-only slideshow: timed stills or clips with background music, no voice-over.
                 </p>
-                <label htmlFor="frameAspect">Picture frame</label>
+                <label htmlFor="frameAspect">Aspect ratio</label>
                 <select
                   id="frameAspect"
                   value={p.frameAspectRatio === "9:16" ? "9:16" : "16:9"}
@@ -332,21 +370,23 @@ export function InspectorPipelinePanel({ p }) {
                   <option value="9:16">9:16 portrait (shorts / Reels)</option>
                 </select>
                 <div className="pipeline-mode-row brief-pipeline-controls-row">
-                  <span className="pipeline-mode-label">Pipeline</span>
-                  <div className="segmented segmented--pipeline-three" role="group" aria-label="Pipeline mode">
+                  <span className="pipeline-mode-label">Automation level</span>
+                  <div className="segmented segmented--pipeline-three" role="group" aria-label="Automation level">
                     <button
                       type="button"
                       className={p.pipelineMode === "manual" ? "active" : ""}
                       onClick={() => p.setPipelineMode("manual")}
+                      title="Stop after chapter scripts — you plan scenes and media yourself"
                     >
-                      Manual
+                      Step by step
                     </button>
                     <button
                       type="button"
                       className={p.pipelineMode === "auto" ? "active" : ""}
                       onClick={() => p.setPipelineMode("auto")}
+                      title="Guided automation — choose how far the pipeline runs"
                     >
-                      Auto
+                      Guided
                     </button>
                     <button
                       type="button"
@@ -354,7 +394,7 @@ export function InspectorPipelinePanel({ p }) {
                       disabled={!allowUnattended}
                       title={
                         allowUnattended
-                          ? "Runs from brief through final video without stopping for strict research source counts (logged warnings only)."
+                          ? "Runs through final video without stopping for research source counts."
                           : "Not included in your workspace plan — open Account to review access."
                       }
                       onClick={() => allowUnattended && p.setPipelineMode("unattended")}
@@ -365,11 +405,11 @@ export function InspectorPipelinePanel({ p }) {
                 </div>
                 {p.pipelineMode === "auto" ? (
                   <label className="pipeline-through-label brief-auto-target-label">
-                    Auto target
+                    Stop after
                     <select value={allowFullThrough ? p.autoThrough : "critique"} onChange={(e) => p.setAutoThrough(e.target.value)}>
-                      <option value="critique">Through story vs research review</option>
+                      <option value="critique">Story review (scripts + fact check)</option>
                       {allowFullThrough ? (
-                        <option value="full_video">Through final video (character bible, images, TTS, timeline, cuts)</option>
+                        <option value="full_video">Full video (images, voice, timeline, export)</option>
                       ) : null}
                     </select>
                   </label>
@@ -382,28 +422,26 @@ export function InspectorPipelinePanel({ p }) {
                     {allowFullThrough ? (
                       p.autoThrough === "full_video" ? (
                         <>
-                          After scenes and the one-time story vs research check, the worker continues with character bible, scene media,
-                          {p.noNarration ? " timeline, and exports (no TTS — music-only final mix)." : " narration, timeline, and exports."}
+                          After scenes and the fact check, the pipeline continues with characters, scene media,
+                          {p.noNarration ? " timeline, and export (no voice-over)." : " voice-over, timeline, and export."}
                         </>
                       ) : (
                         <>
-                          <strong>Run completes here</strong> after the one-time story vs research step (no automatic character bible, images, or
-                          cuts). To go all the way in one run, choose <strong>Through final video</strong> above, or queue <strong>Automate</strong>{" "}
-                          again later with that target.
+                          <strong>Stops after story review</strong> (no automatic images or export). Choose <strong>Full video</strong> above, or press{" "}
+                          <strong>Continue pipeline</strong> later.
                         </>
                       )
                     ) : (
                       <>
-                        This workspace runs automation <strong>through story vs research only</strong> (scene planning plus the one-time consistency
-                        check). Full automation through final video requires the appropriate plan — open <strong>Account</strong> to review access.
+                        This workspace stops at <strong>story review</strong> only. Full video automation requires the appropriate plan — open{" "}
+                        <strong>Account</strong>.
                       </>
                     )}
                   </p>
                 ) : null}
                 {p.pipelineMode === "unattended" ? (
                   <p className="subtle brief-hands-off-hint">
-                    Hands-off always targets <strong>final video</strong> (same as Auto → full video), and relaxes the research dossier source gate so
-                    the worker does not block for human approval on thin sources.
+                    Hands-off always runs through <strong>full video</strong> and relaxes strict research source requirements.
                   </p>
                 ) : null}
                 <div className="pipeline-mode-row brief-run-automate-row">
@@ -413,26 +451,26 @@ export function InspectorPipelinePanel({ p }) {
                     const automateActive =
                       hasProject && (p.pipelineMode === "auto" || p.pipelineMode === "unattended");
                     const startLabel = !hasProject
-                      ? "Start"
+                      ? "Create project"
                       : p.pipelineMode === "manual"
-                        ? "Manual Run"
+                        ? "Run scripts only"
                         : "New from brief";
                     const startTitle = !hasProject
-                      ? "Creates a new project from the title & topic above using the selected pipeline mode (Manual, Auto, or Hands-off)."
+                      ? "Creates a new project from the title and topic above."
                       : p.pipelineMode === "manual"
-                        ? "Queue a new agent run from this brief (stops after chapter scripts in Manual mode)."
-                        : "Queue a new agent run from this brief as a new project (does not replace the open project until the run creates it).";
+                        ? "Queue a pipeline run that stops after chapter scripts."
+                        : "Start a new project from this brief (does not replace the open project until the run creates it).";
                     const automateDisabledReason =
                       !hasProject
-                        ? "No project selected — use Start to create one from the brief, or pick a project in the list first."
+                        ? "Open or create a project first."
                         : p.pipelineMode !== "auto" && p.pipelineMode !== "unattended"
-                          ? "Switch to Auto or Hands-off to resume automation on this project."
+                          ? "Switch to Guided or Hands-off to continue automation on this project."
                           : undefined;
                     return (
                   <div
                     className="segmented segmented--run-automate"
                     role="group"
-                    aria-label="Start new run from brief, automate existing project, or restart pipeline"
+                    aria-label="Create project, continue pipeline, or re-run steps"
                   >
                     <button
                       type="button"
@@ -454,7 +492,7 @@ export function InspectorPipelinePanel({ p }) {
                       title={automateDisabledReason}
                       onClick={p.continuePipelineAuto}
                     >
-                      Automate
+                      Continue pipeline
                     </button>
                     <button
                       type="button"
@@ -464,10 +502,10 @@ export function InspectorPipelinePanel({ p }) {
                         (p.pipelineMode !== "auto" && p.pipelineMode !== "unattended") ||
                         Boolean(p.pipelineRerunLocked)
                       }
-                      title="Choose which phases to re-run (even if complete); others fast-skip when satisfied."
+                      title="Choose which steps to re-run (even if complete); others fast-skip when satisfied."
                       onClick={() => (typeof p.openRestartAutomationModal === "function" ? p.openRestartAutomationModal() : null)}
                     >
-                      Restart…
+                      Re-run steps…
                     </button>
                   </div>
                     );
@@ -481,7 +519,7 @@ export function InspectorPipelinePanel({ p }) {
                   >
                     <label
                       className="subtle brief-automate-option"
-                      title="When on, Start (new project) and Automate send force replan: every scripted chapter is re-planned when the scene step runs. Leave off to keep scene cards you edited manually."
+                      title="When on, Create project and Continue pipeline send force replan: every scripted chapter is re-planned when the scene step runs. Leave off to keep scene cards you edited manually."
                     >
                       <input
                         type="checkbox"
@@ -500,10 +538,10 @@ export function InspectorPipelinePanel({ p }) {
                         disabled={Boolean(p.settingsBusy || p.busy)}
                         onChange={(e) => void p.patchWorkspaceConfig({ agent_run_auto_generate_scene_images: e.target.checked })}
                       />
-                      <span>Stills per scene</span>
+                      <span>Scene images</span>
                     </label>
-                    <label className="subtle brief-automate-option brief-automate-option--num" title="Minimum succeeded still assets per scene (1–10).">
-                      <span className="brief-automate-option__num-label">Min stills</span>
+                    <label className="subtle brief-automate-option brief-automate-option--num" title="Minimum succeeded image assets per scene (1–10).">
+                      <span className="brief-automate-option__num-label">Min images</span>
                       <input
                         type="number"
                         min={1}
@@ -532,18 +570,25 @@ export function InspectorPipelinePanel({ p }) {
                     </label>
                     <label
                       className="subtle brief-automate-option"
-                      title="When enabled, full-video automation also generates scene video clips (video provider). Saved to Settings."
+                      title="When enabled, full-video automation also generates scene video clips (video provider). Saved to Settings. Demo (fast) speed skips clips unless this stays on — enabling clips switches speed to Standard."
                     >
                       <input
                         type="checkbox"
                         checked={agentRunAutoGenerateSceneVideos(p.appConfig)}
                         disabled={Boolean(p.settingsBusy || p.busy)}
-                        onChange={(e) => void p.patchWorkspaceConfig({ agent_run_auto_generate_scene_videos: e.target.checked })}
+                        onChange={(e) => {
+                          const on = e.target.checked;
+                          const patch = { agent_run_auto_generate_scene_videos: on };
+                          if (on && String(p.appConfig?.agent_run_pipeline_speed || "standard") === "demo_fast") {
+                            patch.agent_run_pipeline_speed = "standard";
+                          }
+                          void p.patchWorkspaceConfig(patch);
+                        }}
                       />
-                      <span>Clips per scene</span>
+                      <span>Scene videos</span>
                     </label>
                     <label className="subtle brief-automate-option brief-automate-option--num" title="Minimum succeeded video assets per scene (1–10).">
-                      <span className="brief-automate-option__num-label">Min clips</span>
+                      <span className="brief-automate-option__num-label">Min videos</span>
                       <input
                         type="number"
                         min={1}
@@ -556,25 +601,67 @@ export function InspectorPipelinePanel({ p }) {
                         }}
                       />
                     </label>
-                    <label className="subtle brief-automate-option" title="Merged server-side for full-video tails: demo skips auto scene videos; heavy raises minimums.">
-                      <span className="brief-automate-option__num-label">Speed preset</span>
+                    <label className="subtle brief-automate-option" title="Merged server-side for full-video tails: quick demo skips scene videos; high quality raises minimums.">
+                      <span className="brief-automate-option__num-label">Quality preset</span>
                       <select
                         value={String(p.appConfig?.agent_run_pipeline_speed || "standard")}
                         disabled={Boolean(p.settingsBusy || p.busy)}
-                        onChange={(e) => void p.patchWorkspaceConfig({ agent_run_pipeline_speed: e.target.value })}
-                        style={{ marginLeft: 6, maxWidth: 200 }}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const patch = { agent_run_pipeline_speed: v };
+                          if (v === "demo_fast" && agentRunAutoGenerateSceneVideos(p.appConfig)) {
+                            patch.agent_run_auto_generate_scene_videos = false;
+                          }
+                          void p.patchWorkspaceConfig(patch);
+                        }}
+                        style={{ marginLeft: 6, maxWidth: 220 }}
                       >
-                        <option value="standard">Standard</option>
-                        <option value="demo_fast">Demo (fast)</option>
-                        <option value="production_heavy">Production (heavy)</option>
+                        {PIPELINE_SPEED_SELECT_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
                       </select>
                     </label>
+                    {p.pipelineMode === "unattended" ||
+                    (p.pipelineMode === "auto" && p.autoThrough === "full_video") ? (
+                      <label
+                        className="subtle brief-automate-option"
+                        title="After final export, upload final_cut.mp4 to YouTube using publish-pack title and description."
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(p.publishToYouTube)}
+                          disabled={
+                            Boolean(p.busy) ||
+                            Boolean(p.youtubeStatusLoading) ||
+                            !p.youtubeConnected
+                          }
+                          onChange={(e) => p.setPublishToYouTube(e.target.checked)}
+                        />
+                        <span>Publish to YouTube</span>
+                      </label>
+                    ) : null}
                   </div>
+                ) : null}
+                {!p.projectId &&
+                (p.pipelineMode === "auto" || p.pipelineMode === "unattended") &&
+                (p.pipelineMode === "unattended" ||
+                  (p.pipelineMode === "auto" && p.autoThrough === "full_video")) &&
+                !p.youtubeStatusLoading &&
+                !p.youtubeConnected ? (
+                  <p
+                    className="subtle brief-youtube-connect-hint"
+                    style={{ marginTop: 8, marginBottom: 0, fontSize: "0.74rem", lineHeight: 1.45 }}
+                  >
+                    Connect YouTube in <strong>Settings → Integrations</strong> (OAuth client id, secret, and Connect) to
+                    enable publish after export.
+                  </p>
                 ) : null}
                 {!p.projectId && (p.pipelineMode === "auto" || p.pipelineMode === "unattended") ? (
                   <p className="subtle brief-automate-hint-no-project" style={{ marginTop: 10, marginBottom: 0, fontSize: "0.74rem", lineHeight: 1.45 }}>
-                    <strong>Automate</strong> only continues a project you already opened from the list. For a <strong>new</strong> project, press{" "}
-                    <strong>Start</strong> — it uses the same mode, brief, and <strong>scene options</strong> above. <strong>Stills / clips</strong>{" "}
+                    <strong>Continue pipeline</strong> only works on a project you already opened from the list. For a <strong>new</strong> project, press{" "}
+                    <strong>Create project</strong> — it uses the same mode, brief, and <strong>scene options</strong> above. Scene image and video
                     choices are saved to workspace Settings.
                   </p>
                 ) : null}
@@ -582,7 +669,7 @@ export function InspectorPipelinePanel({ p }) {
                   <p className="subtle brief-automation-run-status" style={{ marginTop: 12, marginBottom: 0 }}>
                     <strong>Current automation run:</strong> {p.friendlyAgentRunStatus(p.run)}
                     {p.run.status === "cancelled"
-                      ? " — you can Re-run steps, Restart…, or Automate again."
+                      ? " — you can Re-run steps or Continue pipeline again."
                       : p.run.status === "running" &&
                           p.run.pipeline_control_json &&
                           typeof p.run.pipeline_control_json === "object" &&
@@ -696,7 +783,7 @@ export function InspectorPipelinePanel({ p }) {
           },
           {
             id: "reviewsAndAlerts",
-            title: "Reviews, alerts & run log",
+            title: "Activity log",
             show: showReviews,
             children: showReviews ? (
               <>
@@ -706,7 +793,7 @@ export function InspectorPipelinePanel({ p }) {
                     {p.run?.block_code === "CRITIC_GATE" ? (
                       <p className="subtle" style={{ marginTop: 8, marginBottom: 0 }}>
                         The system already retried chapter reviews automatically (see <strong>Run activity</strong> below). Open{" "}
-                        <strong>Critic reports</strong> for details, fix scripts or scenes, then press <strong>Automate</strong>. If your
+                        <strong>Critic reports</strong> for details, fix scripts or scenes, then press <strong>Continue pipeline</strong>. If your
                         team allows bypassing a chapter gate, an administrator can waive it; you can also raise retry limits or relax review
                         thresholds under <strong>Settings</strong>.
                       </p>
@@ -1074,20 +1161,20 @@ export function InspectorPipelinePanel({ p }) {
               if (e.key === "Escape") p.setRestartAutomationOpen?.(false);
             }}
           >
-            <h3 id="restart-automation-title">Restart automation</h3>
+            <h3 id="restart-automation-title">Re-run pipeline steps</h3>
             <p className="subtle" style={{ marginTop: 6 }}>
-              <strong>Checked</strong> phases re-run even when already complete (and regenerate the character bible, scene images, videos, or TTS when those are checked).{" "}
-              <strong>Unchecked</strong> phases fast-skip when the project already satisfies them, like <strong>Automate</strong>. Checking any media
+              <strong>Checked</strong> phases re-run even when already complete (and regenerate the character bible, scene images, videos, or voice-over when those are checked).{" "}
+              <strong>Unchecked</strong> phases fast-skip when the project already satisfies them, like <strong>Continue pipeline</strong>. Checking any media
               step switches the job to <strong>full video</strong> so timeline and exports can run afterward.
             </p>
             <label className="restart-automation-through-label">
-              Target
+              Stop after
               <select
                 value={p.restartAutomationThrough || "full_video"}
                 onChange={(e) => p.setRestartAutomationThrough?.(e.target.value)}
               >
-                <option value="critique">Stop after story vs research review</option>
-                <option value="full_video">Through final video (character bible, images, TTS, timeline, cuts)</option>
+                <option value="critique">Story review (scripts + fact check)</option>
+                <option value="full_video">Full video (images, voice, timeline, export)</option>
               </select>
             </label>
             <label className="restart-automation-rerun-research" style={{ display: "block", marginTop: 10 }}>

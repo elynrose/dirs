@@ -11,7 +11,9 @@ from sqlalchemy import and_, desc, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from director_api.api.deps import meta_dep, settings_dep
+from director_api.api.deps import active_tenant_id, meta_dep, settings_dep
+from director_api.auth.context import AuthContext
+from director_api.auth.deps import auth_context_dep
 from director_api.db.session import get_db
 from director_api.api.schemas.project import JobCreate, JobOut
 from director_api.config import Settings
@@ -34,17 +36,18 @@ def list_jobs(
     status: str = Query(default="queued,running", description="Comma-separated statuses"),
     limit: int = Query(default=80, ge=1, le=200),
     db: Session = Depends(get_db),
-    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """List jobs for the tenant, optionally filtered by project and status."""
+    tenant_id = active_tenant_id(auth)
     parts = [p.strip().lower() for p in status.split(",") if p.strip()]
     st = [p for p in parts if p in _ALLOWLIST_STATUSES] if parts else ["queued", "running"]
     if not st:
         st = ["queued", "running"]
     q = select(Job).where(
         and_(
-            Job.tenant_id == settings.default_tenant_id,
+            Job.tenant_id == tenant_id,
             Job.status.in_(tuple(st)),
         )
     )
@@ -58,14 +61,14 @@ def list_jobs(
 @router.post("/clear-backlog")
 def clear_task_backlog(
     db: Session = Depends(get_db),
-    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Cancel every **queued** Studio job and agent run for this tenant, revoke matching Celery tasks, and purge the broker queue.
 
     Does **not** terminate work already executing on a worker (e.g. a long ``run_agent_run`` on a solo pool). Use Stop on the agent run or cancel individual running jobs for that.
     """
-    tenant = settings.default_tenant_id
+    tenant = active_tenant_id(auth)
     now = datetime.now(timezone.utc)
 
     queued_jobs = list(
@@ -139,11 +142,12 @@ def clear_task_backlog(
 def cancel_job(
     job_id: UUID,
     db: Session = Depends(get_db),
-    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
+    tenant_id = active_tenant_id(auth)
     job = db.get(Job, job_id)
-    if not job or job.tenant_id != settings.default_tenant_id:
+    if not job or job.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "job not found"})
     if job.status not in ("queued", "running"):
         raise HTTPException(
@@ -172,10 +176,12 @@ def cancel_job(
 def create_job(
     body: JobCreate,
     db: Session = Depends(get_db),
+    auth: AuthContext = Depends(auth_context_dep),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
+    tenant_id = active_tenant_id(auth)
     if not idempotency_key or len(idempotency_key) < 8:
         raise HTTPException(
             status_code=400,
@@ -188,7 +194,7 @@ def create_job(
 
     existing = db.execute(
         select(IdempotencyRecord).where(
-            IdempotencyRecord.tenant_id == settings.default_tenant_id,
+            IdempotencyRecord.tenant_id == tenant_id,
             IdempotencyRecord.route == ROUTE_KEY,
             IdempotencyRecord.key == idempotency_key,
         )
@@ -216,15 +222,19 @@ def create_job(
 
     if body.project_id:
         p = db.get(Project, body.project_id)
-        if not p or p.tenant_id != settings.default_tenant_id:
+        if not p or p.tenant_id != tenant_id:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
 
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=tenant_id,
         type=body.type,
         status="queued",
-        payload={"provider": prov, "project_id": str(body.project_id) if body.project_id else None},
+        payload={
+            "provider": prov,
+            "project_id": str(body.project_id) if body.project_id else None,
+            "tenant_id": tenant_id,
+        },
         project_id=body.project_id,
         provider=prov,
         idempotency_key=idempotency_key,
@@ -245,7 +255,7 @@ def create_job(
     }
     rec = IdempotencyRecord(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=tenant_id,
         route=ROUTE_KEY,
         key=idempotency_key,
         body_hash=body_hash,
@@ -263,10 +273,11 @@ def create_job(
 def get_job(
     job_id: UUID,
     db: Session = Depends(get_db),
-    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
+    tenant_id = active_tenant_id(auth)
     job = db.get(Job, job_id)
-    if not job or job.tenant_id != settings.default_tenant_id:
+    if not job or job.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "job not found"})
     return {"data": JobOut.model_validate(job).model_dump(mode="json"), "meta": meta}

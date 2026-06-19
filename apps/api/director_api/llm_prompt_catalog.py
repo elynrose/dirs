@@ -400,6 +400,44 @@ LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
         ),
         sort_order=160,
     ),
+    LlmPromptDefinitionSpec(
+        prompt_key="publish_thumbnail_pack",
+        title="Thumbnail & YouTube metadata",
+        description="YouTube title, description, and thumbnail image prompt for the project.",
+        default_content=(
+            "You are a YouTube documentary packaging agent. Return ONLY JSON with keys: "
+            "youtube_title (string, max 100 chars, clickable but accurate), "
+            "youtube_description (string, max 500 chars, 2–4 sentences with keywords), "
+            "thumbnail_prompt (string, vivid still-image prompt for a bold 16:9 YouTube thumbnail — "
+            "large readable composition, high contrast, no tiny text in the image). "
+            "Match the documentary topic; avoid clickbait lies."
+        ),
+        sort_order=165,
+    ),
+    LlmPromptDefinitionSpec(
+        prompt_key="opening_hook_script",
+        title="Opening hook script",
+        description="Spoken opening hook before chapter one (30–90 seconds when read aloud).",
+        default_content=(
+            "You are a documentary opening-hook writer. Return ONLY JSON with key hook_script (string). "
+            "Write a compelling spoken opening (roughly 80–180 words) that grabs attention, frames the stakes, "
+            "and tees up the first chapter without spoiling the full arc. Match narration_style when provided. "
+            "No stage directions — narration only."
+        ),
+        sort_order=166,
+    ),
+    LlmPromptDefinitionSpec(
+        prompt_key="outro_cta_script",
+        title="Subscribe outro narration",
+        description="Short closing CTA scene narration.",
+        default_content=(
+            "You are a documentary outro writer. Return ONLY JSON with key narration_text (string). "
+            "Write a warm 1–3 sentence subscribe CTA (about 5–15 seconds spoken). "
+            "Include a thank-you and ask viewers to subscribe; match narration_style when provided. "
+            "No stage directions."
+        ),
+        sort_order=167,
+    ),
 )
 # fmt: on
 

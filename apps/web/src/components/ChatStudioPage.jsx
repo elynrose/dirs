@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, apiCompiledVideoUrl } from "../lib/api.js";
-import { parseJson, apiErrorMessage, formatUserFacingError } from "../lib/apiHelpers.js";
+import { api, apiCompiledVideoUrl, apiPath } from "../lib/api.js";
+import { parseJson, apiErrorMessage, formatUserFacingError, formatAgentRunFailure } from "../lib/apiHelpers.js";
+import {
+  eraseConfirmationFromAgentRun,
+  postAgentRun,
+  withEraseConsentPipelineOptions,
+} from "../lib/eraseConsent.js";
+import { EraseConfirmationModal } from "./EraseConfirmationModal.jsx";
 import {
   DEFAULT_NARRATION_PRESET_ID,
   RUN_STEP_LABEL,
   sceneAutomationMediaPipelineOptions,
   briefPreferredMediaProvidersFromAppConfig,
 } from "../lib/constants.js";
+import {
+  formatAgentRunSidebarLine,
+  friendlyAgentRunStatusLabel,
+  friendlyProjectListMeta,
+} from "../lib/studioLabels.js";
 
 const CHAT_RUN_STORAGE_PREFIX = "director_chat_agent_run:";
 const CHAT_STUDIO_STATE_PREFIX = "director_chat_studio_state:";
@@ -175,13 +186,14 @@ function isAgentRunTerminalStatus(st) {
 
 function agentRunSidebarLabel(run) {
   const st = String(run?.status ?? "").trim() || "—";
-  if (isAgentRunTerminalStatus(st)) return { line: st, stale: false, rowTitle: undefined };
+  const line = formatAgentRunSidebarLine(run);
+  if (isAgentRunTerminalStatus(st)) return { line, stale: false, rowTitle: undefined };
   const raw = run?.updated_at;
   const t = raw ? new Date(raw).getTime() : NaN;
   const idleMs = Number.isFinite(t) ? Date.now() - t : 0;
   const stale = idleMs > AGENT_RUN_SIDEBAR_STALE_MS;
   return {
-    line: stale ? `${st} · idle?` : st,
+    line: stale ? `${line} · idle?` : line,
     stale,
     rowTitle: stale
       ? "No server updates for several minutes — this run may be stuck (worker stopped or task lost). Try Stop or restart the worker."
@@ -238,12 +250,15 @@ export function ChatStudioPage({
   const [agentRunsListTick, setAgentRunsListTick] = useState(0);
   /** Which run id is currently performing stop/delete from the sidebar list. */
   const [runListActionId, setRunListActionId] = useState("");
+  const [eraseConfirmModal, setEraseConfirmModal] = useState(null);
+  const eraseFailureAnnouncedRef = useRef("");
 
   const lastStepsLenRef = useRef(0);
   const messageIdRef = useRef(0);
   const setupMsgIdRef = useRef(0);
   const setupThreadRef = useRef(null);
   const doneAnnouncedRef = useRef(false);
+  const failAnnouncedRef = useRef("");
   /** Skip persisting while switching projects so we don't clobber saved transcript with empty state. */
   const skipPersistRef = useRef(false);
 
@@ -525,7 +540,7 @@ export function ChatStudioPage({
           setAgentRunId("");
           setRunStatus("");
           setMessages([]);
-          appendMessage("assistant", "Run deleted. Generate a new run or pick another from the list.", { kind: "system" });
+          appendMessage("assistant", "Run deleted. Start a new run or pick another from the list.", { kind: "system" });
           try {
             if (selectedProjectId) localStorage.removeItem(storageKeyForProject(selectedProjectId));
           } catch {
@@ -568,6 +583,29 @@ export function ChatStudioPage({
           "Pipeline run finished. If the final cut step completed, you can play or download the video below.",
           { kind: "done" },
         );
+      }
+      if (row.status === "failed") {
+        const erase = eraseConfirmationFromAgentRun(row);
+        const failKey = `${agentRunId}:${row.error_message || ""}:${row.block_code || ""}`;
+        if (erase && row.project_id && eraseFailureAnnouncedRef.current !== failKey) {
+          eraseFailureAnnouncedRef.current = failKey;
+          setEraseConfirmModal({
+            pendingRequestBody: {
+              project_id: row.project_id,
+              pipeline_options: row.pipeline_options_json || {},
+            },
+            erase,
+          });
+          appendMessage(
+            "assistant",
+            "This run needs your confirmation before it can replace existing scenes and generated media.",
+            { kind: "system" },
+          );
+        } else if (!erase && failAnnouncedRef.current !== failKey) {
+          failAnnouncedRef.current = failKey;
+          const { summary, diagnosticsPath } = formatAgentRunFailure(row);
+          appendMessage("assistant", summary, { kind: "system", diagnosticsPath });
+        }
       }
       if (row.project_id && selectedProjectId === String(row.project_id)) {
         try {
@@ -1046,9 +1084,9 @@ export function ChatStudioPage({
         if (!patchR.ok) throw new Error(apiErrorMessage(patchB) || `HTTP ${patchR.status}`);
       }
 
-      appendMessage("user", `Generate hands-off run:\n${topicTrim.slice(0, 2000)}${topicTrim.length > 2000 ? "…" : ""}`);
+      appendMessage("user", `Run full video:\n${topicTrim.slice(0, 2000)}${topicTrim.length > 2000 ? "…" : ""}`);
 
-      const body =
+      const requestBody =
         selectedProjectId ?
           {
             project_id: selectedProjectId,
@@ -1062,12 +1100,20 @@ export function ChatStudioPage({
             pipeline_options: handsOffPipelineOptions,
           };
 
-      const r = await api("/v1/agent-runs", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-      const res = await parseJson(r);
-      if (!r.ok) throw new Error(apiErrorMessage(res) || `HTTP ${r.status}`);
+      const result = await postAgentRun(api, parseJson, requestBody);
+      if (result.needsEraseConfirmation) {
+        setEraseConfirmModal({
+          pendingRequestBody: requestBody,
+          erase: result.erase,
+        });
+        appendMessage(
+          "assistant",
+          "Confirm in the dialog before replacing existing project content.",
+          { kind: "system" },
+        );
+        return;
+      }
+      const res = result.body;
       const ar = res.data?.agent_run;
       const proj = res.data?.project;
       if (proj?.id) {
@@ -1089,6 +1135,47 @@ export function ChatStudioPage({
         doneAnnouncedRef.current = false;
         setAgentRunId(String(ar.id));
         appendMessage("assistant", "Run queued — tracking progress below.", { kind: "system" });
+        setAgentRunsListTick((n) => n + 1);
+      }
+      onReloadProjects?.();
+    } catch (e) {
+      setError(formatUserFacingError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmEraseAndRetry = async () => {
+    if (!eraseConfirmModal?.pendingRequestBody) return;
+    setBusy(true);
+    setError("");
+    try {
+      const requestBody = {
+        ...eraseConfirmModal.pendingRequestBody,
+        pipeline_options: withEraseConsentPipelineOptions(eraseConfirmModal.pendingRequestBody.pipeline_options),
+      };
+      setEraseConfirmModal(null);
+      eraseFailureAnnouncedRef.current = "";
+      const result = await postAgentRun(api, parseJson, requestBody);
+      if (result.needsEraseConfirmation) {
+        setEraseConfirmModal({ pendingRequestBody: requestBody, erase: result.erase });
+        return;
+      }
+      const res = result.body;
+      const ar = res.data?.agent_run;
+      const proj = res.data?.project;
+      if (proj?.id) {
+        const pid = String(proj.id);
+        await loadProjectIntoComposer(pid);
+        onStudioProjectOpen?.(pid);
+      }
+      if (ar?.id) {
+        lastStepsLenRef.current = 0;
+        doneAnnouncedRef.current = false;
+        setAgentRunId(String(ar.id));
+        appendMessage("assistant", "Run queued with your confirmation — replacing existing content.", {
+          kind: "system",
+        });
         setAgentRunsListTick((n) => n + 1);
       }
       onReloadProjects?.();
@@ -1159,7 +1246,7 @@ export function ChatStudioPage({
               }
             }}
           >
-            New production
+            New project
           </button>
           <button type="button" className="secondary chat-studio__reload" onClick={() => onReloadProjects?.()}>
             Reload list
@@ -1178,7 +1265,7 @@ export function ChatStudioPage({
                 }}
               >
                 <span className="chat-studio__project-title">{p.title || "Untitled"}</span>
-                <span className="subtle chat-studio__project-meta">{p.workflow_phase || p.status}</span>
+                <span className="subtle chat-studio__project-meta">{friendlyProjectListMeta(p.status, p.workflow_phase)}</span>
               </button>
             </li>
           ))}
@@ -1284,8 +1371,8 @@ export function ChatStudioPage({
         <div className="chat-studio__roadmap subtle">
           <strong>Project setup</strong>
           <p className="chat-studio__roadmap-text">
-            Use the setup chat in the main panel to tune title, description, runtime, picture frame (16:9 or 9:16),
-            narration and visual style, and characters before you press Generate.
+            Use the setup chat in the main panel to tune title, description, runtime, aspect ratio (16:9 or 9:16),
+            narration and visual style, and characters before you press Run full video.
           </p>
         </div>
       </aside>
@@ -1295,7 +1382,7 @@ export function ChatStudioPage({
           <h2 className="chat-studio__main-title">Hands-off chat</h2>
           {runStatus ? (
             <span className="subtle">
-              Run: <code>{agentRunId ? agentRunId.slice(0, 8) : "—"}</code> · {runStatus}
+              Run: <code>{agentRunId ? agentRunId.slice(0, 8) : "—"}</code> · {friendlyAgentRunStatusLabel(runStatus)}
             </span>
           ) : null}
         </header>
@@ -1373,13 +1460,20 @@ export function ChatStudioPage({
             <div className="chat-studio__thread" role="log" aria-live="polite" aria-relevant="additions">
               {messages.length === 0 ? (
                 <p className="subtle chat-studio__empty">
-                  After you press <strong>Generate</strong>, pipeline progress appears here. Open a project on the left to
+                  After you press <strong>Run full video</strong>, pipeline progress appears here. Open a project on the left to
                   continue an existing hands-off run.
                 </p>
               ) : null}
               {messages.map((m) => (
                 <div key={m.id} className={`chat-bubble chat-bubble--${m.role}`}>
                   <div className="chat-bubble__text">{m.text}</div>
+                  {m.diagnosticsPath ? (
+                    <p className="subtle" style={{ marginTop: 8, marginBottom: 0, fontSize: "0.85rem" }}>
+                      <a href={apiPath(m.diagnosticsPath)} target="_blank" rel="noreferrer">
+                        Download technical log
+                      </a>
+                    </p>
+                  ) : null}
                 </div>
               ))}
               {finalVideoReady && videoSrc ? (
@@ -1417,7 +1511,7 @@ export function ChatStudioPage({
               ) : null}
               <div className="chat-studio__actions">
                 <button type="button" disabled={busy} onClick={() => void onGenerate()}>
-                  {busy ? "Working…" : "Generate"}
+                  {busy ? "Working…" : "Run full video"}
                 </button>
                 <button type="button" className="secondary" disabled={busy || !activeRun} onClick={() => void onStop()}>
                   Stop run
@@ -1427,6 +1521,14 @@ export function ChatStudioPage({
           </section>
         </div>
       </main>
+
+      <EraseConfirmationModal
+        open={Boolean(eraseConfirmModal)}
+        erase={eraseConfirmModal?.erase}
+        busy={busy}
+        onCancel={() => setEraseConfirmModal(null)}
+        onConfirm={() => void confirmEraseAndRetry()}
+      />
     </div>
   );
 }

@@ -31,7 +31,7 @@ def list_narration_styles(
     meta: dict = Depends(meta_dep),
 ) -> dict:
     uid = int(auth.user_id) if auth.user_id else None
-    rows = nar_svc.list_merged_styles(db, settings.default_tenant_id, uid)
+    rows = nar_svc.list_merged_styles(db, auth.tenant_id, uid)
     db.commit()
     return {
         "data": {
@@ -53,7 +53,7 @@ def create_narration_style(
         raise HTTPException(status_code=401, detail={"code": "AUTH_REQUIRED", "message": "sign in to create styles"})
     row = nar_svc.create_style(
         db,
-        settings.default_tenant_id,
+        auth.tenant_id,
         int(auth.user_id),
         body.title,
         body.prompt_text,
@@ -84,7 +84,7 @@ def patch_narration_style(
         )
     row = nar_svc.patch_style(
         db,
-        settings.default_tenant_id,
+        auth.tenant_id,
         int(auth.user_id),
         style_id,
         title=body.title,
@@ -110,7 +110,7 @@ def delete_narration_style(
 ) -> dict:
     if not auth.user_id:
         raise HTTPException(status_code=401, detail={"code": "AUTH_REQUIRED", "message": "sign in to delete styles"})
-    ok = nar_svc.delete_style(db, settings.default_tenant_id, int(auth.user_id), style_id)
+    ok = nar_svc.delete_style(db, auth.tenant_id, int(auth.user_id), style_id)
     if not ok:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "style not found"})
     db.commit()

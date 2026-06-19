@@ -26,11 +26,13 @@ class AgentRunCreate(BaseModel):
     # until min_scene_videos / min_scene_images succeeded assets exist (1–10; default 1). Omit to use workspace Settings.
     # (overrides workspace default for this run if set).
     # rerun_from_step: optional canonical phase to re-execute (implies continue_from_existing); merges with oversight so earlier
-    # structural gaps still run first. Values: director, research, outline, chapters, scenes,
+    # structural gaps still run first. Values: director, research, outline, chapters, thumbnail, opening_hook, scenes, outro,
     # auto_characters, auto_narration, auto_images, auto_videos, auto_timeline, auto_rough_cut, auto_final_cut. Tail steps need through: full_video.
+    # include_outro_scene: optional bool — per-run override for the subscribe outro scene (falls back to project.include_outro_scene).
+    # publish_to_youtube: optional bool — upload final_cut.mp4 after export (OR workspace youtube_auto_upload_after_export).
     # narration_granularity: "scene" (default for full_video) runs per-scene TTS in the automation tail; "chapter" keeps one file per chapter.
     # force_pipeline_steps: list of canonical steps to execute even when continue_from_existing would fast-skip (e.g. full restart).
-    # Include "scenes" to replan scenes; tail steps auto_characters / auto_narration / auto_images / auto_videos also regenerate existing assets when listed.
+    # Include "thumbnail", "opening_hook", "outro", or "scenes" to replan those phases; tail steps auto_characters / auto_narration / auto_images / auto_videos also regenerate existing assets when listed.
     # With through: full_video, timeline + rough + final cut still run after the media tail (not individually skippable yet).
     # rerun_web_research: optional bool. False = skip the Tavily/web research step when a dossier already exists (overrides oversight for that
     # step unless "research" is in force_pipeline_steps). True = always execute research. Omitted = default skip rules + oversight only.

@@ -49,6 +49,7 @@ export default defineConfig(({ mode }) => {
     : {}),
   server: {
     port: Number(env.VITE_LOCAL_DEV_PORT || 5173),
+    host: "127.0.0.1",
     // Fail fast if something else (e.g. an old Vite) is on 5173 — avoids “wrong UI” on a surprise port.
     strictPort: true,
     // Remote dev (VPS): browsers often use the server IP; a fixed list misses it and Vite rejects the host.

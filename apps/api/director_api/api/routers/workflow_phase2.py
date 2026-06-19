@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from director_api.api.deps import meta_dep, settings_dep
+from director_api.api.tenant_access import require_project_for_tenant
 from director_api.auth.deps import auth_context_dep
 from director_api.auth.context import AuthContext
 from director_api.api.idempotency import (
@@ -32,6 +33,7 @@ from director_api.api.schemas.phase2 import (
     ChapterPatch,
     ChapterScriptPatch,
     ChapterScriptRegenerateBody,
+    ManualChapterImportBody,
     ResearchApproveBody,
     ResearchDossierBodyPatch,
     ResearchOverrideBody,
@@ -41,8 +43,10 @@ from director_api.config import Settings
 from director_api.db.models import Chapter, Job, Project, ResearchClaim, ResearchDossier, ResearchSource
 from director_api.db.session import get_db
 from director_api.services import phase2 as phase2_svc
+from director_api.services.erase_consent import EraseConfirmationRequired
 from director_api.services.llm_prompt_runtime import llm_prompt_map_scope
 from director_api.services.llm_prompt_service import build_resolved_prompt_map
+from director_api.services.manual_chapter_import import create_chapter_with_manual_scenes
 from director_api.tasks.job_enqueue import enqueue_run_phase2_job
 from director_api.validation.phase2_schemas import validate_director_pack, validate_research_dossier_body
 
@@ -50,11 +54,6 @@ router = APIRouter(tags=["phase2"])
 log = structlog.get_logger(__name__)
 
 
-def _project_or_404(db: Session, settings: Settings, project_id: UUID) -> Project:
-    p = db.get(Project, project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
-    return p
 
 
 def _latest_dossier(db: Session, project_id: UUID) -> ResearchDossier | None:
@@ -108,7 +107,7 @@ def project_start(
     auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    p = _project_or_404(db, settings, project_id)
+    p = require_project_for_tenant(db, project_id, auth.tenant_id)
     if p.workflow_phase != "draft":
         db.refresh(p)
         return {"data": ProjectOut.model_validate(p).model_dump(mode="json"), "meta": meta}
@@ -127,7 +126,7 @@ def project_start(
     pack = phase2_svc.build_director_pack_from_project(p)
     llm_u: list = []
     if openai_compatible_configured(settings):
-        pmap = build_resolved_prompt_map(db, settings.default_tenant_id, auth.user_id)
+        pmap = build_resolved_prompt_map(db, auth.tenant_id, auth.user_id)
         with llm_prompt_map_scope(pmap):
             pack = phase2_llm.enrich_director_pack(
                 pack,
@@ -140,7 +139,7 @@ def project_start(
     if llm_u:
         persist_llm_usage_entries(
             db,
-            tenant_id=settings.default_tenant_id,
+            tenant_id=auth.tenant_id,
             project_id=p.id,
             scene_id=None,
             asset_id=None,
@@ -167,9 +166,10 @@ def research_run(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    p = _project_or_404(db, settings, project_id)
+    p = require_project_for_tenant(db, project_id, auth.tenant_id)
     if not p.director_output_json:
         raise HTTPException(
             status_code=409,
@@ -190,17 +190,17 @@ def research_run(
     route = f"POST /v1/projects/{project_id}/research/run"
     empty: dict = {}
     h = body_hash(empty)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "research_run")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="research_run",
         status="queued",
-        payload={"project_id": str(project_id)},
+        payload={"tenant_id": auth.tenant_id, "project_id": str(project_id)},
         project_id=project_id,
     )
     db.add(job)
@@ -215,7 +215,7 @@ def research_run(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -231,8 +231,9 @@ def research_get(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    _project_or_404(db, settings, project_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     d = _latest_dossier(db, project_id)
     if not d:
         return {
@@ -298,9 +299,10 @@ def research_patch_body(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Replace dossier ``body_json`` after JSON-schema validation (manual edits)."""
-    _project_or_404(db, settings, project_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     d = _latest_dossier(db, project_id)
     if not d:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "no research dossier"})
@@ -326,8 +328,9 @@ def research_approve(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    _project_or_404(db, settings, project_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     d = _latest_dossier(db, project_id)
     if not d:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "no research dossier"})
@@ -350,8 +353,9 @@ def research_override(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    _project_or_404(db, settings, project_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     d = _latest_dossier(db, project_id)
     if not d:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "no research dossier"})
@@ -386,25 +390,26 @@ def script_generate_outline(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    _project_or_404(db, settings, project_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     _assert_script_gate(db, project_id)
     key = require_idempotency_key(idempotency_key)
     route = f"POST /v1/projects/{project_id}/script/generate-outline"
     empty: dict = {}
     h = body_hash(empty)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "script_outline")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="script_outline",
         status="queued",
-        payload={"project_id": str(project_id)},
+        payload={"tenant_id": auth.tenant_id, "project_id": str(project_id)},
         project_id=project_id,
     )
     db.add(job)
@@ -417,7 +422,7 @@ def script_generate_outline(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -433,25 +438,26 @@ def script_generate_chapters(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    _project_or_404(db, settings, project_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     _assert_script_gate(db, project_id)
     key = require_idempotency_key(idempotency_key)
     route = f"POST /v1/projects/{project_id}/script/generate-chapters"
     empty: dict = {}
     h = body_hash(empty)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "script_chapters")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="script_chapters",
         status="queued",
-        payload={"project_id": str(project_id)},
+        payload={"tenant_id": auth.tenant_id, "project_id": str(project_id)},
         project_id=project_id,
     )
     db.add(job)
@@ -464,7 +470,7 @@ def script_generate_chapters(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -480,8 +486,9 @@ def list_project_chapters(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    _project_or_404(db, settings, project_id)
+    require_project_for_tenant(db, project_id, auth.tenant_id)
     rows = db.scalars(
         select(Chapter).where(Chapter.project_id == project_id).order_by(Chapter.order_index)
     ).all()
@@ -494,6 +501,57 @@ def list_project_chapters(
     return {"data": {"chapters": chapters}, "meta": meta}
 
 
+@router.post("/projects/{project_id}/chapters/manual-import")
+def manual_import_chapter(
+    project_id: UUID,
+    body: ManualChapterImportBody,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+) -> dict:
+    """
+    Step-by-step manual mode: create a chapter and scenes from pasted or uploaded text.
+    Each non-empty line (lines starting with # are skipped) becomes one scene.
+    Does not require research approval or LLM scene planning.
+    """
+    p = require_project_for_tenant(db, project_id, auth.tenant_id)
+    try:
+        chapter, scene_count = create_chapter_with_manual_scenes(
+            db,
+            p,
+            title=body.title,
+            text=body.text,
+            summary=body.summary,
+            target_duration_sec=body.target_duration_sec,
+        )
+        db.commit()
+        db.refresh(chapter)
+    except EraseConfirmationRequired as exc:
+        raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        code = "INVALID_REQUEST"
+        if msg.startswith("MANUAL_SCENE_LINES_REQUIRED"):
+            code = "MANUAL_SCENE_LINES_REQUIRED"
+        elif msg.startswith("MANUAL_SCENE_LINE_LIMIT"):
+            code = "MANUAL_SCENE_LINE_LIMIT"
+        raise HTTPException(status_code=422, detail={"code": code, "message": msg}) from exc
+
+    ch_out = (
+        ChapterOut.model_validate(chapter)
+        .model_copy(update={"pacing_warning": _pacing_warning(chapter.script_text, chapter.target_duration_sec)})
+        .model_dump(mode="json")
+    )
+    return {
+        "data": {
+            "chapter": ch_out,
+            "scene_count": scene_count,
+        },
+        "meta": meta,
+    }
+
+
 @router.patch("/chapters/{chapter_id}")
 def patch_chapter(
     chapter_id: UUID,
@@ -501,12 +559,13 @@ def patch_chapter(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     ch = db.get(Chapter, chapter_id)
     if not ch:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
     p = db.get(Project, ch.project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
+    if not p or p.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
     if body.title is not None:
         ch.title = body.title
@@ -533,12 +592,13 @@ def patch_chapter_script(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     ch = db.get(Chapter, chapter_id)
     if not ch:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
     p = db.get(Project, ch.project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
+    if not p or p.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
     ch.script_text = body.script_text
     db.commit()
@@ -563,6 +623,7 @@ def chapter_script_regenerate(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     """Queue LLM job to rewrite one chapter's script using ``enhancement_notes`` (e.g. chapter summary / edit notes)."""
@@ -570,23 +631,24 @@ def chapter_script_regenerate(
     if not ch:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
     p = db.get(Project, ch.project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
+    if not p or p.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
     _assert_script_gate(db, p.id)
     key = require_idempotency_key(idempotency_key)
     route = f"POST /v1/chapters/{chapter_id}/script/regenerate"
     h = body_hash(body.model_dump())
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "script_chapter_regenerate")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="script_chapter_regenerate",
         status="queued",
         payload={
+            "tenant_id": auth.tenant_id,
             "project_id": str(p.id),
             "chapter_id": str(ch.id),
             "enhancement_notes": body.enhancement_notes.strip(),
@@ -603,7 +665,7 @@ def chapter_script_regenerate(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,

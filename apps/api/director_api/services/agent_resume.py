@@ -20,10 +20,13 @@ def workflow_phase_rank(phase: str | None) -> int:
         "research_approved": 3,
         "outline_ready": 4,
         "chapters_ready": 5,
-        "scenes_planned": 6,
-        "critique_review": 7,
-        "critique_complete": 8,
-        "final_video_ready": 9,
+        "thumbnail_ready": 6,
+        "hook_ready": 7,
+        "scenes_planned": 8,
+        "outro_ready": 9,
+        "critique_review": 10,
+        "critique_complete": 11,
+        "final_video_ready": 12,
     }.get((phase or "draft").strip(), 0)
 
 
@@ -77,6 +80,43 @@ def should_skip_chapters(continue_existing: bool, project: Project, db: Session 
     return False
 
 
+def should_skip_thumbnail(continue_existing: bool, project: Project) -> bool:
+    if not continue_existing:
+        return False
+    from director_api.services.publish_pack import publish_pack_done
+
+    return publish_pack_done(project.publish_pack_json)
+
+
+def should_skip_opening_hook(continue_existing: bool, project: Project) -> bool:
+    if not continue_existing:
+        return False
+    if workflow_phase_rank(project.workflow_phase) >= 7:
+        return True
+    return len((project.opening_hook_text or "").strip()) >= 50
+
+
+def should_skip_outro(
+    continue_existing: bool,
+    project: Project,
+    db: Session,
+    *,
+    include_outro: bool,
+) -> bool:
+    if not include_outro:
+        return True
+    if not continue_existing:
+        return False
+    from director_api.services.publish_outro import find_outro_scene
+
+    sc = find_outro_scene(db, project.id)
+    if sc and len((sc.narration_text or "").strip()) >= 20:
+        return True
+    if workflow_phase_rank(project.workflow_phase) >= 9:
+        return True
+    return False
+
+
 def all_scripted_chapters_have_scenes(db: Session, project: Project) -> bool:
     chapters = list(
         db.scalars(select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.order_index)).all()
@@ -109,7 +149,7 @@ def should_skip_scenes_plan(
         return False
     if force_replan_scenes:
         return False
-    if workflow_phase_rank(project.workflow_phase) >= 6:
+    if workflow_phase_rank(project.workflow_phase) >= 8:
         return True
     if str(through or "").strip().lower() == "full_video":
         return False
@@ -171,7 +211,7 @@ def should_skip_story_research_review(continue_existing: bool, project: Project)
         return False
     if project.workflow_phase == "critique_review":
         return False
-    return workflow_phase_rank(project.workflow_phase) >= 8
+    return workflow_phase_rank(project.workflow_phase) >= 11
 
 
 def should_skip_scene_critique(continue_existing: bool, project: Project) -> bool:
@@ -245,8 +285,9 @@ def apply_pipeline_speed_for_persist(raw: dict[str, Any]) -> dict[str, Any]:
             "min_scene_images": 2,
             "min_scene_videos": 2,
         }
-    # Preset must win over duplicate scene-media keys sent with the same payload (workspace mirrors).
-    merged = {**user, **defaults}
+    # Preset fills gaps only — explicit Project Brief / client keys (stills/clips toggles,
+    # min counts) must win so ``demo_fast`` does not silently disable clips the user enabled.
+    merged = {**defaults, **user}
     merged["_applied_pipeline_speed"] = ps
     return merged
 

@@ -34,8 +34,16 @@ from director_api.api.routers import (
     workflow_phase3,
     workflow_phase4,
     workflow_phase5,
+    workflow_publish,
 )
 from director_api.config import get_settings
+from director_api.services.job_orphan_recovery import recover_orphaned_running_jobs
+from director_api.services.agent_run_orphan_recovery import (
+    cancel_worker_agent_runs,
+    current_worker_instance_id,
+    recover_orphaned_agent_runs,
+)
+from director_api.db.session import SessionLocal
 from director_api.logging_config import configure_logging
 from director_api.middleware.limit_request_body import LimitRequestBodyMiddleware
 from director_api.middleware.rate_limit import TenantRateLimitMiddleware
@@ -133,6 +141,18 @@ async def lifespan(_app: FastAPI):
     configure_logging()
     _check_ffmpeg_binaries()
     s = get_settings()
+    if s.celery_eager:
+        with SessionLocal() as db:
+            n = recover_orphaned_running_jobs(
+                db, reason="worker_restarted_job_orphaned (CELERY_EAGER in-process worker)"
+            )
+            if n:
+                log.info("orphaned_jobs_recovered_on_startup", count=n)
+            n_ar = recover_orphaned_agent_runs(
+                db, reason="worker_restarted_agent_run_orphaned (CELERY_EAGER in-process worker)"
+            )
+            if n_ar:
+                log.info("orphaned_agent_runs_recovered_on_startup", count=n_ar)
     secret = (s.director_jwt_secret or "").strip()
     if secret:
         from director_api.auth.jwtutil import jwt_secret_is_weak
@@ -147,6 +167,15 @@ async def lifespan(_app: FastAPI):
                     "DIRECTOR_JWT_SECRET is too weak while DIRECTOR_JWT_REJECT_WEAK_SECRET is enabled"
                 )
     yield
+    if s.celery_eager:
+        with SessionLocal() as db:
+            n = cancel_worker_agent_runs(
+                db,
+                worker_instance_id=current_worker_instance_id(),
+                reason="api_shutdown_agent_run_orphaned (CELERY_EAGER in-process worker)",
+            )
+            if n:
+                log.info("agent_runs_cancelled_on_shutdown", count=n)
 
 
 _cfg = get_settings()
@@ -181,6 +210,7 @@ app.include_router(project_characters.router, prefix="/v1")
 app.include_router(project_pipeline.router, prefix="/v1")
 app.include_router(agent_runs.router, prefix="/v1")
 app.include_router(workflow_phase2.router, prefix="/v1")
+app.include_router(workflow_publish.router, prefix="/v1")
 app.include_router(workflow_phase3.router, prefix="/v1")
 app.include_router(workflow_phase4.router, prefix="/v1")
 app.include_router(workflow_phase5.router, prefix="/v1")

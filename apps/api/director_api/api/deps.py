@@ -18,10 +18,16 @@ def auth_user_id_int(auth: AuthContext) -> int | None:
         return None
 
 
+def active_tenant_id(auth: AuthContext) -> str:
+    """Explicit workspace id for routers (see docs/tenant-contract.md)."""
+    return auth.tenant_id
+
+
 def settings_dep(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(auth_context_dep),
 ) -> Settings:
+    """TenantScoped: merged settings for auth.tenant_id (see docs/tenant-contract.md)."""
     return resolve_runtime_settings(db, get_settings(), auth.tenant_id, user_id=auth_user_id_int(auth))
 
 

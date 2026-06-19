@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ffmpeg_pipelines.encode import VideoEncodeConfig, append_video_encode_args, effective_encode_config
 from ffmpeg_pipelines.errors import FFmpegCompileError
 from ffmpeg_pipelines.nt_staging import (
     concat_should_use_short_temp,
@@ -28,6 +29,7 @@ def encode_video_to_target_duration_mp4(
     fps: int = 30,
     crf: int = 23,
     preset: str = "veryfast",
+    encode_config: VideoEncodeConfig | None = None,
     ffmpeg_bin: str = "ffmpeg",
     ffprobe_bin: str = "ffprobe",
     timeout_sec: float = 900.0,
@@ -68,6 +70,7 @@ def encode_video_to_target_duration_mp4(
         if native <= 0:
             raise FFmpegCompileError(f"could not probe duration: {video_path}")
 
+        enc = effective_encode_config(encode_config, crf=crf, preset=preset)
         if target <= native + 0.08:
             cmd = [
                 ffmpeg_bin,
@@ -79,16 +82,9 @@ def encode_video_to_target_duration_mp4(
                 "-vf",
                 scale_pad,
                 "-an",
-                "-c:v",
-                "libx264",
-                "-preset",
-                preset,
-                "-crf",
-                str(crf),
-                "-movflags",
-                "+faststart",
-                ffmpeg_argv_path(out_write),
             ]
+            append_video_encode_args(cmd, enc)
+            cmd.extend(["-movflags", "+faststart", ffmpeg_argv_path(out_write)])
         else:
             cmd = [
                 ffmpeg_bin,
@@ -102,16 +98,9 @@ def encode_video_to_target_duration_mp4(
                 "-vf",
                 scale_pad,
                 "-an",
-                "-c:v",
-                "libx264",
-                "-preset",
-                preset,
-                "-crf",
-                str(crf),
-                "-movflags",
-                "+faststart",
-                ffmpeg_argv_path(out_write),
             ]
+            append_video_encode_args(cmd, enc)
+            cmd.extend(["-movflags", "+faststart", ffmpeg_argv_path(out_write)])
 
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
         if proc.returncode != 0:

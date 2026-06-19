@@ -25,7 +25,7 @@ export const EDITOR_COLUMN_DEFAULT_ORDER = {
     "retryVideoPrompt",
     "mediaJobs",
   ],
-  right: ["progress", "brief", "projectSubtitles", "reviewsAndAlerts"],
+  right: ["progress", "publish", "brief", "projectSubtitles", "reviewsAndAlerts"],
   timeline: ["sceneOrder", "compile"],
   audio: [],
 };

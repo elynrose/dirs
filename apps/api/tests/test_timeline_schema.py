@@ -14,6 +14,32 @@ def test_timeline_clip_crossfade_sec_optional():
     )
 
 
+def test_timeline_still_motion_fields_optional():
+    validate_timeline_document(
+        {
+            "schema_version": 1,
+            "clips": [],
+            "still_motion_mode": "zoom",
+            "still_motion_source": "scene_video_prompt",
+        },
+    )
+
+
+def test_timeline_clip_still_motion_override():
+    validate_timeline_document(
+        {
+            "schema_version": 1,
+            "clips": [
+                {
+                    "order_index": 0,
+                    "source": {"kind": "asset", "asset_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+                    "still_motion": "pan",
+                }
+            ],
+        }
+    )
+
+
 def test_timeline_clip_asset_valid():
     validate_timeline_document(
         {

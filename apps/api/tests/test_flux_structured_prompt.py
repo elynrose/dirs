@@ -73,3 +73,18 @@ def test_structure_parses_legacy_loose_prompt():
     assert "low-angle" in out.lower()
     assert "Samson and Delilah" in out
     assert out.count("STYLIZED 3D") == 0  # style block replaced by Visual treatment section
+
+
+def test_structure_uses_subject_framing_not_default_eye_level():
+    loose = (
+        "A Dutch angle shot of Victoria just waking in bed, covers pulled up, "
+        "her expression surprised and uncertain. The Victorian bedroom is softly lit."
+    )
+    out = structure_flux_scene_prompt(
+        loose,
+        visual_preset_id="cinematic_historical_epic",
+        mood="Depict Victoria waking, hinting at her sheltered upbringing.",
+    )
+    assert "Composition:" in out
+    assert "Dutch angle" in out
+    assert "Eye-level medium shot" not in out

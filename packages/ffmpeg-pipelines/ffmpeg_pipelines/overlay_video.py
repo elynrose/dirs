@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from ffmpeg_pipelines.encode import VideoEncodeConfig, append_video_encode_args, effective_encode_config
 from ffmpeg_pipelines.errors import FFmpegCompileError
 from ffmpeg_pipelines.filter_probe import ffmpeg_filter_available
 from ffmpeg_pipelines.nt_staging import (
@@ -112,6 +113,9 @@ def burn_overlays_on_video(
     output_video: Path,
     overlays: list[dict[str, Any]],
     *,
+    crf: int = 23,
+    preset: str = "veryfast",
+    encode_config: VideoEncodeConfig | None = None,
     ffmpeg_bin: str = "ffmpeg",
     timeout_sec: float = 900.0,
 ) -> dict[str, Any]:
@@ -181,6 +185,7 @@ def burn_overlays_on_video(
 
         unlink_optional(part)
 
+        enc = effective_encode_config(encode_config, crf=crf, preset=preset)
         cmd = [
             ffmpeg_bin,
             "-y",
@@ -190,19 +195,18 @@ def burn_overlays_on_video(
             full,
             "-map",
             "[outv]",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-an",
-            "-movflags",
-            "+faststart",
-            "-f",
-            "mp4",
-            ffmpeg_argv_path(part),
         ]
+        append_video_encode_args(cmd, enc)
+        cmd.extend(
+            [
+                "-an",
+                "-movflags",
+                "+faststart",
+                "-f",
+                "mp4",
+                ffmpeg_argv_path(part),
+            ]
+        )
         proc = _run(cmd)
         if proc.returncode != 0:
             unlink_optional(part)
@@ -220,6 +224,7 @@ def burn_overlays_on_video(
             "bytes": path_stat(output_video).st_size,
             "overlay_count": len(overlays),
             "mode": "fine_cut_overlays",
+            **enc.as_compile_meta(),
         }
     finally:
         if st_root is not None:

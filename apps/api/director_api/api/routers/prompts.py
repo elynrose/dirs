@@ -30,7 +30,7 @@ def list_llm_prompts(
     auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    rows = list_prompt_rows_for_api(db, settings.default_tenant_id, auth.user_id)
+    rows = list_prompt_rows_for_api(db, auth.tenant_id, auth.user_id)
     db.commit()
     return {
         "data": {"prompts": [LlmPromptItemOut.model_validate(r).model_dump(mode="json") for r in rows]},
@@ -50,12 +50,12 @@ def put_llm_prompt(
     if prompt_key not in all_prompt_keys():
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "unknown prompt key"})
     upsert_user_prompt_override(
-        db, settings.default_tenant_id, auth.user_id, prompt_key, body.content.strip()
+        db, auth.tenant_id, auth.user_id, prompt_key, body.content.strip()
     )
     db.commit()
-    rows = list_prompt_rows_for_api(db, settings.default_tenant_id, auth.user_id)
+    rows = list_prompt_rows_for_api(db, auth.tenant_id, auth.user_id)
     match = next((r for r in rows if r["prompt_key"] == prompt_key), None)
-    log.info("llm_prompt_saved", prompt_key=prompt_key, tenant_id=settings.default_tenant_id)
+    log.info("llm_prompt_saved", prompt_key=prompt_key, tenant_id=auth.tenant_id)
     return {
         "data": {"prompt": LlmPromptItemOut.model_validate(match).model_dump(mode="json") if match else None},
         "meta": meta,
@@ -72,9 +72,9 @@ def delete_llm_prompt_override_route(
 ) -> dict:
     if prompt_key not in all_prompt_keys():
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "unknown prompt key"})
-    deleted = delete_user_prompt_override(db, settings.default_tenant_id, auth.user_id, prompt_key)
+    deleted = delete_user_prompt_override(db, auth.tenant_id, auth.user_id, prompt_key)
     db.commit()
-    rows = list_prompt_rows_for_api(db, settings.default_tenant_id, auth.user_id)
+    rows = list_prompt_rows_for_api(db, auth.tenant_id, auth.user_id)
     match = next((r for r in rows if r["prompt_key"] == prompt_key), None)
     return {
         "data": {

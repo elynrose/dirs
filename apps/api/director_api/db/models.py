@@ -41,6 +41,10 @@ class Project(Base):
 
     workflow_phase: Mapped[str] = mapped_column(String(64), default="draft")
     director_output_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    opening_hook_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    publish_pack_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    include_outro_scene: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    publish_to_youtube: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     critic_policy_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     research_min_sources: Mapped[int] = mapped_column(Integer, default=3)
 

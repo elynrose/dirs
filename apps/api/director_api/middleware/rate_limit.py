@@ -16,10 +16,9 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from director_api.auth.deps import extract_token
-from director_api.auth.sessions import get_server_session
 from director_api.config import Settings, get_settings
 from director_api.infra.redis_client import get_redis_client
+from director_api.middleware.tenant_hint import tenant_id_from_session
 
 log = structlog.get_logger(__name__)
 
@@ -35,21 +34,6 @@ _SKIP_PREFIXES = (
     "/openapi",
     "/redoc",
 )
-
-
-def _tenant_id_from_session_for_rate_limit(request: Request, settings: Settings) -> str | None:
-    """Prefer workspace id from the opaque Redis session over raw ``X-Tenant-Id``."""
-    if not settings.director_auth_enabled:
-        return None
-    token = extract_token(request, settings)
-    if not token:
-        return None
-    sess = get_server_session(token)
-    if sess:
-        tid = str(sess.get("tenant_id") or "").strip()
-        if tid:
-            return tid
-    return None
 
 
 class TenantRateLimitMiddleware(BaseHTTPMiddleware):
@@ -116,7 +100,7 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         rpm = self._rpm if self._rpm is not None else int(settings.api_rate_limit_per_minute)
-        session_tid = _tenant_id_from_session_for_rate_limit(request, settings)
+        session_tid = tenant_id_from_session(request, settings)
         if session_tid:
             tenant_hint = session_tid
         else:

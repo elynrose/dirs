@@ -1,10 +1,15 @@
+import uuid
 from types import SimpleNamespace
 
 from director_api.services.phase3 import build_scene_plan_batch, scene_plan_refine_context
 
 
+def _chapter(**kwargs):
+    return SimpleNamespace(id=uuid.uuid4(), **kwargs)
+
+
 def test_scene_plan_splits_single_long_block_into_multiple_scenes():
-    chapter = SimpleNamespace(
+    chapter = _chapter(
         script_text=(
             "Ahab rises to power and consolidates influence across the kingdom. "
             "His policies deepen social fracture and normalize fear among ordinary families. "
@@ -29,7 +34,7 @@ def test_scene_plan_splits_single_long_block_into_multiple_scenes():
 
 
 def test_scene_plan_refine_context_clip_and_count_band():
-    chapter = SimpleNamespace(
+    chapter = _chapter(
         script_text=" ".join(["word"] * 260),
         summary="",
         target_duration_sec=0,
@@ -48,7 +53,7 @@ def test_single_block_splits_when_chapter_target_short_but_script_long():
     """Regression: target_duration_sec under 90s must not force a single scene for long VO."""
     parts = [f"Beat {i} explains one thread of the story with care. " for i in range(20)]
     script = "".join(parts).strip()
-    chapter = SimpleNamespace(
+    chapter = _chapter(
         script_text=script,
         summary="",
         target_duration_sec=60,
@@ -65,7 +70,7 @@ def test_single_block_splits_when_chapter_target_short_but_script_long():
 
 
 def test_min_scenes_expands_seed():
-    chapter = SimpleNamespace(
+    chapter = _chapter(
         script_text="Alpha. Bravo. Charlie. Delta. Echo. Foxtrot.",
         summary="",
         target_duration_sec=30,
@@ -84,7 +89,7 @@ def test_min_scenes_expands_seed():
 def test_scene_plan_splits_run_on_without_sentence_endings():
     """Scripts pasted without .!? still become multiple beats via word chunking."""
     script = " ".join([f"segment{i}" for i in range(140)])
-    chapter = SimpleNamespace(
+    chapter = _chapter(
         script_text=script,
         summary="",
         target_duration_sec=200,
@@ -102,7 +107,7 @@ def test_scene_plan_splits_run_on_without_sentence_endings():
 
 def test_scene_plan_splits_on_semicolons():
     body = "; ".join([f"Clause {i} adds another beat to the narration" for i in range(6)])
-    chapter = SimpleNamespace(
+    chapter = _chapter(
         script_text=body,
         summary="",
         target_duration_sec=120,
@@ -124,7 +129,7 @@ def test_medium_script_never_collapses_seed_to_one_scene():
         "This chapter introduces the central conflict and names the stakes for everyone watching at home. "
         "It explains why the moment matters and what could change if the story moves forward with courage."
     )
-    chapter = SimpleNamespace(
+    chapter = _chapter(
         script_text=script,
         summary="",
         target_duration_sec=120,
@@ -141,7 +146,7 @@ def test_medium_script_never_collapses_seed_to_one_scene():
 
 
 def test_scene_plan_refine_context_workspace_minimum_scenes_floor():
-    chapter = SimpleNamespace(
+    chapter = _chapter(
         script_text=" ".join(["word"] * 260),
         summary="",
         target_duration_sec=0,

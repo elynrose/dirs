@@ -101,7 +101,9 @@ def schedule_scene_precompile_for_asset(
     ):
         return None
 
-    tenant_id = str(asset.tenant_id or settings.default_tenant_id)
+    tenant_id = str(asset.tenant_id or "").strip()
+    if not tenant_id:
+        raise ValueError("asset missing tenant_id")
     if _running_precompile_for_asset(db, tenant_id, asset.id):
         return None
 

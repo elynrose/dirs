@@ -1,6 +1,7 @@
 """FFmpeg compile helpers for Directely."""
 
 from ffmpeg_pipelines.audio_concat import concat_audio_files
+from ffmpeg_pipelines.encode import VideoEncodeConfig, video_encode_config_from_settings
 from ffmpeg_pipelines.errors import FFmpegCompileError
 from ffmpeg_pipelines.export_manifest import build_export_manifest
 from ffmpeg_pipelines.filter_probe import ffmpeg_filter_available
@@ -16,6 +17,8 @@ from ffmpeg_pipelines.version_probe import ffmpeg_version_line
 
 __all__ = [
     "FFmpegCompileError",
+    "VideoEncodeConfig",
+    "video_encode_config_from_settings",
     "build_export_manifest",
     "build_overlay_filter_chain",
     "burn_overlays_on_video",

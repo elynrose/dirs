@@ -10,11 +10,11 @@ test.describe("Settings API keys accordions", () => {
     const headings = page.locator(
       ".settings-tab-panel details.settings-section summary .settings-section-heading",
     );
-    const n = await headings.count();
-    expect(n).toBeGreaterThan(8);
-
     const first = headings.first();
     await expect(first).toHaveText(/Telegram bot/i, { timeout: 15_000 });
+
+    const n = await headings.count();
+    expect(n).toBeGreaterThan(8);
 
     const color = await first.evaluate((el) => getComputedStyle(el).color);
     const opacity = await first.evaluate((el) => getComputedStyle(el).opacity);

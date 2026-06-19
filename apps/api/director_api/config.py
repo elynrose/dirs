@@ -557,6 +557,14 @@ class Settings(BaseSettings):
             "TELEGRAM_NOTIFY_PIPELINE_FAILURES",
         ),
     )
+    # Per-phase progress messages (research done, images done, timeline built, etc.).
+    telegram_notify_phase_completions: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "telegram_notify_phase_completions",
+            "TELEGRAM_NOTIFY_PHASE_COMPLETIONS",
+        ),
+    )
     # Absolute Studio URL for Telegram deep links (e.g. https://studio.example.com).
     director_public_app_url: str | None = Field(
         default=None,
@@ -630,6 +638,23 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ffmpeg_min_major_version", "FFMPEG_MIN_MAJOR_VERSION"),
     )
     ffmpeg_compile_enabled: bool = True
+    ffmpeg_video_encoder: Literal["auto", "libx264", "h264_nvenc"] = Field(
+        default="auto",
+        description="Video encoder for export FFmpeg runs: auto probes h264_nvenc then falls back to libx264.",
+        validation_alias=AliasChoices("ffmpeg_video_encoder", "FFMPEG_VIDEO_ENCODER"),
+    )
+    ffmpeg_encode_crf: int = Field(
+        default=23,
+        ge=0,
+        le=51,
+        description="libx264 CRF or h264_nvenc CQ (same 0–51 scale).",
+        validation_alias=AliasChoices("ffmpeg_encode_crf", "FFMPEG_ENCODE_CRF"),
+    )
+    ffmpeg_encode_preset: str = Field(
+        default="veryfast",
+        description="libx264 preset; mapped to NVENC p1–p7 when h264_nvenc is selected.",
+        validation_alias=AliasChoices("ffmpeg_encode_preset", "FFMPEG_ENCODE_PRESET"),
+    )
     scene_precompile_enabled: bool = Field(
         default=True,
         description=(

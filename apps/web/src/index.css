@@ -1253,8 +1253,8 @@ h3 {
   min-height: 0;
   display: grid;
   grid-template-columns: var(--left-width, 300px) 1fr var(--right-width, 360px);
-  /* Tall main row: cap using grid height (not 100dvh) so nested layout matches #root/body insets */
-  grid-template-rows: minmax(min(960px, calc(100% - var(--bottom-height, 240px) - 10px)), 1fr) var(--bottom-height, 240px);
+  /* Main row fills remaining space; bottom row always reserves timeline panel height. */
+  grid-template-rows: minmax(0, 1fr) minmax(120px, var(--bottom-height, 240px));
   grid-template-areas:
     "assets canvas inspector"
     "timeline timeline timeline";
@@ -1291,7 +1291,17 @@ h3 {
 .inspector-panel > h2 {
   flex-shrink: 0;
 }
-.timeline-panel { grid-area: timeline; overflow: auto; }
+.timeline-panel {
+  grid-area: timeline;
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-panel > h2 {
+  flex-shrink: 0;
+}
 
 /* Editor: collapsible reorderable cards */
 .editor-card-stack {
@@ -3460,11 +3470,14 @@ details.settings-section[open] > .settings-section-summary {
   margin: 0 0 10px;
   padding: 0;
   border-bottom: 1px solid rgb(255 255 255 / 14%);
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .media-preview-tablist button {
   margin: 0;
-  padding: 8px 14px;
+  padding: 8px 10px;
+  flex: 0 0 auto;
   border: none;
   border-bottom: 2px solid transparent;
   background: transparent;
@@ -3504,6 +3517,48 @@ details.settings-section[open] > .settings-section-summary {
 .media-preview-tabpanel > .compiled-video-preview {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+.media-preview-publish-tab {
+  text-align: left;
+  overflow-y: auto;
+}
+
+.media-preview-publish-thumb {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  max-height: min(42vh, 360px);
+  background: rgb(0 0 0 / 35%);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.media-preview-publish-thumb .canvas-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  max-height: none;
+}
+
+.media-preview-publish-thumb-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.media-preview-publish-label {
+  display: block;
+  font-size: 0.78rem;
+  margin: 10px 0 4px;
+}
+
+.media-preview-hook-text {
+  font-family: inherit;
+  line-height: 1.5;
 }
 
 .compiled-video-preview__actions {

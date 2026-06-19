@@ -57,7 +57,7 @@ class PexelsImportError(Exception):
         super().__init__(message)
 
 
-def _load_scene_for_pexels(db: Session, settings: Settings, scene_id: UUID) -> tuple[Scene, UUID]:
+def _load_scene_for_pexels(db: Session, tenant_id: str, scene_id: UUID) -> tuple[Scene, UUID]:
     sc = db.get(Scene, scene_id)
     if not sc:
         raise PexelsImportError(404, "NOT_FOUND", "scene not found")
@@ -65,7 +65,7 @@ def _load_scene_for_pexels(db: Session, settings: Settings, scene_id: UUID) -> t
     if not ch:
         raise PexelsImportError(404, "NOT_FOUND", "scene not found")
     p = db.get(Project, ch.project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
+    if not p or p.tenant_id != tenant_id:
         raise PexelsImportError(404, "NOT_FOUND", "scene not found")
     return sc, ch.project_id
 
@@ -76,6 +76,7 @@ async def execute_pexels_scene_import(
     scene_id: UUID,
     body: ImportPexelsBody,
     *,
+    tenant_id: str,
     api_key: str | None = None,
 ) -> Asset:
     """Download Pexels media, validate, reframe to project aspect, persist ``Asset`` (commits)."""
@@ -87,7 +88,7 @@ async def execute_pexels_scene_import(
             "Set PEXELS_API_KEY on the API server to search or import Pexels media.",
         )
 
-    sc, project_id = _load_scene_for_pexels(db, settings, scene_id)
+    sc, project_id = _load_scene_for_pexels(db, tenant_id, scene_id)
 
     photographer: str | None = None
     photographer_url: str | None = None
@@ -315,7 +316,7 @@ async def execute_pexels_scene_import(
 
         a = Asset(
             id=asset_id,
-            tenant_id=settings.default_tenant_id,
+            tenant_id=tenant_id,
             scene_id=scene_id,
             project_id=project_id,
             asset_type=asset_kind,

@@ -109,3 +109,25 @@ def test_apply_frame_dimensions_portrait_9_16() -> None:
     }
     assert mc._apply_frame_dimensions_to_comfyui_workflow(wf, 720, 1280) is True
     assert wf["a"]["inputs"] == {"width": 720, "height": 1280, "batch_size": 1}
+
+
+def test_apply_generation_tier_steps_production() -> None:
+    wf = {
+        "1": {
+            "class_type": "KSampler",
+            "inputs": {"steps": 20, "cfg": 1.0},
+        }
+    }
+    assert mc._apply_generation_tier_to_comfyui_image_workflow(wf, "production") is True
+    assert wf["1"]["inputs"]["steps"] == 32
+
+
+def test_apply_generation_tier_steps_preview_keeps_default() -> None:
+    wf = {
+        "1": {
+            "class_type": "KSampler",
+            "inputs": {"steps": 20, "cfg": 1.0},
+        }
+    }
+    assert mc._apply_generation_tier_to_comfyui_image_workflow(wf, "preview") is False
+    assert wf["1"]["inputs"]["steps"] == 20

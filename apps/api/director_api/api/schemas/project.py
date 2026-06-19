@@ -36,6 +36,10 @@ class ProjectCreate(BaseModel):
         default=False,
         description="When true, skip voice-over TTS; exports are visuals plus optional background music only.",
     )
+    publish_to_youtube: bool = Field(
+        default=False,
+        description="When true, upload final_cut.mp4 to YouTube after export (requires workspace OAuth).",
+    )
 
     def brief_dict(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)
@@ -70,6 +74,22 @@ class ProjectPatch(BaseModel):
         default=None,
         description="When true, skip voice-over TTS; slideshow-style exports use music only.",
     )
+    opening_hook_text: str | None = Field(
+        default=None,
+        description="Optional spoken opening hook script (pre-scenes pipeline step).",
+    )
+    publish_pack_json: dict[str, Any] | None = Field(
+        default=None,
+        description="Thumbnail storage key and YouTube publish metadata.",
+    )
+    include_outro_scene: bool | None = Field(
+        default=None,
+        description="When true, append a subscribe CTA as the last scene after scene planning.",
+    )
+    publish_to_youtube: bool | None = Field(
+        default=None,
+        description="When true, upload final_cut.mp4 to YouTube after export.",
+    )
 
 
 class ProjectOut(BaseModel):
@@ -95,6 +115,10 @@ class ProjectOut(BaseModel):
     workflow_phase: str
     research_min_sources: int
     director_output_json: dict[str, Any] | None
+    opening_hook_text: str | None = None
+    publish_pack_json: dict[str, Any] | None = None
+    include_outro_scene: bool = False
+    publish_to_youtube: bool = False
     critic_policy_json: dict[str, Any] | None = None
     use_all_approved_scene_media: bool = False
     frame_aspect_ratio: str = "16:9"
@@ -128,7 +152,7 @@ class ProjectOut(BaseModel):
             return "center_crop"
         return v
 
-    @field_validator("director_output_json", "critic_policy_json", mode="before")
+    @field_validator("director_output_json", "critic_policy_json", "publish_pack_json", mode="before")
     @classmethod
     def jsonb_object_or_none(cls, v: Any) -> Any:
         if v is None:

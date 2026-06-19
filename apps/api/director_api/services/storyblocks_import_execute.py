@@ -70,7 +70,7 @@ def _downloader_id_for_scene(scene_id: UUID) -> int:
     return int(h[:9], 16) % 900_000_000 + 100
 
 
-def _load_scene_for_storyblocks(db: Session, settings: Settings, scene_id: UUID) -> tuple[Scene, UUID]:
+def _load_scene_for_storyblocks(db: Session, tenant_id: str, scene_id: UUID) -> tuple[Scene, UUID]:
     sc = db.get(Scene, scene_id)
     if not sc:
         raise StoryblocksImportError(404, "NOT_FOUND", "scene not found")
@@ -78,7 +78,7 @@ def _load_scene_for_storyblocks(db: Session, settings: Settings, scene_id: UUID)
     if not ch:
         raise StoryblocksImportError(404, "NOT_FOUND", "scene not found")
     p = db.get(Project, ch.project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
+    if not p or p.tenant_id != tenant_id:
         raise StoryblocksImportError(404, "NOT_FOUND", "scene not found")
     return sc, ch.project_id
 
@@ -88,6 +88,8 @@ async def execute_storyblocks_scene_import(
     settings: Settings,
     scene_id: UUID,
     body: ImportStoryblocksBody,
+    *,
+    tenant_id: str,
 ) -> Asset:
     pub, priv, video_base, image_base = _storyblocks_credentials(settings)
     if not pub or not priv:
@@ -97,7 +99,7 @@ async def execute_storyblocks_scene_import(
             "Set Storyblocks API public and private keys (workspace Settings or environment) to import Storyblocks media.",
         )
 
-    sc, project_id = _load_scene_for_storyblocks(db, settings, scene_id)
+    sc, project_id = _load_scene_for_storyblocks(db, tenant_id, scene_id)
     api_base = image_base if body.kind == "photo" else video_base
     downloader_id = _downloader_id_for_scene(scene_id)
 
@@ -330,7 +332,7 @@ async def execute_storyblocks_scene_import(
 
         a = Asset(
             id=asset_id,
-            tenant_id=settings.default_tenant_id,
+            tenant_id=tenant_id,
             scene_id=scene_id,
             project_id=project_id,
             asset_type=asset_kind,

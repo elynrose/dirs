@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import math
 import random
+from pathlib import Path
 from typing import Any
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from director_api.db.models import Asset, Chapter, Scene
+from director_api.services.scene_timeline_duration import (
+    effective_scene_visual_budget_sec,
+    scene_vo_tail_padding_sec_from_settings,
+)
 
 # Randomized shot grammar: appended to provider prompts (overrides) so extra takes differ from the hero.
 _COVERAGE_VARIANTS: list[dict[str, Any]] = [
@@ -61,6 +72,61 @@ def coverage_visual_slots_needed(*, budget_sec: float, clip_sec: float, max_slot
     b = max(0.25, float(budget_sec))
     c = max(1.0, float(clip_sec))
     return max(1, min(max_slots, int(math.ceil(b / c))))
+
+
+def _scene_succeeded_visual_count(db: Session, scene_id: UUID) -> int:
+    assets = list(db.scalars(select(Asset).where(Asset.scene_id == scene_id)).all())
+    return sum(
+        1
+        for a in assets
+        if str(a.status or "") == "succeeded" and str(a.asset_type or "").lower() in ("image", "video")
+    )
+
+
+def project_scene_coverage_counts(
+    db: Session,
+    project_id: UUID,
+    *,
+    storage_root: str | Path | None,
+    clip_sec: float,
+    tail_padding_sec: float,
+    ffprobe_bin: str = "ffprobe",
+    timeout_sec: float = 120.0,
+) -> tuple[int, int, int, int]:
+    """Return ``(scene_count, scenes_met, slots_have, slots_need)`` for pipeline status.
+
+    A scene is *met* when succeeded image+video count is at least the slots needed for its VO budget.
+    """
+    scenes = list(
+        db.scalars(
+            select(Scene)
+            .join(Chapter, Scene.chapter_id == Chapter.id)
+            .where(Chapter.project_id == project_id)
+            .order_by(Chapter.order_index, Scene.order_index)
+        ).all()
+    )
+    root = Path(storage_root).resolve() if storage_root else None
+    scenes_met = 0
+    slots_have = 0
+    slots_need = 0
+    for sc in scenes:
+        budget = effective_scene_visual_budget_sec(
+            db,
+            scene=sc,
+            project_id=project_id,
+            base_clip_sec=float(clip_sec),
+            storage_root=root or Path("."),
+            ffprobe_bin=ffprobe_bin,
+            timeout_sec=timeout_sec,
+            tail_padding_sec=float(tail_padding_sec),
+        )
+        need = coverage_visual_slots_needed(budget_sec=budget, clip_sec=float(clip_sec))
+        have = _scene_succeeded_visual_count(db, sc.id)
+        slots_need += need
+        slots_have += min(have, need)
+        if have >= need:
+            scenes_met += 1
+    return len(scenes), scenes_met, slots_have, slots_need
 
 
 def pick_coverage_payload(take_index: int) -> dict[str, Any]:

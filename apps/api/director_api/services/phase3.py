@@ -702,6 +702,112 @@ def build_scene_plan_batch(
     return {"schema_id": "scene-plan-batch/v1", "scenes": scenes}
 
 
+MAX_MANUAL_SCENE_LINES = 48
+
+
+def parse_manual_scene_lines(text: str) -> list[str]:
+    """Manual Step-by-step import: one non-empty, non-comment line → one scene."""
+    out: list[str] = []
+    for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        out.append(line)
+    return out
+
+
+def build_scene_plan_batch_from_lines(
+    chapter: Chapter,
+    project: Project,
+    lines: list[str],
+    *,
+    visual_style_prompt: str | None = None,
+    character_consistency_prefix: str | None = None,
+    character_bible_chunks: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Build scene-plan-batch/v1 with exactly one scene per supplied line (no LLM, no paragraph merge)."""
+    if not lines:
+        raise ValueError("MANUAL_SCENE_LINES_REQUIRED: at least one non-empty line is required")
+    if len(lines) > MAX_MANUAL_SCENE_LINES:
+        raise ValueError(
+            f"MANUAL_SCENE_LINE_LIMIT: at most {MAX_MANUAL_SCENE_LINES} scenes per chapter import"
+        )
+    blocks = [sanitize_jsonb_text(ln, 12_000) for ln in lines]
+    resolved_visual = (visual_style_prompt or "").strip()
+    if not resolved_visual:
+        resolved_visual = (project.visual_style or "cinematic documentary natural light").strip()
+    vtype = _visual_type_for_project(project, style_for_hints=resolved_visual)
+    chapter_tag = sanitize_jsonb_text(chapter.title, 120)
+    scenes: list[dict[str, Any]] = []
+    for idx, narr in enumerate(blocks):
+        narr_clean = narr
+        words = max(1, len(narr_clean.split()))
+        planned = max(5, min(600, int(round(words / 130.0 * 60))))
+        purpose = sanitize_jsonb_text(narr_clean.replace("\n", " ")[:280], 300) or f"Beat {idx + 1}"
+        _tail = ". What we see (from this beat): "
+        _boiler = _image_prompt_boilerplate_for_project(project)
+        _style_cap = max(120, 4000 - len(_boiler) - len(_tail) - 1000)
+        style = sanitize_jsonb_text(resolved_visual, min(3000, _style_cap))
+        scene_key = f"{chapter.id}:{idx}"
+        cam_img = scene_camera_image_hint(scene_key, idx)
+        cam_vid = scene_camera_video_hint(scene_key, idx)
+        head = f"{cam_img}\n\n{_boiler}{style}{_tail}"
+        narr_room = max(200, 4000 - len(head))
+        narr_excerpt = narr_clean[: min(1400, narr_room)]
+        _v_lead = video_prompt_lead_for_project(project)
+        _vp_room = max(120, 3000 - len(_v_lead) - len(cam_vid) - 2)
+        pp: dict[str, Any] = {
+            "image_prompt": sanitize_jsonb_text(head + narr_excerpt, 4000),
+            "video_prompt": sanitize_jsonb_text(
+                f"{cam_vid}\n\n{_v_lead}{narr_clean[: min(900, _vp_room)]}",
+                3000,
+            ),
+            "negative_prompt": default_scene_negative_prompt_for_project(project, None),
+            "chapter_title": chapter.title,
+        }
+        tags = [chapter_tag, f"scene_{idx + 1}", vtype]
+        img_p = project.preferred_image_provider
+        vid_p = project.preferred_video_provider
+        if character_bible_chunks is not None:
+            scene_text_for_bible = " ".join(
+                [
+                    str(narr_clean or ""),
+                    str(purpose or ""),
+                    str(chapter.title or ""),
+                ]
+            )
+            scene_prefix = _character_prefix_from_chunks(
+                character_bible_chunks, scene_text=scene_text_for_bible
+            )
+            _embed_character_prefix_in_prompt_package(pp, scene_prefix)
+        else:
+            _embed_character_prefix_in_prompt_package(pp, character_consistency_prefix)
+        narr_stored = NO_NARRATION_SCENE_TEXT if project_no_narration(project) else narr_clean
+        row: dict[str, Any] = {
+            "order_index": idx,
+            "purpose": purpose,
+            "planned_duration_sec": planned,
+            "narration_text": narr_stored,
+            "visual_type": vtype,
+            "prompt_package_json": pp,
+            "continuity_tags_json": tags,
+        }
+        if img_p:
+            row["preferred_image_provider"] = img_p
+        if vid_p:
+            row["preferred_video_provider"] = vid_p
+        st = infer_stock_search_terms_for_scene(
+            purpose=purpose,
+            narration_text=narr_clean,
+            chapter_title=chapter.title or "",
+            project_topic=project.topic or "",
+        )
+        if st:
+            row["stock_search_terms"] = st
+        scenes.append(row)
+    return {"schema_id": "scene-plan-batch/v1", "scenes": scenes}
+
+
 def build_extend_scene_deterministic(
     chapter: Chapter,
     project: Project,

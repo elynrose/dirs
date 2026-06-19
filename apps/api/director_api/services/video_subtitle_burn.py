@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ffmpeg_pipelines.encode import VideoEncodeConfig, append_video_encode_args, effective_encode_config
+
 
 def burn_webvtt_onto_mp4(
     *,
@@ -14,6 +16,9 @@ def burn_webvtt_onto_mp4(
     video_out: Path,
     ffmpeg_bin: str = "ffmpeg",
     timeout_sec: float = 3600.0,
+    crf: int = 20,
+    preset: str = "medium",
+    encode_config: object | None = None,
 ) -> None:
     """Re-encode video with burned-in subtitles; copies audio stream unchanged."""
     video_in = video_in.resolve()
@@ -31,6 +36,11 @@ def burn_webvtt_onto_mp4(
     try:
         # Run from ``work`` so the filter path stays short and portable.
         vf = f"subtitles={local_vtt.name}:charenc=UTF-8"
+        enc = effective_encode_config(
+            encode_config if isinstance(encode_config, VideoEncodeConfig) else None,
+            crf=crf,
+            preset=preset,
+        )
         cmd = [
             ffmpeg_bin,
             "-y",
@@ -40,16 +50,9 @@ def burn_webvtt_onto_mp4(
             vf,
             "-c:a",
             "copy",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "20",
-            "-movflags",
-            "+faststart",
-            tmp_out.name,
         ]
+        append_video_encode_args(cmd, enc)
+        cmd.extend(["-movflags", "+faststart", tmp_out.name])
         subprocess.run(
             cmd,
             cwd=str(work),

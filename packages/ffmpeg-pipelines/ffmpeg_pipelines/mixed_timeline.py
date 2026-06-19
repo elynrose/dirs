@@ -1,9 +1,7 @@
 """Rough-cut compile: mix image and video clip assets into one H.264 MP4 (video only).
 
-Assembly-style export: stills are static (no Ken Burns). Consecutive images are encoded in
-fewer FFmpeg runs via ``compile_image_slideshow`` (``motion="none"``, optional crossfade). Videos
-are listed in order and normalized in a single ``compile_video_concat`` (already batched on
-Windows) so we do not pre-merge video runs (avoids a second lossy encode).
+Consecutive stills are batched via ``compile_image_slideshow`` (optional Ken Burns / pan + crossfade).
+Videos are normalized and concatenated; final join is stream-copy when all partials share encode settings.
 
 Per-clip video normalization uses video-only encodes (``-an`` / concat ``a=0``); the final
 ``_stream_copy_join`` pass maps only the video stream so stock sources (e.g. Pexels) cannot
@@ -20,10 +18,11 @@ from pathlib import Path
 from typing import Any, Literal, Union
 
 from ffmpeg_pipelines.black_title_card import encode_black_title_card_mp4
+from ffmpeg_pipelines.encode import VideoEncodeConfig, effective_encode_config
 from ffmpeg_pipelines.errors import FFmpegCompileError
 from ffmpeg_pipelines.paths import path_is_readable_file, path_stat
 from ffmpeg_pipelines.probe import ffprobe_duration_seconds
-from ffmpeg_pipelines.slideshow import compile_image_slideshow
+from ffmpeg_pipelines.slideshow import MotionMode, compile_image_slideshow
 from ffmpeg_pipelines.still_to_video import encode_image_to_mp4
 from ffmpeg_pipelines.video_chain import _stream_copy_join, compile_video_concat
 from ffmpeg_pipelines.video_to_duration import encode_video_to_target_duration_mp4
@@ -32,10 +31,21 @@ SegKind = Literal["image", "video", "chapter_title"]
 
 VisualSegment = Union[
     tuple[Literal["image"], Path, float],
+    tuple[Literal["image"], Path, float, MotionMode],
     tuple[Literal["video"], Path, None],
     tuple[Literal["video"], Path, float],
     tuple[Literal["chapter_title"], str, float],
 ]
+
+
+def _image_segment_motion(seg: VisualSegment) -> MotionMode:
+    if seg[0] != "image":
+        return "none"
+    if len(seg) >= 4:
+        m = seg[3]
+        if m in ("none", "pan", "zoom"):
+            return m
+    return "none"
 
 
 def compile_mixed_visual_timeline(
@@ -46,6 +56,7 @@ def compile_mixed_visual_timeline(
     height: int = 720,
     crf: int = 23,
     preset: str = "veryfast",
+    encode_config: VideoEncodeConfig | None = None,
     ffmpeg_bin: str = "ffmpeg",
     ffprobe_bin: str | None = "ffprobe",
     timeout_sec: float = 900.0,
@@ -55,17 +66,16 @@ def compile_mixed_visual_timeline(
     """
     Each segment is either:
 
-    - ``("image", path, duration_sec)`` — still shown for ``duration_sec`` (static scale/pad).
+    - ``("image", path, duration_sec)`` or ``("image", path, duration_sec, motion)`` — still clip.
     - ``("video", path, None)`` — full clip (native length after concat normalize).
     - ``("video", path, duration_sec)`` — trim or loop to exactly ``duration_sec``.
     - ``("chapter_title", text, duration_sec)`` — black full-frame card with centered ``text``.
 
-    Consecutive image segments are batched into one static slideshow encode per run. All pieces
-    are then scaled/padded and concatenated like ``compile_video_concat``.
+    Consecutive image segments are batched into one slideshow encode per run when possible.
     """
     if not segments:
         raise FFmpegCompileError("no segments")
-    # Avoid a deep work dir next to the export (same MAX_PATH issues as inputs) on Windows.
+    enc = effective_encode_config(encode_config, crf=crf, preset=preset)
     if os.name == "nt":
         work_root = Path(tempfile.mkdtemp(prefix="mixtl_", dir=tempfile.gettempdir()))
     else:
@@ -73,14 +83,15 @@ def compile_mixed_visual_timeline(
         work_root.mkdir(parents=True, exist_ok=True)
     vpaths: list[Path] = []
     temp_encoded: list[Path] = []
-    image_run: list[tuple[Path, float]] = []
+    image_run: list[tuple[Path, float, MotionMode]] = []
     xf = max(0.0, float(image_batch_crossfade_sec))
 
     def flush_image_run() -> None:
         if not image_run:
             return
+        motions = [m for _, _, m in image_run]
         if len(image_run) == 1:
-            path, dur = image_run[0]
+            path, dur, motion = image_run[0]
             tmp_out = work_root / f"seg_{len(vpaths)}.mp4"
             encode_image_to_mp4(
                 path,
@@ -90,7 +101,8 @@ def compile_mixed_visual_timeline(
                 height=height,
                 crf=crf,
                 preset=preset,
-                slow_zoom=False,
+                encode_config=enc,
+                motion=motion,
                 ffmpeg_bin=ffmpeg_bin,
                 timeout_sec=min(timeout_sec, 7200.0),
             )
@@ -98,17 +110,20 @@ def compile_mixed_visual_timeline(
             vpaths.append(tmp_out)
         else:
             tmp_out = work_root / f"imgbatch_{len(vpaths)}_{uuid.uuid4().hex[:8]}.mp4"
+            shared_motion: MotionMode | None = motions[0] if all(m == motions[0] for m in motions) else None
             compile_image_slideshow(
-                [(p, float(d)) for p, d in image_run],
+                [(p, float(d)) for p, d, _m in image_run],
                 tmp_out,
                 width=width,
                 height=height,
                 fps=30,
                 crf=crf,
                 preset=preset,
+                encode_config=enc,
                 ffmpeg_bin=ffmpeg_bin,
                 timeout_sec=timeout_sec,
-                motion="none",
+                motion=shared_motion if shared_motion is not None else "none",
+                slide_motions=motions if shared_motion is None else None,
                 crossfade_sec=xf,
                 export_ffmpeg_registry=export_ffmpeg_registry,
             )
@@ -133,6 +148,7 @@ def compile_mixed_visual_timeline(
                     height=height,
                     crf=crf,
                     preset=preset,
+                    encode_config=enc,
                     ffmpeg_bin=ffmpeg_bin,
                     timeout_sec=min(timeout_sec, 300.0),
                 )
@@ -146,7 +162,7 @@ def compile_mixed_visual_timeline(
             if kind == "image":
                 if dur is None or float(dur) <= 0:
                     raise FFmpegCompileError("image segment requires duration_sec > 0")
-                image_run.append((path, float(dur)))
+                image_run.append((path, float(dur), _image_segment_motion(seg)))
             elif kind == "video":
                 flush_image_run()
                 dur_v = dur
@@ -161,8 +177,6 @@ def compile_mixed_visual_timeline(
                     except (FileNotFoundError, OSError, RuntimeError, ValueError, TypeError):
                         native = 0.0
                     if native > 0 and abs(float(dur_v) - native) <= 0.12:
-                        # Duration matches — still need to normalize dimensions/codec so the
-                        # final stream-copy join gets identical-spec inputs.
                         tmp_out = work_root / f"vid_{len(vpaths)}_{uuid.uuid4().hex[:8]}.mp4"
                         compile_video_concat(
                             [path],
@@ -172,6 +186,7 @@ def compile_mixed_visual_timeline(
                             fps=30,
                             crf=crf,
                             preset=preset,
+                            encode_config=enc,
                             ffmpeg_bin=ffmpeg_bin,
                             ffprobe_bin=None,
                             timeout_sec=float(timeout_sec),
@@ -189,6 +204,7 @@ def compile_mixed_visual_timeline(
                             fps=30,
                             crf=crf,
                             preset=preset,
+                            encode_config=enc,
                             ffmpeg_bin=ffmpeg_bin,
                             ffprobe_bin=ffp,
                             timeout_sec=float(timeout_sec),
@@ -196,7 +212,6 @@ def compile_mixed_visual_timeline(
                         temp_encoded.append(tmp_out)
                         vpaths.append(tmp_out)
                 else:
-                    # No target duration — normalize dimensions/codec to match other segments.
                     tmp_out = work_root / f"vid_{len(vpaths)}_{uuid.uuid4().hex[:8]}.mp4"
                     compile_video_concat(
                         [path],
@@ -206,6 +221,7 @@ def compile_mixed_visual_timeline(
                         fps=30,
                         crf=crf,
                         preset=preset,
+                        encode_config=enc,
                         ffmpeg_bin=ffmpeg_bin,
                         ffprobe_bin=None,
                         timeout_sec=float(timeout_sec),
@@ -217,8 +233,6 @@ def compile_mixed_visual_timeline(
 
         flush_image_run()
 
-        # All vpaths are now same-codec H.264 at target dimensions — stream-copy join
-        # avoids a second lossy encode on every segment.
         _stream_copy_join(vpaths, output, ffmpeg_bin=ffmpeg_bin, timeout_sec=timeout_sec)
         return {
             "output_path": str(output),
@@ -226,6 +240,7 @@ def compile_mixed_visual_timeline(
             "mode": "mixed_visual_timeline",
             "segment_count": len(segments),
             "input_count": len(vpaths),
+            **enc.as_compile_meta(),
         }
     finally:
         shutil.rmtree(work_root, ignore_errors=True)

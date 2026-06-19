@@ -16,6 +16,7 @@ from director_api.db.models import Chapter, CriticReport, Job, Project, Revision
 from director_api.services import critic_policy as critic_policy_svc
 from director_api.services import phase4 as phase4_svc
 from director_api.style_presets import effective_narration_style
+from director_api.tasks.worker_helpers import worker_tenant_id
 
 log = structlog.get_logger(__name__)
 
@@ -164,7 +165,7 @@ def _phase4_scene_critique(db: Session, job: Job, settings: Any) -> dict[str, An
     scene_id = uuid.UUID(str(payload["scene_id"]))
     prior_raw = payload.get("prior_report_id")
     prior_id = uuid.UUID(str(prior_raw)) if prior_raw else None
-    tenant = str(payload.get("tenant_id") or job.tenant_id)
+    tenant = worker_tenant_id(job, payload)
     return _phase4_scene_critique_core(
         db,
         scene_id=scene_id,
@@ -178,7 +179,7 @@ def _phase4_scene_critique(db: Session, job: Job, settings: Any) -> dict[str, An
 def _phase4_chapter_critique(db: Session, job: Job, settings: Any) -> dict[str, Any]:
     payload = job.payload or {}
     chapter_id = uuid.UUID(str(payload["chapter_id"]))
-    tenant = str(payload.get("tenant_id") or job.tenant_id)
+    tenant = worker_tenant_id(job, payload)
     ch = db.get(Chapter, chapter_id)
     if not ch:
         raise ValueError("chapter not found")

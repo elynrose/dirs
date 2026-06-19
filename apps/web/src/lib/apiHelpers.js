@@ -2,6 +2,12 @@
  * Shared fetch helpers for the web UI (JSON parse, idempotent POSTs, project readiness).
  */
 
+import {
+  eraseScopeActionLabel,
+  formatEraseScopeBullets,
+  parseEraseConfirmationFromErrorMessage,
+} from "./eraseConsent.js";
+
 export async function parseJson(response) {
   const t = await response.text();
   try {
@@ -42,7 +48,37 @@ export function humanizeErrorText(raw) {
  */
 export function summarizeAgentRunFailure(raw) {
   const s0 = String(raw ?? "");
+  const erase = parseEraseConfirmationFromErrorMessage(s0);
+  if (erase) {
+    const bullets = formatEraseScopeBullets(erase.scope);
+    const action = eraseScopeActionLabel(erase.scopeLabel);
+    const counts = bullets.length ? bullets.join(", ") : "existing scenes and media";
+    return `Confirm before continuing — re-running the ${action} will erase ${counts}. Use the confirmation dialog to proceed.`;
+  }
   const lower = s0.toLowerCase();
+  if (/auto_timeline_no_visuals_at_all/i.test(s0)) {
+    return (
+      "No scene had any image or video for the timeline. Start your image/video provider " +
+      "(for example ComfyUI on port 8188), then continue from the media step."
+    );
+  }
+  if (/auto_timeline_missing_visual_/i.test(s0)) {
+    return (
+      "At least one scene has no image or video. Generate media for that scene, or turn on " +
+      "scene images as a fallback, then continue."
+    );
+  }
+  if (/10061|actively refused|connection refused/i.test(lower)) {
+    return (
+      "The image or video server could not be reached. Start ComfyUI or your configured media provider, then try again."
+    );
+  }
+  if (/comfyui/i.test(lower) && /unreachable|failed|timeout|refused/i.test(lower)) {
+    return "ComfyUI did not respond. Check that it is running and COMFYUI_BASE_URL matches your setup.";
+  }
+  if (/ffmpeg binary not found/i.test(lower)) {
+    return "FFmpeg is not installed or not on PATH on the worker machine.";
+  }
   const auth =
     /\b401\b/.test(s0) ||
     /missing authentication|unauthorized|invalid.*api.*key|api key.*not set|openrouter http 401/i.test(lower);
@@ -55,6 +91,62 @@ export function summarizeAgentRunFailure(raw) {
     );
   }
   return humanizeErrorText(raw);
+}
+
+/** Plain-text technical log download for a failed/blocked automation run. */
+export function agentRunDiagnosticsPath(agentRunId) {
+  const id = String(agentRunId || "").trim();
+  if (!id) return null;
+  return `/v1/agent-runs/${encodeURIComponent(id)}/diagnostics?format=text`;
+}
+
+/** @returns {{ summary: string, diagnosticsPath: string | null }} */
+export function formatAgentRunFailure(run) {
+  const raw = run?.error_message ?? "";
+  return {
+    summary: summarizeAgentRunFailure(raw),
+    diagnosticsPath: run?.id ? agentRunDiagnosticsPath(run.id) : null,
+  };
+}
+
+/** Non-fatal pipeline warnings from steps_json (partial_failed videos, timeline visual heal). */
+export function summarizeAgentRunWarnings(stepsJson) {
+  if (!Array.isArray(stepsJson)) return "";
+  const parts = [];
+  for (const ev of stepsJson) {
+    if (!ev || typeof ev !== "object") continue;
+    const step = String(ev.step || "");
+    const status = String(ev.status || "");
+    if (step === "auto_videos" && status === "partial_failed") {
+      if (ev.generated === 0) {
+        parts.push(
+          ev.failure_reason_summary ||
+            "Video generation was enabled but no scene videos were created.",
+        );
+      } else {
+        parts.push(
+          "Some scenes are still missing videos after retries; the run continued with fallbacks.",
+        );
+      }
+    } else if (step === "auto_timeline" && status === "visual_heal") {
+      parts.push(
+        ev.summary ||
+          "Timeline generated emergency still images for scenes without video.",
+      );
+    }
+  }
+  return parts.join(" ").trim();
+}
+
+/** @returns {{ summary: string, diagnosticsPath: string | null } | null} */
+export function formatAgentRunWarning(run) {
+  const steps = run?.steps_json;
+  const summary = summarizeAgentRunWarnings(steps);
+  if (!summary) return null;
+  return {
+    summary,
+    diagnosticsPath: run?.id ? agentRunDiagnosticsPath(run.id) : null,
+  };
 }
 
 /** FastAPI validation: [{ loc, msg, type }, …] */
@@ -125,6 +217,16 @@ export function apiErrorMessage(body, httpStatus) {
   if (d && typeof d === "object") {
     if (typeof d.message === "string") return `${d.message}${hint}`;
     if (typeof d.msg === "string") return `${d.msg}${hint}`;
+    if (String(d.code || "") === "ERASE_CONFIRMATION_REQUIRED") {
+      return `Confirmation required before replacing existing project content.${hint}`;
+    }
+    if (String(d.code || "") === "AGENT_RUN_ALREADY_ACTIVE") {
+      const base =
+        typeof d.message === "string" && d.message.trim()
+          ? d.message.trim()
+          : "This project already has a queued or running automation run.";
+      return `${base} Use Continue pipeline to supersede a stuck run, or Stop the active run first.${hint}`;
+    }
     if (typeof d.code === "string" && typeof d.message === "string") return `${d.code}: ${d.message}${hint}`;
   }
   const msg = body?.detail?.message;

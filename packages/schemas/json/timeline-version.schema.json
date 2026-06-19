@@ -27,7 +27,12 @@
           },
           "duration_sec": { "type": "number", "minimum": 0 },
           "trim_start_sec": { "type": "number", "minimum": 0 },
-          "trim_end_sec": { "type": "number", "minimum": 0 }
+          "trim_end_sec": { "type": "number", "minimum": 0 },
+          "still_motion": {
+            "type": "string",
+            "enum": ["none", "pan", "zoom"],
+            "description": "Per-clip override for still motion in rough-cut export."
+          }
         },
         "additionalProperties": true
       }
@@ -59,6 +64,16 @@
       "minimum": 0,
       "maximum": 2,
       "description": "Dissolve duration (seconds) between consecutive stills when rough-cut batches images; 0 = hard cuts."
+    },
+    "still_motion_mode": {
+      "type": "string",
+      "enum": ["none", "pan", "zoom"],
+      "description": "Default Ken Burns / pan for still images in rough-cut export when still_motion_source is timeline_default."
+    },
+    "still_motion_source": {
+      "type": "string",
+      "enum": ["timeline_default", "scene_video_prompt"],
+      "description": "Use timeline still_motion_mode for all stills, or parse each scene video_prompt for motion hints."
     },
     "final_cut_narration_mode": {
       "type": "string",

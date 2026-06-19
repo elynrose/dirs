@@ -92,4 +92,4 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
       - name: Install and build
-        run: npm ci && npm run build
+        run: npm ci && npm run check:editor-bag && npm run build

@@ -26,6 +26,7 @@ from director_api.services.chatterbox_voice_ref import (
     voice_ref_absolute_path,
     voice_ref_storage_key,
 )
+from director_api.services.comfyui_test_runs import get_comfyui_workflow_test, start_comfyui_workflow_test
 from director_api.services.comfyui_workflow_storage import (
     ComfyuiWorkflowRole,
     delete_workflow_file,
@@ -39,8 +40,6 @@ from director_api.services.comfyui_workflow_storage import (
 )
 from director_api.providers.media_comfyui import (
     _workflow_env_report_from_path,
-    generate_scene_image_comfyui,
-    generate_scene_video_comfyui,
     smoke_image,
 )
 from director_api.services.runtime_settings import (
@@ -91,7 +90,7 @@ def get_settings_row(
     auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    row = get_or_create_app_settings(db, settings.default_tenant_id)
+    row = get_or_create_app_settings(db, auth.tenant_id)
     db.commit()
     db.refresh(row)
     base_env = get_settings()
@@ -129,7 +128,7 @@ def patch_settings_row(
     auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    row = get_or_create_app_settings(db, settings.default_tenant_id)
+    row = get_or_create_app_settings(db, auth.tenant_id)
     prior = sanitize_overrides(row.config_json)
     patch_raw = body.config if isinstance(body.config, dict) else {}
     merged = merge_app_settings_config_patch(prior, patch_raw)
@@ -185,7 +184,7 @@ def get_elevenlabs_voices(
 ) -> dict:
     """Voices available to the workspace ElevenLabs account (requires saved API key)."""
     rt = resolve_runtime_settings(
-        db, get_settings(), settings.default_tenant_id, user_id=auth_user_id_int(auth)
+        db, get_settings(), auth.tenant_id, user_id=auth_user_id_int(auth)
     )
     key = (getattr(rt, "elevenlabs_api_key", None) or "").strip()
     if not key:
@@ -237,10 +236,11 @@ def get_usage_summary(
     days: int = Query(default=30, ge=1, le=366),
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """LLM token totals and rough cost estimates for the workspace (same tenant as settings)."""
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     data = usage_summary_for_tenant(db, tenant_id=tenant_id, days=days)
     return {"data": data, "meta": {**meta, "tenant_id": tenant_id}}
 
@@ -271,9 +271,9 @@ def get_chatterbox_voice_ref_info(
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Whether a workspace Chatterbox reference clip exists and which storage key is configured."""
-    row = get_or_create_app_settings(db, settings.default_tenant_id)
+    row = get_or_create_app_settings(db, auth.tenant_id)
     rt = resolve_runtime_settings(
-        db, get_settings(), settings.default_tenant_id, user_id=auth_user_id_int(auth)
+        db, get_settings(), auth.tenant_id, user_id=auth_user_id_int(auth)
     )
     key = (getattr(rt, "chatterbox_voice_ref_path", None) or "").strip()
     root = Path(settings.local_storage_root).resolve()
@@ -302,7 +302,7 @@ def get_chatterbox_voice_ref_content(
 ) -> FileResponse:
     """Binary WAV for the saved Chatterbox reference (for Studio preview)."""
     rt = resolve_runtime_settings(
-        db, get_settings(), settings.default_tenant_id, user_id=auth_user_id_int(auth)
+        db, get_settings(), auth.tenant_id, user_id=auth_user_id_int(auth)
     )
     key = (getattr(rt, "chatterbox_voice_ref_path", None) or "").strip()
     if not key:
@@ -341,7 +341,7 @@ async def upload_chatterbox_voice_ref(
     import os
     import shutil
 
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     ff = (settings.ffmpeg_bin or "ffmpeg").strip() or "ffmpeg"
     if not shutil.which(ff):
         raise HTTPException(
@@ -444,7 +444,7 @@ def _comfyui_workflows_payload(
     settings: Settings,
     auth: AuthContext,
 ) -> dict[str, Any]:
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     row = get_or_create_app_settings(db, tenant_id)
     rt = resolve_runtime_settings(
         db, get_settings(), tenant_id, user_id=auth_user_id_int(auth)
@@ -541,7 +541,7 @@ def test_comfyui_workflow(
 ) -> dict:
     """Test ComfyUI connectivity or run a short image/video generation using saved workspace settings."""
     payload = body or ComfyuiWorkflowTestIn()
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     rt = resolve_runtime_settings(
         db, get_settings(), tenant_id, user_id=auth_user_id_int(auth)
     )
@@ -554,23 +554,25 @@ def test_comfyui_workflow(
 
     if mode == "image":
         prompt = (payload.prompt or _COMFYUI_TEST_IMAGE_PROMPT).strip()
-        res = generate_scene_image_comfyui(rt, prompt, frame_aspect_ratio="16:9")
-        out: dict[str, Any] = {
-            "mode": mode,
-            "ok": bool(res.get("ok")),
-            "provider": res.get("provider"),
-            "error": res.get("error"),
-            "detail": (res.get("detail") or "")[:2000] or None,
-            "model": res.get("model"),
-        }
-        if res.get("ok") and res.get("bytes"):
-            dest = test_output_absolute_path(storage_root=root, tenant_id=tenant_id, role="image")
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(res["bytes"])
-            out["test_output_storage_key"] = test_output_storage_key(tenant_id, "image")
-            out["content_type"] = res.get("content_type") or "image/png"
-            out["bytes_written"] = len(res["bytes"])
-        return {"data": out, "meta": meta}
+        test_id = start_comfyui_workflow_test(
+            mode="image",
+            rt=rt,
+            tenant_id=tenant_id,
+            storage_root=root,
+            prompt=prompt,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "data": {
+                    "mode": mode,
+                    "status": "running",
+                    "test_id": test_id,
+                    "poll_url": f"/v1/settings/comfyui-workflows/test/{test_id}",
+                },
+                "meta": meta,
+            },
+        )
 
     if mode == "video":
         prompt = (payload.prompt or _COMFYUI_TEST_VIDEO_PROMPT).strip()
@@ -590,28 +592,43 @@ def test_comfyui_workflow(
                 },
                 "meta": meta,
             }
-        res = generate_scene_video_comfyui(
-            rt, prompt, scene_image_path=None, duration_sec=dur, frame_aspect_ratio="16:9"
+        test_id = start_comfyui_workflow_test(
+            mode="video",
+            rt=rt,
+            tenant_id=tenant_id,
+            storage_root=root,
+            prompt=prompt,
+            duration_sec=dur,
         )
-        out = {
-            "mode": mode,
-            "ok": bool(res.get("ok")),
-            "provider": res.get("provider"),
-            "error": res.get("error"),
-            "detail": (res.get("detail") or "")[:2000] or None,
-            "model": res.get("model"),
-            "duration_sec": dur,
-        }
-        if res.get("ok") and res.get("bytes"):
-            dest = test_output_absolute_path(storage_root=root, tenant_id=tenant_id, role="video")
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(res["bytes"])
-            out["test_output_storage_key"] = test_output_storage_key(tenant_id, "video")
-            out["content_type"] = res.get("content_type") or "video/mp4"
-            out["bytes_written"] = len(res["bytes"])
-        return {"data": out, "meta": meta}
+        return JSONResponse(
+            status_code=202,
+            content={
+                "data": {
+                    "mode": mode,
+                    "status": "running",
+                    "test_id": test_id,
+                    "poll_url": f"/v1/settings/comfyui-workflows/test/{test_id}",
+                    "duration_sec": dur,
+                },
+                "meta": meta,
+            },
+        )
 
     raise HTTPException(status_code=422, detail={"code": "INVALID_MODE", "message": "mode must be connection, image, or video"})
+
+
+@router.get("/comfyui-workflows/test/{test_id}")
+def get_comfyui_workflow_test_status(
+    test_id: str,
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Poll a background ComfyUI image/video test started via POST /comfyui-workflows/test."""
+    root = Path(settings.local_storage_root).resolve()
+    row = get_comfyui_workflow_test(test_id, storage_root=root)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "ComfyUI test run not found"})
+    return {"data": row, "meta": meta}
 
 
 @router.post("/comfyui-workflows/{role}")
@@ -620,11 +637,12 @@ async def upload_comfyui_workflow(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Upload ComfyUI **API format** workflow JSON; sets ``comfyui_workflow_json_path`` or ``comfyui_video_workflow_json_path``."""
     wf_role = _comfyui_workflow_role_or_404(role)
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     raw_parts: list[bytes] = []
     total = 0
     while True:
@@ -676,11 +694,12 @@ def delete_comfyui_workflow(
     role: str,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Remove saved workflow JSON for this role and clear the path in workspace settings."""
     wf_role = _comfyui_workflow_role_or_404(role)
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     root = Path(settings.local_storage_root).resolve()
     delete_workflow_file(storage_root=root, tenant_id=tenant_id, role=wf_role)
     cfg_key = workflow_config_key(wf_role)
@@ -713,7 +732,7 @@ def get_comfyui_test_output(
 ) -> FileResponse:
     """Binary from the latest successful image/video test generation for this workspace."""
     wf_role = _comfyui_workflow_role_or_404(role)
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     root = Path(settings.local_storage_root).resolve()
     path = test_output_absolute_path(storage_root=root, tenant_id=tenant_id, role=wf_role)
     if not path.is_file():
@@ -730,10 +749,11 @@ def get_comfyui_test_output(
 def delete_chatterbox_voice_ref(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     """Remove the saved reference file (when under this tenant’s ``voice_refs/`` dir) and clear the setting key."""
-    tenant_id = str(settings.default_tenant_id)
+    tenant_id = str(auth.tenant_id)
     root = Path(settings.local_storage_root).resolve()
     tenant_dir = (root / "voice_refs" / safe_tenant_slug(tenant_id)).resolve()
 
@@ -774,7 +794,7 @@ def list_llm_prompts_under_settings(
     auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
-    rows = list_prompt_rows_for_api(db, settings.default_tenant_id, auth.user_id)
+    rows = list_prompt_rows_for_api(db, auth.tenant_id, auth.user_id)
     db.commit()
     return {
         "data": {"prompts": [LlmPromptItemOut.model_validate(r).model_dump(mode="json") for r in rows]},
@@ -794,12 +814,12 @@ def put_llm_prompt_under_settings(
     if prompt_key not in all_prompt_keys():
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "unknown prompt key"})
     upsert_user_prompt_override(
-        db, settings.default_tenant_id, auth.user_id, prompt_key, body.content.strip()
+        db, auth.tenant_id, auth.user_id, prompt_key, body.content.strip()
     )
     db.commit()
-    rows = list_prompt_rows_for_api(db, settings.default_tenant_id, auth.user_id)
+    rows = list_prompt_rows_for_api(db, auth.tenant_id, auth.user_id)
     match = next((r for r in rows if r["prompt_key"] == prompt_key), None)
-    log.info("llm_prompt_saved", prompt_key=prompt_key, tenant_id=settings.default_tenant_id, route="settings")
+    log.info("llm_prompt_saved", prompt_key=prompt_key, tenant_id=auth.tenant_id, route="settings")
     return {
         "data": {"prompt": LlmPromptItemOut.model_validate(match).model_dump(mode="json") if match else None},
         "meta": meta,
@@ -822,7 +842,7 @@ def test_telegram_connection(
     payload = body or TelegramTestIn()
     assert_telegram_allowed(
         db=db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=_auth.tenant_id,
         auth_enabled=bool(get_settings().director_auth_enabled),
     )
     token = (settings.telegram_bot_token or "").strip()
@@ -902,9 +922,9 @@ def delete_llm_prompt_override_under_settings(
 ) -> dict:
     if prompt_key not in all_prompt_keys():
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "unknown prompt key"})
-    deleted = delete_user_prompt_override(db, settings.default_tenant_id, auth.user_id, prompt_key)
+    deleted = delete_user_prompt_override(db, auth.tenant_id, auth.user_id, prompt_key)
     db.commit()
-    rows = list_prompt_rows_for_api(db, settings.default_tenant_id, auth.user_id)
+    rows = list_prompt_rows_for_api(db, auth.tenant_id, auth.user_id)
     match = next((r for r in rows if r["prompt_key"] == prompt_key), None)
     return {
         "data": {

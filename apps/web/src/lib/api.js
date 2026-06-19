@@ -33,6 +33,16 @@ function appendMediaAuthQueryParams(_params) {
   void _params;
 }
 
+/** Project-level YouTube thumbnail (16:9). Cache-busted by `cacheBust`. */
+export function apiProjectThumbnailContentUrl(projectId, cacheBust) {
+  const pid = encodeURIComponent(String(projectId));
+  const params = new URLSearchParams();
+  const v = cacheBust != null && String(cacheBust).trim() !== "" ? String(cacheBust) : String(Date.now());
+  params.set("t", v);
+  appendMediaAuthQueryParams(params);
+  return apiPath(`/v1/projects/${pid}/thumbnail/content?${params.toString()}`);
+}
+
 /** Binary content URL for an asset (image or video). Cache-busted by `cacheBust`. */
 export function apiAssetContentUrl(assetId, cacheBust) {
   const v = cacheBust != null && String(cacheBust).trim() !== "" ? String(cacheBust) : String(assetId);

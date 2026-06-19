@@ -32,6 +32,7 @@ def reap_stale_jobs() -> dict[str, Any]:
     so the UI can surface the error and operators can retry.
     """
     with SessionLocal() as db:
+        # Platform-scoped: stale_job_minutes is a global housekeeping policy, not per-tenant.
         settings = resolve_runtime_settings(db, get_settings())
         minutes = max(5, int(settings.stale_job_minutes))
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
@@ -63,6 +64,7 @@ def reap_stale_agent_runs() -> dict[str, Any]:
     delivery; ``paused`` is left alone so deliberate pauses are not auto-failed).
     """
     with SessionLocal() as db:
+        # Platform-scoped: stale_job_minutes is a global housekeeping policy, not per-tenant.
         settings = resolve_runtime_settings(db, get_settings())
         minutes = max(5, int(settings.stale_job_minutes))
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)

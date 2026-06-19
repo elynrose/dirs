@@ -152,11 +152,11 @@ def _celery_ping_ok_sync() -> bool:
 
 async def _event_stream(
     project_id: UUID,
+    tenant_id: str,
     settings: Settings,
     db: Session,
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE frames for the lifetime of the connection."""
-    tenant_id = settings.default_tenant_id
     deadline = time.monotonic() + _MAX_STREAM_SEC
     last_keepalive = time.monotonic()
     last_celery_check = 0.0
@@ -250,9 +250,10 @@ async def project_event_stream(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
 
     if not base.director_auth_enabled:
-        settings = resolve_runtime_settings(db, base, base.default_tenant_id, user_id=None)
-        if p.tenant_id != settings.default_tenant_id:
+        if p.tenant_id != base.default_tenant_id:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
+        settings = resolve_runtime_settings(db, base, p.tenant_id, user_id=None)
+        stream_tenant_id = p.tenant_id
     else:
         token = extract_token(request, base)
         if not token:
@@ -293,9 +294,10 @@ async def project_event_stream(
                 },
             )
         settings = resolve_runtime_settings(db, base, p.tenant_id, user_id=user_id)
+        stream_tenant_id = p.tenant_id
 
     return StreamingResponse(
-        _event_stream(project_id, settings, db),
+        _event_stream(project_id, stream_tenant_id, settings, db),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

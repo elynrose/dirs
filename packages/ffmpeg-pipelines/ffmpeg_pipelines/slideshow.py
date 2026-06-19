@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
+from ffmpeg_pipelines.encode import VideoEncodeConfig, append_video_encode_args, effective_encode_config
 from ffmpeg_pipelines.errors import FFmpegCompileError
 from ffmpeg_pipelines.ffmpeg_tracked import run_ffmpeg_tracked
 from ffmpeg_pipelines.ken_burns import build_crop_pan_vf, build_slow_zoom_vf
@@ -53,10 +54,12 @@ def compile_image_slideshow(
     fps: int = 30,
     crf: int = 23,
     preset: str = "veryfast",
+    encode_config: VideoEncodeConfig | None = None,
     ffmpeg_bin: str = "ffmpeg",
     timeout_sec: float = 900.0,
     slow_zoom: bool = False,
     motion: MotionMode | None = None,
+    slide_motions: list[MotionMode] | None = None,
     crossfade_sec: float = 0.75,
     export_ffmpeg_registry: object | None = None,
 ) -> dict[str, Any]:
@@ -78,6 +81,9 @@ def compile_image_slideshow(
     if motion is None:
         motion = "pan" if slow_zoom else "none"
 
+    if slide_motions is not None and len(slide_motions) != len(slides):
+        raise FFmpegCompileError("slide_motions length must match slides")
+
     if not slides:
         raise FFmpegCompileError("no slides")
     for p, dur in slides:
@@ -98,6 +104,7 @@ def compile_image_slideshow(
             for i in range(0, len(slides), cap):
                 chunk = slides[i : i + cap]
                 chunk_out = work / f"chunk_{i:04d}.mp4"
+                chunk_motions = slide_motions[i : i + cap] if slide_motions is not None else None
                 compile_image_slideshow(
                     chunk,
                     chunk_out,
@@ -106,10 +113,12 @@ def compile_image_slideshow(
                     fps=fps,
                     crf=crf,
                     preset=preset,
+                    encode_config=encode_config,
                     ffmpeg_bin=ffmpeg_bin,
                     timeout_sec=timeout_sec,
                     slow_zoom=slow_zoom,
                     motion=motion,
+                    slide_motions=chunk_motions,
                     crossfade_sec=crossfade_sec,
                     export_ffmpeg_registry=export_ffmpeg_registry,
                 )
@@ -170,7 +179,8 @@ def compile_image_slideshow(
         chains: list[str] = []
         for i in range(n):
             _path, dur_i = slides_run[i]
-            if motion == "zoom":
+            slide_motion = slide_motions[i] if slide_motions is not None else motion
+            if slide_motion == "zoom":
                 direction = "out" if (i % 2 == 1) else "in"
                 zvf = build_slow_zoom_vf(
                     width=width,
@@ -180,7 +190,7 @@ def compile_image_slideshow(
                     direction=direction,
                 )
                 chain = f"{zvf},setpts=PTS-STARTPTS"
-            elif motion == "pan":
+            elif slide_motion == "pan":
                 pan_dir = random.choice(("left", "right"))
                 pvf = build_crop_pan_vf(
                     width=width,
@@ -206,18 +216,18 @@ def compile_image_slideshow(
             concat = f"{concat_inputs}concat=n={n}:v=1:a=0[outv]"
             filter_complex = ";".join(chains) + ";" + concat
 
+        enc = effective_encode_config(encode_config, crf=crf, preset=preset)
         args.extend(
             [
                 "-filter_complex",
                 filter_complex,
                 "-map",
                 "[outv]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                preset,
-                "-crf",
-                str(crf),
+            ]
+        )
+        append_video_encode_args(args, enc)
+        args.extend(
+            [
                 "-movflags",
                 "+faststart",
                 "-an",
@@ -251,8 +261,12 @@ def compile_image_slideshow(
             "slide_count": n,
             "mode": "image_slideshow",
             "motion": motion,
+            "slide_motions": slide_motions,
             "crossfade_sec": xf,
-            "slow_zoom": motion in ("pan", "zoom"),
+            "slow_zoom": motion in ("pan", "zoom") or (
+                slide_motions is not None and any(m in ("pan", "zoom") for m in slide_motions)
+            ),
+            **enc.as_compile_meta(),
         }
     finally:
         if st_root is not None:

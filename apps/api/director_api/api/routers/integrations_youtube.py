@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from director_api.api.deps import meta_dep, settings_dep
+from director_api.api.tenant_access import require_project_for_tenant
 from director_api.auth.context import AuthContext
 from director_api.auth.deps import auth_context_dep
 from director_api.config import Settings, get_settings
@@ -200,6 +201,28 @@ def youtube_disconnect(
     return {"data": {"ok": True}, "meta": meta}
 
 
+@router.get("/upload-defaults")
+def youtube_upload_defaults(
+    project_id: uuid.UUID = Query(...),
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict[str, Any]:
+    """Prefill manual YouTube upload title/description from publish_pack_json when available."""
+    project = require_project_for_tenant(db, project_id, auth.tenant_id)
+    pack = project.publish_pack_json if isinstance(project.publish_pack_json, dict) else {}
+    title = str(pack.get("youtube_title") or project.title or "").strip()[:100]
+    desc = str(pack.get("youtube_description") or project.topic or "").strip()[:5000]
+    return {
+        "data": {
+            "title": title,
+            "description": desc,
+            "has_thumbnail": bool(str(pack.get("thumbnail_storage_key") or "").strip()),
+        },
+        "meta": meta,
+    }
+
+
 @router.post("/upload")
 def youtube_manual_upload(
     body: YoutubeManualUploadBody,
@@ -208,11 +231,9 @@ def youtube_manual_upload(
     meta: dict = Depends(meta_dep),
     auth: AuthContext = Depends(auth_context_dep),
 ) -> dict[str, Any]:
-    p = db.get(Project, body.project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
+    require_project_for_tenant(db, body.project_id, auth.tenant_id)
     tv = db.get(TimelineVersion, body.timeline_version_id)
-    if not tv or tv.tenant_id != settings.default_tenant_id or tv.project_id != body.project_id:
+    if not tv or tv.tenant_id != auth.tenant_id or tv.project_id != body.project_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "timeline version not found"})
 
     cid = (settings.youtube_client_id or "").strip()

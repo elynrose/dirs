@@ -12,13 +12,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from director_api.api.deps import meta_dep, settings_dep
+from director_api.api.tenant_access import (
+    require_chapter_for_tenant,
+    require_project_for_tenant,
+    require_scene_for_tenant,
+)
+from director_api.auth.context import AuthContext
+from director_api.auth.deps import auth_context_dep
 from director_api.api.idempotency import (
     body_hash,
     idempotency_replay_or_conflict,
     require_idempotency_key,
     store_idempotency,
 )
-from director_api.api.routers.workflow_phase3 import _chapter_or_404, _scene_or_404
 from director_api.api.schemas.phase4 import (
     ChapterGateWaiveBody,
     CriticReportOut,
@@ -45,10 +51,11 @@ def scene_critique(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     body: SceneCritiqueBody | None = Body(default=None),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     eff = body or SceneCritiqueBody()
     ch = sc.chapter
     pj = db.get(Project, ch.project_id)
@@ -66,19 +73,19 @@ def scene_critique(
     route = f"POST /v1/scenes/{scene_id}/critique"
     payload_body = eff.model_dump(mode="json", exclude_none=True)
     h = body_hash(payload_body)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "scene_critique")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="scene_critique",
         status="queued",
         payload={
             "scene_id": str(scene_id),
-            "tenant_id": settings.default_tenant_id,
+            "tenant_id": auth.tenant_id,
             "prior_report_id": str(eff.prior_report_id) if eff.prior_report_id else None,
         },
         project_id=ch.project_id,
@@ -93,7 +100,7 @@ def scene_critique(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -109,26 +116,27 @@ def chapter_critique(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    ch = _chapter_or_404(db, settings, chapter_id)
+    ch = require_chapter_for_tenant(db, chapter_id, auth.tenant_id)
     key = require_idempotency_key(idempotency_key)
     route = f"POST /v1/chapters/{chapter_id}/critique"
     empty: dict = {}
     h = body_hash(empty)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "chapter_critique")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="chapter_critique",
         status="queued",
         payload={
             "chapter_id": str(chapter_id),
-            "tenant_id": settings.default_tenant_id,
+            "tenant_id": auth.tenant_id,
         },
         project_id=ch.project_id,
     )
@@ -142,7 +150,7 @@ def chapter_critique(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -158,9 +166,10 @@ def get_critic_report(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     r = db.get(CriticReport, report_id)
-    if not r or r.tenant_id != settings.default_tenant_id:
+    if not r or r.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "critic report not found"})
     issues = db.scalars(
         select(RevisionIssue).where(RevisionIssue.critic_report_id == r.id).order_by(RevisionIssue.created_at)
@@ -181,8 +190,9 @@ def waive_scene_critic(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     sc.critic_waived_at = datetime.now(timezone.utc)
     sc.critic_waiver_actor_id = body.actor_user_id[:256]
     sc.critic_waiver_reason = body.reason[:8000]
@@ -214,8 +224,9 @@ def waive_chapter_critic_gate(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    ch = _chapter_or_404(db, settings, chapter_id)
+    ch = require_chapter_for_tenant(db, chapter_id, auth.tenant_id)
     ch.critic_gate_waived_at = datetime.now(timezone.utc)
     ch.critic_gate_waiver_actor_id = body.actor_user_id[:256]
     ch.critic_gate_waiver_reason = body.reason[:8000]
@@ -249,9 +260,10 @@ def patch_revision_issue(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     issue = db.get(RevisionIssue, issue_id)
-    if not issue or issue.tenant_id != settings.default_tenant_id:
+    if not issue or issue.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "revision issue not found"})
     data = body.model_dump(exclude_unset=True)
     if "status" in data and data["status"]:
@@ -281,27 +293,28 @@ def scene_critic_revision(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     ch = sc.chapter
     key = require_idempotency_key(idempotency_key)
     route = f"POST /v1/scenes/{scene_id}/critic-revision"
     empty: dict = {}
     h = body_hash(empty)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "scene_critic_revision")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="scene_critic_revision",
         status="queued",
         payload={
             "scene_id": str(scene_id),
-            "tenant_id": settings.default_tenant_id,
+            "tenant_id": auth.tenant_id,
         },
         project_id=ch.project_id,
     )
@@ -315,7 +328,7 @@ def scene_critic_revision(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,

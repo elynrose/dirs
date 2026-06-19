@@ -1,3 +1,10 @@
+"""Workspace settings request/response schemas.
+
+YouTube integration keys in ``config`` (also available via env):
+``youtube_client_id``, ``youtube_client_secret``, ``youtube_refresh_token`` (OAuth callback),
+``youtube_auto_upload_after_export``, ``youtube_default_privacy``, ``youtube_share_watch_link_in_telegram``.
+Requires ``public_api_base_url`` for OAuth redirect URI.
+"""
 from datetime import datetime
 from typing import Any
 from uuid import UUID

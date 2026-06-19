@@ -52,8 +52,8 @@ def enqueue_continue_agent_run(db: Session, *, old_run_id: uuid.UUID) -> tuple[b
     db.add(run)
     db.commit()
     db.refresh(run)
-    from director_api.tasks.worker_tasks import run_agent_run as run_agent_run_task
+    from director_api.tasks.job_enqueue import enqueue_agent_run
 
-    run_agent_run_task.delay(str(run.id))
+    enqueue_agent_run(run.id)
     log.info("agent_run_retry_enqueued", old_run_id=str(old_run_id), new_run_id=str(run.id), tenant_id=old.tenant_id)
     return True, "Queued new run with continue_from_existing", str(run.id)

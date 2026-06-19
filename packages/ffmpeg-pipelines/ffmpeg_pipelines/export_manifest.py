@@ -20,14 +20,16 @@ def build_export_manifest(
     out_path = output_url
     if out_path and out_path.startswith("file://"):
         out_path = str(Path(out_path.replace("file://", "", 1)).resolve())
+    codec = str(compile_meta.get("codec") or "libx264")
     return {
         "ffmpeg_pipeline_version": "0.1.0",
         "ffmpeg_version": ver,
         "encode_preset": "h264_delivery_720p",
         "video": {
-            "codec": "libx264",
+            "codec": codec,
             "preset": str(compile_meta.get("preset") or "veryfast"),
             "crf": compile_meta.get("crf", 23),
+            "cq": compile_meta.get("cq"),
             "pix_fmt": "yuv420p",
         },
         "audio": {

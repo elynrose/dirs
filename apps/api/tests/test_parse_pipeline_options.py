@@ -57,10 +57,26 @@ def test_pipeline_speed_demo_fast_expands_and_strips_key():
     assert out["min_scene_videos"] == 1
 
 
-def test_pipeline_speed_demo_fast_preset_wins_over_duplicate_scene_media_keys():
-    """Workspace + client often send both explicit min_scene_* and pipeline_speed; preset must apply."""
+def test_pipeline_speed_demo_fast_explicit_scene_media_wins():
+    """Project Brief toggles/min counts must not be overwritten by demo_fast defaults."""
     out = apply_pipeline_speed_for_persist(
-        {"pipeline_speed": "demo_fast", "min_scene_images": 4, "through": "full_video"},
+        {
+            "pipeline_speed": "demo_fast",
+            "min_scene_images": 4,
+            "min_scene_videos": 2,
+            "auto_generate_scene_videos": True,
+            "through": "full_video",
+        },
+    )
+    assert out["min_scene_images"] == 4
+    assert out["min_scene_videos"] == 2
+    assert out["auto_generate_scene_videos"] is True
+    assert out["_applied_pipeline_speed"] == "demo_fast"
+
+
+def test_pipeline_speed_demo_fast_fills_missing_scene_media_keys():
+    out = apply_pipeline_speed_for_persist(
+        {"pipeline_speed": "demo_fast", "through": "full_video"},
     )
     assert out["min_scene_images"] == 1
     assert out["auto_generate_scene_videos"] is False

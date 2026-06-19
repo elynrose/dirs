@@ -47,11 +47,11 @@ def post_setup_guide(
     body: ChatStudioGuideRequest,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
-    _: AuthContext = Depends(auth_context_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
     auth_on = bool(get_settings().director_auth_enabled)
-    assert_chat_allowed(db=db, tenant_id=settings.default_tenant_id, auth_enabled=auth_on)
+    assert_chat_allowed(db=db, tenant_id=auth.tenant_id, auth_enabled=auth_on)
 
     snap: dict[str, Any] = {}
     if isinstance(body.current_brief, dict):
@@ -59,7 +59,7 @@ def post_setup_guide(
 
     if body.project_id is not None:
         p = db.get(Project, body.project_id)
-        if not p or p.tenant_id != settings.default_tenant_id:
+        if not p or p.tenant_id != auth.tenant_id:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
         server_snap = _brief_snapshot_from_project(p)
         server_snap.update(snap)

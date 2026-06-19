@@ -97,4 +97,6 @@ celery_app.conf.beat_schedule = {
 # Register tasks — import order matters: maintenance first so the beat task
 # is always available even if worker_tasks fails to import.
 from director_api.tasks import maintenance_tasks as _maintenance_tasks  # noqa: E402, F401
+from director_api.tasks import smoke_tasks as _smoke_tasks  # noqa: E402, F401
+from director_api.tasks import agent_tasks as _agent_tasks  # noqa: E402, F401
 from director_api.tasks import worker_tasks as _worker_tasks  # noqa: E402, F401

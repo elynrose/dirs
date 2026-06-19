@@ -21,6 +21,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from director_api.api.deps import meta_dep, settings_dep
+from director_api.api.tenant_access import (
+    require_asset_for_tenant,
+    require_chapter_for_tenant,
+    require_project_for_tenant,
+    require_scene_for_tenant,
+)
+from director_api.auth.context import AuthContext
+from director_api.auth.deps import auth_context_dep
 from director_api.api.idempotency import (
     body_hash,
     idempotency_replay_or_conflict,
@@ -41,12 +49,15 @@ from director_api.api.schemas.phase3 import (
     SceneOut,
     ScenePatch,
     ScenesGenerateBody,
+    ManualScenesImportBody,
     SceneVideoGenBody,
 )
 from director_api.config import Settings
 from director_api.db.models import Asset, Chapter, Job, Project, Scene
 from director_api.db.session import get_db
 from director_api.services import phase3 as phase3_svc
+from director_api.services.erase_consent import EraseConfirmationRequired
+from director_api.services.manual_chapter_import import import_manual_scenes_to_chapter
 from director_api.services.prompt_enhance import (
     enhance_image_retry_prompt,
     enhance_scene_vo_script,
@@ -71,6 +82,10 @@ from director_api.services.pexels_import_support import studio_default_clip_sec
 from director_api.services.scene_timeline_duration import get_scene_narration_audio_duration_sec
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.tasks.job_enqueue import enqueue_run_phase3_job
+from director_api.tasks.prompt_runtime_helpers import (
+    _resolve_phase3_video_text_prompt,
+    _scene_still_prompt_for_comfy,
+)
 from ffmpeg_pipelines.paths import path_from_storage_url, path_is_readable_file
 
 router = APIRouter(tags=["phase3"])
@@ -130,36 +145,6 @@ def _resolve_asset_local_path(a: Asset, *, storage_root: Path) -> Path | None:
     return None
 
 
-def _chapter_or_404(db: Session, settings: Settings, chapter_id: UUID) -> Chapter:
-    ch = db.get(Chapter, chapter_id)
-    if not ch:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
-    p = db.get(Project, ch.project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
-    return ch
-
-
-def _scene_or_404(db: Session, settings: Settings, scene_id: UUID) -> Scene:
-    sc = db.get(Scene, scene_id)
-    if not sc:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "scene not found"})
-    ch = db.get(Chapter, sc.chapter_id)
-    if not ch:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "scene not found"})
-    p = db.get(Project, ch.project_id)
-    if not p or p.tenant_id != settings.default_tenant_id:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "scene not found"})
-    return sc
-
-
-def _asset_or_404(db: Session, settings: Settings, asset_id: UUID) -> Asset:
-    a = db.get(Asset, asset_id)
-    if not a or a.tenant_id != settings.default_tenant_id:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "asset not found"})
-    return a
-
-
 def _pexels_api_key_or_503(settings: Settings) -> str:
     k = (settings.pexels_api_key or "").strip()
     if not k:
@@ -217,31 +202,32 @@ def _enqueue_scene_image_job(
     db: Session,
     settings: Settings,
     *,
+    auth: AuthContext,
     scene_id: UUID,
     route: str,
     body: SceneImageGenBody,
     idempotency_key: str | None,
     meta: dict,
 ) -> JSONResponse:
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     ch = db.get(Chapter, sc.chapter_id)
     assert ch is not None
     key = require_idempotency_key(idempotency_key)
     payload_body = body.model_dump(mode="json", exclude_none=True)
     h = body_hash(payload_body)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "scene_generate_image")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="scene_generate_image",
         status="queued",
         payload={
             "scene_id": str(scene_id),
-            "tenant_id": settings.default_tenant_id,
+            "tenant_id": auth.tenant_id,
             "generation_tier": body.generation_tier,
             "image_prompt_override": body.image_prompt_override,
             "refine_bracket_visual_with_llm": bool(body.refine_bracket_visual_with_llm),
@@ -267,7 +253,7 @@ def _enqueue_scene_image_job(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -284,9 +270,10 @@ def scenes_generate(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    ch = _chapter_or_404(db, settings, chapter_id)
+    ch = require_chapter_for_tenant(db, chapter_id, auth.tenant_id)
     if not phase3_svc.chapter_eligible_for_scene_planning(ch):
         raise HTTPException(
             status_code=409,
@@ -318,7 +305,7 @@ def scenes_generate(
     route = f"POST /v1/chapters/{chapter_id}/scenes/generate"
     payload_body = body.model_dump(mode="json")
     h = body_hash(payload_body)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
@@ -331,12 +318,12 @@ def scenes_generate(
     )
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="scene_generate",
         status="queued",
         payload={
             "chapter_id": str(chapter_id),
-            "tenant_id": settings.default_tenant_id,
+            "tenant_id": auth.tenant_id,
         },
         project_id=ch.project_id,
     )
@@ -350,7 +337,7 @@ def scenes_generate(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -360,16 +347,65 @@ def scenes_generate(
     return JSONResponse(status_code=202, content=response_body)
 
 
+@router.post("/chapters/{chapter_id}/scenes/manual-import")
+def scenes_manual_import(
+    chapter_id: UUID,
+    body: ManualScenesImportBody,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+) -> dict:
+    """
+    Step-by-step manual mode: replace or create scenes from pasted/uploaded text.
+    Each non-empty line becomes one scene. Updates chapter script_text by default.
+    """
+    ch = require_chapter_for_tenant(db, chapter_id, auth.tenant_id)
+    project = db.get(Project, ch.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
+    try:
+        scene_count = import_manual_scenes_to_chapter(
+            db,
+            ch,
+            project,
+            text=body.text,
+            replace_existing_scenes=body.replace_existing_scenes,
+            confirm_erase_assets=body.confirm_erase_assets,
+            update_script_text=body.update_script_text,
+        )
+        db.commit()
+    except EraseConfirmationRequired as exc:
+        raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        code = "INVALID_REQUEST"
+        if msg.startswith("MANUAL_SCENE_LINES_REQUIRED"):
+            code = "MANUAL_SCENE_LINES_REQUIRED"
+        elif msg.startswith("MANUAL_SCENE_LINE_LIMIT"):
+            code = "MANUAL_SCENE_LINE_LIMIT"
+        elif msg.startswith("SCENES_ALREADY_PLANNED"):
+            code = "SCENES_ALREADY_PLANNED"
+        status = 409 if code == "SCENES_ALREADY_PLANNED" else 422
+        raise HTTPException(status_code=status, detail={"code": code, "message": msg}) from exc
+
+    return {
+        "data": {"chapter_id": str(chapter_id), "scene_count": scene_count},
+        "meta": meta,
+    }
+
+
 @router.post("/chapters/{chapter_id}/scenes/extend")
 def scenes_extend(
     chapter_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     """Enqueue a job that appends one new scene after existing plans (LLM + chapter context)."""
-    ch = _chapter_or_404(db, settings, chapter_id)
+    ch = require_chapter_for_tenant(db, chapter_id, auth.tenant_id)
     if not phase3_svc.chapter_eligible_for_scene_extend(ch):
         raise HTTPException(
             status_code=409,
@@ -404,19 +440,19 @@ def scenes_extend(
     route = f"POST /v1/chapters/{chapter_id}/scenes/extend"
     empty: dict = {}
     h = body_hash(empty)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "scene_extend")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="scene_extend",
         status="queued",
         payload={
             "chapter_id": str(chapter_id),
-            "tenant_id": settings.default_tenant_id,
+            "tenant_id": auth.tenant_id,
         },
         project_id=ch.project_id,
     )
@@ -431,7 +467,7 @@ def scenes_extend(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -447,8 +483,9 @@ def list_scenes(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    _chapter_or_404(db, settings, chapter_id)
+    require_chapter_for_tenant(db, chapter_id, auth.tenant_id)
     rows = db.scalars(select(Scene).where(Scene.chapter_id == chapter_id).order_by(Scene.order_index)).all()
     out = []
     for sc in rows:
@@ -467,9 +504,10 @@ def phase3_chapter_summary(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Aggregate scene/asset counts for manual P3-M01 / P3-X01 checks."""
-    _chapter_or_404(db, settings, chapter_id)
+    require_chapter_for_tenant(db, chapter_id, auth.tenant_id)
     scenes = db.scalars(select(Scene).where(Scene.chapter_id == chapter_id)).all()
     scene_ids = [s.id for s in scenes]
     if not scene_ids:
@@ -526,13 +564,43 @@ def get_scene(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     n_assets = db.scalar(select(func.count()).select_from(Asset).where(Asset.scene_id == sc.id))
     return {
         "data": SceneOut.model_validate(sc)
         .model_copy(update={"asset_count": int(n_assets or 0)})
         .model_dump(mode="json"),
+        "meta": meta,
+    }
+
+
+@router.get("/scenes/{scene_id}/resolved-prompts")
+def get_scene_resolved_prompts(
+    scene_id: UUID,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+) -> dict:
+    """Image/video prompts as the worker would send to providers (Studio preview parity)."""
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
+    chapter = db.get(Chapter, sc.chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
+    project = db.get(Project, chapter.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
+    pp = sc.prompt_package_json if isinstance(sc.prompt_package_json, dict) else {}
+    image_prompt = _scene_still_prompt_for_comfy(db, sc, project, settings)
+    video_prompt = _resolve_phase3_video_text_prompt(sc, pp, project=project, settings=settings)
+    return {
+        "data": {
+            "scene_id": str(sc.id),
+            "image_prompt": image_prompt,
+            "video_prompt": video_prompt,
+        },
         "meta": meta,
     }
 
@@ -544,8 +612,9 @@ def patch_scene(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     data = body.model_dump(exclude_unset=True)
     if not data:
         return {"data": SceneOut.model_validate(sc).model_dump(mode="json"), "meta": meta}
@@ -563,9 +632,10 @@ def scene_prompt_enhance_image(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Rewrite image retry prompt using previous scene + character bible context."""
-    _scene_or_404(db, settings, scene_id)
+    require_scene_for_tenant(db, scene_id, auth.tenant_id)
     text, err = enhance_image_retry_prompt(
         db,
         settings,
@@ -594,9 +664,10 @@ def scene_prompt_enhance_vo(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Rewrite scene narration to match narration style (project or override)."""
-    _scene_or_404(db, settings, scene_id)
+    require_scene_for_tenant(db, scene_id, auth.tenant_id)
     text, err = enhance_scene_vo_script(
         db,
         settings,
@@ -628,9 +699,10 @@ def scene_prompt_expand_vo(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Expand scene narration to roughly ``target_sentence_count`` sentences with optional user context."""
-    _scene_or_404(db, settings, scene_id)
+    require_scene_for_tenant(db, scene_id, auth.tenant_id)
     text, err = expand_scene_vo_script(
         db,
         settings,
@@ -661,6 +733,7 @@ def scene_generate_image(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     body: SceneImageGenBody | None = Body(default=None),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
@@ -668,6 +741,7 @@ def scene_generate_image(
     return _enqueue_scene_image_job(
         db,
         settings,
+        auth=auth,
         scene_id=scene_id,
         route=route,
         body=body or SceneImageGenBody(),
@@ -682,6 +756,7 @@ def scene_retry_image(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     body: SceneImageGenBody | None = Body(default=None),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
@@ -690,6 +765,7 @@ def scene_retry_image(
     return _enqueue_scene_image_job(
         db,
         settings,
+        auth=auth,
         scene_id=scene_id,
         route=route,
         body=body or SceneImageGenBody(),
@@ -704,10 +780,11 @@ def scene_generate_video(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
     body: SceneVideoGenBody | None = Body(default=None),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     ch = db.get(Chapter, sc.chapter_id)
     assert ch is not None
     eff = body or SceneVideoGenBody()
@@ -715,19 +792,19 @@ def scene_generate_video(
     route = f"POST /v1/scenes/{scene_id}/generate-video"
     payload_body = eff.model_dump(mode="json", exclude_none=True)
     h = body_hash(payload_body)
-    replay = idempotency_replay_or_conflict(db, tenant_id=settings.default_tenant_id, route=route, key=key, h=h)
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
     if replay:
         return replay
 
     assert_can_enqueue(db, settings, "scene_generate_video")
     job = Job(
         id=uuid.uuid4(),
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         type="scene_generate_video",
         status="queued",
         payload={
             "scene_id": str(scene_id),
-            "tenant_id": settings.default_tenant_id,
+            "tenant_id": auth.tenant_id,
             "generation_tier": eff.generation_tier,
             "notes": eff.notes,
             "video_provider": eff.video_provider,
@@ -753,7 +830,7 @@ def scene_generate_video(
     }
     store_idempotency(
         db,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=auth.tenant_id,
         route=route,
         key=key,
         h=h,
@@ -769,8 +846,9 @@ def approve_asset(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    a = _asset_or_404(db, settings, asset_id)
+    a = require_asset_for_tenant(db, asset_id, auth.tenant_id)
     a.approved_at = datetime.now(timezone.utc)
     root = Path(settings.local_storage_root).resolve()
     local_path = _resolve_asset_local_path(a, storage_root=root)
@@ -805,8 +883,9 @@ def reject_asset(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    a = _asset_or_404(db, settings, asset_id)
+    a = require_asset_for_tenant(db, asset_id, auth.tenant_id)
     eff = body or AssetRejectBody()
     a.approved_at = None
     a.status = "rejected"
@@ -827,8 +906,9 @@ def get_asset_content(
     asset_id: UUID,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ):
-    a = _asset_or_404(db, settings, asset_id)
+    a = require_asset_for_tenant(db, asset_id, auth.tenant_id)
     root = Path(settings.local_storage_root).resolve()
     p = _resolve_asset_local_path(a, storage_root=root)
     if p is None:
@@ -851,8 +931,9 @@ def list_scene_assets(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
-    _scene_or_404(db, settings, scene_id)
+    require_scene_for_tenant(db, scene_id, auth.tenant_id)
     rows = db.scalars(
         select(Asset)
         .where(Asset.scene_id == scene_id)
@@ -871,9 +952,10 @@ def put_scene_asset_sequence(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Set playback order: ``asset_ids`` first (indices 0..n-1), then any other scene assets by prior order."""
-    _scene_or_404(db, settings, scene_id)
+    require_scene_for_tenant(db, scene_id, auth.tenant_id)
     ordered_ids = list(body.asset_ids)
     if len(ordered_ids) != len(set(ordered_ids)):
         raise HTTPException(
@@ -883,7 +965,7 @@ def put_scene_asset_sequence(
     assets_ordered: list[Asset] = []
     for aid in ordered_ids:
         a = db.get(Asset, aid)
-        if not a or a.scene_id != scene_id or a.tenant_id != settings.default_tenant_id:
+        if not a or a.scene_id != scene_id or a.tenant_id != auth.tenant_id:
             raise HTTPException(
                 status_code=400,
                 detail={"code": "INVALID_ASSET", "message": f"asset not in scene: {aid}"},
@@ -919,13 +1001,14 @@ async def upload_scene_clip(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Upload image, video, or audio for a scene; stored as ``assets/<project>/<scene>/<asset_id>.<ext>``.
 
     Video and audio must be at most ~10 seconds (measured with ffprobe). Still images are unlimited;
     animated images are limited to 10 seconds of decoded timeline.
     """
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     ch = db.get(Chapter, sc.chapter_id)
     if not ch:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
@@ -1017,7 +1100,7 @@ async def upload_scene_clip(
 
         a = Asset(
             id=asset_id,
-            tenant_id=settings.default_tenant_id,
+            tenant_id=auth.tenant_id,
             scene_id=scene_id,
             project_id=project_id,
             asset_type=asset_kind,
@@ -1061,6 +1144,7 @@ async def pexels_photos_search(
     per_page: int = Query(20, ge=1, le=80),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     api_key = _pexels_api_key_or_503(settings)
     try:
@@ -1086,6 +1170,7 @@ async def pexels_videos_search(
     per_page: int = Query(15, ge=1, le=80),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     api_key = _pexels_api_key_or_503(settings)
     try:
@@ -1110,9 +1195,10 @@ def pexels_video_trim_hint(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Hints for Pexels video trim choices (scene VO length, planned duration, studio defaults)."""
-    sc = _scene_or_404(db, settings, scene_id)
+    sc = require_scene_for_tenant(db, scene_id, auth.tenant_id)
     ch = db.get(Chapter, sc.chapter_id)
     if not ch:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "chapter not found"})
@@ -1145,12 +1231,13 @@ async def import_scene_asset_from_pexels(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Download a Pexels photo or video, validate like ``upload-clip``, and attach as a scene asset."""
     _pexels_api_key_or_503(settings)
-    _scene_or_404(db, settings, scene_id)
+    require_scene_for_tenant(db, scene_id, auth.tenant_id)
     try:
-        a = await execute_pexels_scene_import(db, settings, scene_id, body)
+        a = await execute_pexels_scene_import(db, settings, scene_id, body, tenant_id=auth.tenant_id)
     except PexelsImportError as e:
         raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message}) from e
     return {"data": AssetOut.model_validate(a).model_dump(mode="json"), "meta": meta}
@@ -1163,6 +1250,7 @@ async def storyblocks_photos_search(
     per_page: int = Query(20, ge=1, le=100),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     pub, priv, _vbase, ibase = _storyblocks_keys_or_503(settings)
     try:
@@ -1200,6 +1288,7 @@ async def storyblocks_videos_search(
     per_page: int = Query(15, ge=1, le=100),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     pub, priv, vbase, _ibase = _storyblocks_keys_or_503(settings)
     try:
@@ -1237,12 +1326,13 @@ async def import_scene_asset_from_storyblocks(
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
+    auth: AuthContext = Depends(auth_context_dep),
 ) -> dict:
     """Download Storyblocks media via partner download API, validate like ``upload-clip``, attach as scene asset."""
     _storyblocks_keys_or_503(settings)
-    _scene_or_404(db, settings, scene_id)
+    require_scene_for_tenant(db, scene_id, auth.tenant_id)
     try:
-        a = await execute_storyblocks_scene_import(db, settings, scene_id, body)
+        a = await execute_storyblocks_scene_import(db, settings, scene_id, body, tenant_id=auth.tenant_id)
     except StoryblocksImportError as e:
         raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message}) from e
     return {"data": AssetOut.model_validate(a).model_dump(mode="json"), "meta": meta}

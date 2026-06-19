@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -17,12 +17,20 @@ from director_api.auth.context import AuthContext
 from director_api.api.schemas.agent_run import AgentRunCreate, AgentRunOut, AgentRunPipelineControl
 from director_api.api.schemas.project import ProjectOut
 from director_api.config import Settings, get_settings
-from sqlalchemy import select
+from sqlalchemy import func, select
 from director_api.db.models import AgentRun, Job, Project
 from director_api.db.session import get_db
-from director_api.tasks.worker_tasks import run_agent_run
+from director_api.tasks.job_enqueue import enqueue_agent_run
 from director_api.services.agent_resume import normalize_pipeline_options_for_persist
+from director_api.services.agent_run_diagnostics import (
+    build_agent_run_diagnostics_text,
+    user_facing_run_failure_summary,
+)
 from director_api.services.project_frame import coerce_clip_frame_fit
+from director_api.services.agent_run_orphan_recovery import (
+    reconcile_orphaned_active_agent_runs_for_project,
+    supersede_active_agent_runs_for_project,
+)
 from director_api.services.tenant_entitlements import assert_agent_run_pipeline_allowed, assert_can_create_project
 from director_api.validation.brief import validate_documentary_brief
 
@@ -30,6 +38,7 @@ router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
 log = structlog.get_logger(__name__)
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "blocked"})
+_ACTIVE_RUN_STATUSES = frozenset({"queued", "running"})
 
 
 def _cascade_stop_to_project_jobs(db: Session, project_id: uuid.UUID | None) -> int:
@@ -159,7 +168,9 @@ def _project_from_brief(
             status_code=422,
             detail={"code": "VALIDATION_ERROR", "message": str(e)},
         ) from e
-    tid = (tenant_id_override or "").strip() or settings.default_tenant_id
+    tid = (tenant_id_override or "").strip()
+    if not tid:
+        raise ValueError("tenant_id is required for project creation")
     p = Project(
         tenant_id=tid,
         title=b.title,
@@ -181,6 +192,7 @@ def _project_from_brief(
         frame_aspect_ratio=(b.frame_aspect_ratio or "16:9"),
         clip_frame_fit=coerce_clip_frame_fit(getattr(b, "clip_frame_fit", None)),
         no_narration=bool(getattr(b, "no_narration", False)),
+        publish_to_youtube=bool(getattr(b, "publish_to_youtube", False)),
     )
     db.add(p)
     db.flush()
@@ -211,6 +223,8 @@ def create_agent_run(
         # Existing project: default to resuming (skip completed phases) unless the client sets false explicitly.
         po["continue_from_existing"] = True
     po = normalize_pipeline_options_for_persist(po)
+    if p is not None and po.get("publish_to_youtube") is not None:
+        p.publish_to_youtube = bool(po.get("publish_to_youtube"))
     assert_agent_run_pipeline_allowed(
         po, db=db, tenant_id=auth.tenant_id, auth_enabled=auth_on
     )
@@ -246,6 +260,59 @@ def create_agent_run(
             if scope.has_content_to_erase:
                 err = EraseConfirmationRequired(scope_label=scope_label, scope=scope)
                 raise HTTPException(status_code=409, detail=err.to_dict())
+
+    if body.project_id is not None and po.get("continue_from_existing"):
+        superseded = supersede_active_agent_runs_for_project(
+            db,
+            project_id=p.id,
+            tenant_id=auth.tenant_id,
+        )
+        if superseded:
+            for r in superseded:
+                _cascade_stop_to_project_jobs(db, r.project_id)
+            db.commit()
+            log.info(
+                "agent_runs_superseded_for_continue",
+                project_id=str(p.id),
+                count=len(superseded),
+                run_ids=[str(r.id) for r in superseded[:8]],
+            )
+    elif body.project_id is not None:
+        reconciled = reconcile_orphaned_active_agent_runs_for_project(
+            db,
+            project_id=p.id,
+            tenant_id=auth.tenant_id,
+        )
+        if reconciled:
+            for r in reconciled:
+                _cascade_stop_to_project_jobs(db, r.project_id)
+            db.commit()
+            log.info(
+                "agent_runs_orphans_reconciled",
+                project_id=str(p.id),
+                count=len(reconciled),
+                run_ids=[str(r.id) for r in reconciled[:8]],
+            )
+
+    if body.project_id is not None:
+        active_n = db.scalar(
+            select(func.count())
+            .select_from(AgentRun)
+            .where(
+                AgentRun.project_id == p.id,
+                AgentRun.tenant_id == auth.tenant_id,
+                AgentRun.status.in_(_ACTIVE_RUN_STATUSES),
+            )
+        )
+        if int(active_n or 0) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "AGENT_RUN_ALREADY_ACTIVE",
+                    "message": "This project already has a queued or running agent run — stop it before starting another.",
+                },
+            )
+
     starter_uid = int(auth.user_id) if auth.user_id else None
     run = AgentRun(
         id=uuid.uuid4(),
@@ -260,7 +327,7 @@ def create_agent_run(
     db.add(run)
     db.commit()
     db.refresh(run)
-    run_agent_run.delay(str(run.id))
+    enqueue_agent_run(run.id)
     log.info("agent_run_enqueued", agent_run_id=str(run.id), project_id=str(p.id))
     response_body = {
         "data": {
@@ -300,6 +367,43 @@ def get_agent_run_events(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
     events = r.steps_json if isinstance(r.steps_json, list) else []
     return {"data": {"events": events}, "meta": meta}
+
+
+@router.get("/{agent_run_id}/diagnostics")
+def get_agent_run_diagnostics(
+    agent_run_id: uuid.UUID,
+    format: str = Query(default="json", alias="format", pattern="^(json|text)$"),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+):
+    """
+    Technical log for a run — full error text, pipeline options, media stats, step outcomes.
+    Use ``?format=text`` to download a plain-text file (linked from Studio failure UI).
+    """
+    r = db.get(AgentRun, agent_run_id)
+    if not r or r.tenant_id != auth.tenant_id:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent run not found"})
+    body = build_agent_run_diagnostics_text(db, r, settings)
+    if format == "text":
+        filename = f"directely-run-{agent_run_id}.log"
+        return Response(
+            content=body,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    summary = user_facing_run_failure_summary(r.error_message) if r.error_message else None
+    return {
+        "data": {
+            "agent_run_id": str(agent_run_id),
+            "status": r.status,
+            "summary": summary,
+            "technical_log": body,
+            "download_url": f"/v1/agent-runs/{agent_run_id}/diagnostics?format=text",
+        },
+        "meta": meta,
+    }
 
 
 @router.post("/{agent_run_id}/control")

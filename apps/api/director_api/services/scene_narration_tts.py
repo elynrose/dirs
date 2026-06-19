@@ -24,13 +24,14 @@ from director_api.services.scene_timeline_duration import (
 )
 from director_api.services.usage_credits import compute_request_credits
 from director_api.storage.filesystem import FilesystemStorage
+from director_api.tasks.worker_helpers import worker_tenant_id
 from ffmpeg_pipelines.paths import path_is_readable_file
 
 
 def run_scene_narration_tts_job(db: Any, job: Job, settings: Any) -> dict[str, Any]:
     payload = job.payload or {}
     sid = uuid.UUID(str(payload["scene_id"]))
-    tenant = str(payload.get("tenant_id") or settings.default_tenant_id)
+    tenant = worker_tenant_id(job, payload)
     sc = db.get(Scene, sid)
     if not sc:
         raise ValueError("scene not found")
