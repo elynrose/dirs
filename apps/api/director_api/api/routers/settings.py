@@ -893,6 +893,27 @@ def test_telegram_connection(
         wh_err = str(exc)[:300]
 
     inbound = bool(wh.get("url")) if wh else False
+
+    def _host_from_url(url: str) -> str:
+        from urllib.parse import urlparse
+
+        try:
+            return (urlparse((url or "").strip()).netloc or "").lower()
+        except Exception:
+            return ""
+
+    base = get_settings()
+    wh_url = (wh.get("url") or "").strip() if wh else ""
+    wh_host = _host_from_url(wh_url)
+    local_host = _host_from_url(base.local_api_base_url or "")
+    webhook_local_dev_mismatch = bool(
+        inbound
+        and wh_host
+        and local_host
+        and wh_host != local_host
+        and local_host not in wh_host
+    )
+
     return {
         "data": {
             "ok": True,
@@ -904,6 +925,8 @@ def test_telegram_connection(
             "webhook_path": "/v1/integrations/telegram/webhook",
             "webhook_hint": "Call Telegram setWebhook with this URL (HTTPS), secret_token equal to telegram_webhook_secret, and header X-Telegram-Bot-Api-Secret-Token will be verified automatically.",
             "webhook_registered_with_telegram": inbound,
+            "webhook_registered_url": wh_url or None,
+            "webhook_local_dev_mismatch": webhook_local_dev_mismatch,
             "webhook_info": wh if wh else None,
             "webhook_info_error": wh_err,
             "webhook_action_required": not inbound,

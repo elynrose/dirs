@@ -9,6 +9,9 @@ export const FAL_CATALOG_MIN_REFRESH_MS = 60_000;
 /** Default narration preset id (must match API `style_presets.DEFAULT_NARRATION_PRESET`). */
 export const DEFAULT_NARRATION_PRESET_ID = "narrative_documentary";
 
+/** Dissolve between consecutive stills in rough-cut slideshow batches (seconds). */
+export const DEFAULT_CLIP_CROSSFADE_SEC = 0.65;
+
 /**
  * Job types that the main Studio active-job poller tracks.
  * Matches GET /v1/projects/{id}/jobs/active payload types.
@@ -35,6 +38,7 @@ export const STUDIO_MEDIA_JOB_TYPES = new Set([
   "script_chapter_regenerate",
   "thumbnail_generate",
   "opening_hook_generate",
+  "hook_scene_append",
   "outro_append",
 ]);
 

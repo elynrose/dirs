@@ -5,14 +5,13 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from director_api.db.models import Chapter, Project, Scene
-from director_api.services import phase3 as phase3_svc
-from director_api.services.camera_perspective import inject_camera_perspective_into_prompt
-from director_api.services.character_prompt import prompt_already_has_character_prefix
 from director_api.services.image_prompt_assembly import (
-    character_consistency_block_for_image,
-    polish_scene_image_prompt,
+    assemble_scene_still_image_prompt,
+    assemble_scene_video_prompt,
+    prompt_declares_no_humans,
+    prompt_leading_shot_tag,
     scene_text_for_character_match,
-    strip_redundant_visual_style_clauses,
+    should_append_framing_safety_positive,
 )
 from director_api.services.narration_bracket_visual import (
     append_video_character_dialogue_to_prompt,
@@ -79,57 +78,19 @@ _FRAMING_SAFETY_NEG = (
     "partial face, partial subject, subject too close to edge, awkward crop, off-center crop"
 )
 
-_FRAMING_SAFETY_POS = (
-    "Composition safety: keep the subject's full head and shoulders inside the frame with "
-    "breathing room above the crown; the top of the head must sit well below the upper edge "
-    "of the image; do not crop the face."
-)
 
-_FRAMING_TAGS_NO_HUMAN_HEAD = {"[ECU]", "[INSERT]", "[BROLL]"}
-
-_NO_PEOPLE_PHRASES = (
-    "no people",
-    "no humans",
-    "no human",
-    "no figures",
-    "no person",
-    "no characters",
-    "without people",
-    "without humans",
-    "empty street",
-    "empty room",
-    "empty courtyard",
-)
+def _prompt_declares_no_humans(prompt: str | None) -> bool:
+    return prompt_declares_no_humans(prompt)
 
 
 def _prompt_leading_shot_tag(prompt: str | None) -> str | None:
-    """Return the bracketed SHOT_TAG at the very start of ``prompt`` (e.g. ``[CU]``), or ``None``."""
-    if not prompt:
-        return None
-    s = prompt.lstrip()
-    if not s.startswith("["):
-        return None
-    end = s.find("]")
-    if end <= 1 or end > 12:
-        return None
-    return s[: end + 1].upper()
-
-
-def _prompt_declares_no_humans(prompt: str | None) -> bool:
-    """True when the image prompt is explicitly people-free."""
-    if not prompt:
-        return False
-    if _prompt_leading_shot_tag(prompt) in _FRAMING_TAGS_NO_HUMAN_HEAD:
-        return True
-    lowered = prompt.lower()
-    return any(phrase in lowered for phrase in _NO_PEOPLE_PHRASES)
+    return prompt_leading_shot_tag(prompt)
 
 
 def _should_append_framing_safety_positive(prompt: str, *, character_prefix_injected: bool) -> bool:
-    """Only nudge framing on shots that actually contain a human subject."""
-    if _prompt_declares_no_humans(prompt):
-        return False
-    return bool(character_prefix_injected)
+    return should_append_framing_safety_positive(
+        prompt, character_prefix_injected=character_prefix_injected
+    )
 
 
 def _merge_framing_safety_negative(scene_neg: str | None) -> str | None:
@@ -188,59 +149,15 @@ def _scene_still_prompt_for_comfy(db: Any, scene: Scene, project: Project, setti
         image_prompt_override=None,
         visual_style_effective=vis_style,
     )
-    prompt = str(prompt).strip()
-    if vis_style:
-        prompt = strip_redundant_visual_style_clauses(prompt, vis_style)
-    character_prefix_injected = False
-    if not _prompt_declares_no_humans(prompt):
-        scene_match_text = _scene_text_for_character_match(db, scene)
-        prefix = character_consistency_block_for_image(
-            db,
-            project.id,
-            scene_text=scene_match_text,
-            base_prompt=prompt,
-            max_chars=2000,
-        )
-        if prefix and not prompt_already_has_character_prefix(prompt, prefix):
-            room = max(400, 4000 - len(prefix) - 3)
-            prompt = f"{str(prompt)[:room]}\n\n{prefix}"
-            character_prefix_injected = True
-        elif prefix:
-            character_prefix_injected = True
-
-    prompt = inject_camera_perspective_into_prompt(
+    return assemble_scene_still_image_prompt(
+        db,
+        scene,
+        project,
+        settings,
         prompt,
-        scene_key=str(scene.id),
-        order_index=int(scene.order_index),
-        for_video=False,
-        max_total=4000,
+        append_framing_safety=True,
+        append_era_anchor=True,
     )
-
-    if _should_append_framing_safety_positive(
-        prompt, character_prefix_injected=character_prefix_injected
-    ):
-        room_fr = max(0, 4000 - len(prompt) - 2)
-        if room_fr > len(_FRAMING_SAFETY_POS):
-            prompt = f"{prompt}\n\n{_FRAMING_SAFETY_POS}"
-
-    try:
-        chapter = db.get(Chapter, scene.chapter_id) if scene.chapter_id else None
-    except Exception:  # noqa: BLE001
-        chapter = None
-    era_anchor = _scene_era_anchor(scene, chapter, project)
-    if era_anchor:
-        room_ea = max(0, 4000 - len(prompt) - 2)
-        if room_ea > len(era_anchor):
-            prompt = f"{prompt}\n\n{era_anchor}"
-    pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
-    prompt = polish_scene_image_prompt(
-        prompt,
-        vis_style=vis_style,
-        visual_preset_id=pid_vis,
-        max_total=4000,
-        mood=(scene.purpose or "")[:240] or None,
-    )
-    return str(prompt)
 
 
 def _resolve_phase3_video_text_prompt(
@@ -252,7 +169,7 @@ def _resolve_phase3_video_text_prompt(
     settings: Any | None = None,
     suffix: Any = None,
 ) -> str:
-    """Text sent to generative video models; optional job override, else package, else VO/purpose hints."""
+    """Base video text before character/camera polish (motion hints, dialogue, package fields)."""
     vis_eff: str | None = None
     if project is not None and settings is not None:
         vis_eff = effective_visual_style(project.visual_style, settings)
@@ -274,6 +191,38 @@ def _resolve_phase3_video_text_prompt(
             getattr(project, "include_spoken_dialogue_in_video_prompt", False)
         ),
         video_character_dialogue=dial,
+    )
+
+
+def _scene_video_prompt_for_provider(
+    db: Any,
+    scene: Scene,
+    project: Project,
+    settings: Any,
+    *,
+    override: Any = None,
+    suffix: Any = None,
+    exclude_character_bible: bool = False,
+    automation_character_prefix: str | None = None,
+) -> str:
+    """Video prompt as fal / Comfy WAN workers send it (resolved-prompt preview parity)."""
+    pp = scene.prompt_package_json if isinstance(scene.prompt_package_json, dict) else {}
+    base = _resolve_phase3_video_text_prompt(
+        scene,
+        pp,
+        override=override,
+        project=project,
+        settings=settings,
+        suffix=suffix,
+    )
+    return assemble_scene_video_prompt(
+        db,
+        scene,
+        project,
+        settings,
+        base,
+        exclude_character_bible=exclude_character_bible,
+        automation_character_prefix=automation_character_prefix,
     )
 
 

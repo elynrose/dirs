@@ -2353,6 +2353,28 @@ pre {
   overflow-y: auto;
 }
 
+.project-list-pager {
+  margin-top: 6px;
+  margin-bottom: 4px;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-list-pager__label {
+  font-size: 0.78rem;
+  flex: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.project-list-pager .secondary {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
 .projects-list {
   margin-top: 8px;
   margin-bottom: 8px;

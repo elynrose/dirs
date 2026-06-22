@@ -146,6 +146,70 @@ _PRESET_FLUX_BLOCKS: dict[str, dict[str, str]] = {
 _DEFAULT_MOOD = "Cinematic emotional storytelling appropriate to the beat"
 _DEFAULT_MOTION = "Gentle cinematic camera move, maintain subject, wardrobe, and setting continuity"
 
+_FLUX_SECTION_LABELS = (
+    "Subject",
+    "Visual treatment",
+    "Environment",
+    "Composition",
+    "Lighting",
+    "Rendering",
+    "Mood",
+    "Motion",
+)
+
+
+def is_labeled_flux_prompt(text: str) -> bool:
+    """True when the prompt is already in labeled Flux section form (do not re-parse)."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if not re.search(r"(?m)^Subject:\s*\S", t):
+        return False
+    other_labels = sum(
+        1
+        for label in _FLUX_SECTION_LABELS[1:]
+        if re.search(rf"(?m)^{re.escape(label)}:\s*\S", t)
+    )
+    return other_labels >= 1
+
+
+def normalize_labeled_flux_prompt(text: str, *, max_total: int = 4000) -> str:
+    """Light cleanup for prompts that are already structured — preserve scene content."""
+    t = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    return sanitize_jsonb_text(t, max_total)
+
+
+def inject_characters_into_labeled_prompt(
+    text: str,
+    character_block: str,
+    *,
+    max_total: int = 4000,
+) -> str:
+    """Append character bible into the Subject section without breaking labeled structure."""
+    raw = (character_block or "").strip()
+    if not raw:
+        return normalize_labeled_flux_prompt(text, max_total=max_total)
+    cb = re.sub(r"^CHARACTER CONSISTENCY\s*—\s*", "", raw, flags=re.I).strip()
+    if not cb:
+        return normalize_labeled_flux_prompt(text, max_total=max_total)
+    t = (text or "").strip()
+    if not is_labeled_flux_prompt(t):
+        combined = f"{t}\n\n{raw}" if t else raw
+        return sanitize_jsonb_text(combined, max_total)
+
+    def _repl(m: re.Match[str]) -> str:
+        body = m.group(2).rstrip()
+        merged = f"{body}. {cb}" if body else cb
+        return f"{m.group(1)}{merged}"
+
+    out = re.sub(
+        r"(?ms)^(Subject:\s*)(.+?)(?=\n\n(?:Visual treatment|Environment|Composition|Lighting|Rendering|Mood|Motion):|\Z)",
+        _repl,
+        t,
+        count=1,
+    )
+    return normalize_labeled_flux_prompt(out, max_total=max_total)
+
 
 def _preset_blocks(preset_id: str | None) -> dict[str, str]:
     pid = (preset_id or "").strip().lower()
@@ -224,23 +288,25 @@ def _split_loose_prompt(loose: str, *, for_video: bool) -> dict[str, str]:
     p = _BOILER_RE.sub("", p)
     p, composition = _extract_camera_line(p, for_video=for_video)
 
-    # Drop leading style marker paragraphs (STYLIZED 3D…, PHOTOREAL…, etc.)
+    # Drop leading style-only marker paragraphs (never drop paragraphs with concrete scene nouns).
     parts = re.split(r"\n\s*\n", p.strip())
     while len(parts) > 1:
         head = parts[0].lower()
-        if any(
+        head_is_style_only = any(
             k in head
             for k in (
                 "stylized 3d",
-                "photoreal",
                 "hand-drawn 2d",
                 "flat vector",
                 "authentic archival",
                 "film noir",
-                "visual treatment",
                 "strictly forbidden",
             )
-        ):
+        ) or (
+            head.startswith("visual treatment:")
+            and len(head) < 220
+        )
+        if head_is_style_only:
             parts = parts[1:]
         else:
             break
@@ -339,6 +405,9 @@ def structure_flux_scene_prompt(
     max_total: int = 4000,
 ) -> str:
     """Parse a legacy scene prompt and rewrite it in Flux-friendly structured sections."""
+    if is_labeled_flux_prompt(loose):
+        return normalize_labeled_flux_prompt(loose, max_total=max_total)
+
     parts = _split_loose_prompt(loose, for_video=for_video)
     comp = parts["composition"]
     if for_video and comp and not comp.lower().startswith(("slow", "gentle", "camera", "push", "pan", "dolly", "crane", "motion")):

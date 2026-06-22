@@ -32,6 +32,12 @@ from director_api.services.telegram_studio_bridge import (
     trim_chat_messages,
     validate_brief_for_pipeline,
 )
+from director_api.services.telegram_ops import (
+    ops_help_extra,
+    reset_telegram_session_after_pipeline_start,
+    try_handle_ops_message,
+)
+from director_api.services.telegram_ops_agent import try_telegram_ops_agent
 from director_api.services.chat_studio_guide import run_setup_guide_turn
 from director_api.services.tenant_entitlements import (
     assert_agent_run_pipeline_allowed,
@@ -58,6 +64,7 @@ def _help_text() -> str:
         "Commands:\n"
         "/start — this help\n"
         "/help — this help"
+        + ops_help_extra()
     )
 
 
@@ -314,6 +321,47 @@ async def telegram_webhook(
                 telegram_send_message(token, chat_expected, _help_text())
             except Exception as exc:
                 log.warning("telegram_help_send_failed", error=str(exc))
+            return {"ok": True}
+        ops_row = get_or_create_telegram_studio_session(db, tenant_id, chat_key)
+        ops_reply = try_handle_ops_message(
+            db, rt, tenant_id=tenant_id, row=ops_row, text=text
+        )
+        if ops_reply:
+            try:
+                telegram_send_message(token, chat_expected, _truncate_telegram(ops_reply))
+            except Exception as exc:
+                log.warning("telegram_ops_reply_failed", error=str(exc))
+            return {"ok": True}
+        try:
+            telegram_send_message(
+                token,
+                chat_expected,
+                _truncate_telegram("Unknown command. Send /help for commands."),
+            )
+        except Exception:
+            pass
+        return {"ok": True}
+
+    ops_row_nl = get_or_create_telegram_studio_session(db, tenant_id, chat_key)
+    ops_reply_nl = try_handle_ops_message(
+        db, rt, tenant_id=tenant_id, row=ops_row_nl, text=text
+    )
+    if ops_reply_nl:
+        try:
+            telegram_send_message(token, chat_expected, _truncate_telegram(ops_reply_nl))
+        except Exception as exc:
+            log.warning("telegram_ops_reply_failed", error=str(exc))
+        return {"ok": True}
+
+    agent_row = get_or_create_telegram_studio_session(db, tenant_id, chat_key)
+    agent_reply = try_telegram_ops_agent(
+        db, rt, tenant_id=tenant_id, row=agent_row, text=text
+    )
+    if agent_reply:
+        try:
+            telegram_send_message(token, chat_expected, _truncate_telegram(agent_reply))
+        except Exception as exc:
+            log.warning("telegram_ops_agent_reply_failed", error=str(exc))
         return {"ok": True}
 
     fa_only = parse_standalone_frame_aspect(text)
@@ -406,7 +454,10 @@ async def telegram_webhook(
         if row is not None:
             stale = db.get(TelegramChatStudioSession, row.id)
             if stale is not None:
-                db.delete(stale)
+                reset_telegram_session_after_pipeline_start(
+                    stale, project_id=p.id, agent_run_id=run.id
+                )
+                db.add(stale)
         db.commit()
 
         log.info("telegram_agent_run_enqueued", agent_run_id=str(run.id), project_id=str(p.id))

@@ -76,14 +76,20 @@ def _export_chapter_title_card_sec(settings: Any) -> float:
     return max(0.0, min(30.0, v))
 
 
+DEFAULT_CLIP_CROSSFADE_SEC = 0.65
+
+
 def _timeline_clip_crossfade_sec(tj: dict[str, Any] | None) -> float:
     """Timeline JSON: dissolve between consecutive stills in rough-cut image batches (0–2s)."""
     if not isinstance(tj, dict):
-        return 0.0
+        return DEFAULT_CLIP_CROSSFADE_SEC
+    raw = tj.get("clip_crossfade_sec")
+    if raw is None:
+        return DEFAULT_CLIP_CROSSFADE_SEC
     try:
-        v = float(tj.get("clip_crossfade_sec", 0.0) or 0.0)
+        v = float(raw)
     except (TypeError, ValueError):
-        v = 0.0
+        v = DEFAULT_CLIP_CROSSFADE_SEC
     return max(0.0, min(v, 2.0))
 
 

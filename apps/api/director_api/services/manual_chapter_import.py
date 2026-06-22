@@ -43,9 +43,15 @@ def _persist_scene_plan_batch(
                 "set replace_existing_scenes=true to replace them"
             )
         assert_chapter_replan_erase_consent(chapter, consent=confirm_erase_assets)
-        for sc in list(chapter.scenes):
-            db.delete(sc)
-        db.flush()
+        from director_api.services.publish_hook import (
+            delete_chapter_scenes_preserving_hook,
+            order_index_offset_for_chapter_replan,
+        )
+
+        delete_chapter_scenes_preserving_hook(db, chapter, project.id)
+        idx_offset = order_index_offset_for_chapter_replan(db, chapter)
+    else:
+        idx_offset = order_index_offset_for_chapter_replan(db, chapter)
 
     validate_scene_plan_batch(batch)
     for item in sorted(batch["scenes"], key=lambda x: int(x["order_index"])):
@@ -67,7 +73,7 @@ def _persist_scene_plan_batch(
             Scene(
                 id=uuid.uuid4(),
                 chapter_id=chapter.id,
-                order_index=int(item["order_index"]),
+                order_index=int(item["order_index"]) + idx_offset,
                 purpose=sanitize_jsonb_text(str(item["purpose"]), 2000),
                 planned_duration_sec=int(item["planned_duration_sec"]),
                 narration_text=sanitize_jsonb_text(narr_out, 12_000),

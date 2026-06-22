@@ -41,3 +41,19 @@ def test_polish_video_uses_structured_sections():
     assert "Subject:" in out
     assert "Motion:" in out
     assert "Photoreal documentary" in out
+
+
+def test_polish_preserves_already_labeled_image_prompt():
+    labeled = (
+        "Subject: Victorian classroom, teacher at chalkboard with Victoria portrait.\n\n"
+        "Visual treatment: Photoreal cinematic historical epic.\n\n"
+        "Composition: wide elevated bird's-eye view"
+    )
+    out = polish_scene_image_prompt(
+        labeled,
+        vis_style="Photoreal cinematic historical epic",
+        visual_preset_id="cinematic_historical_epic",
+    )
+    assert "Victorian classroom" in out
+    assert "bird's-eye view" in out
+    assert "Eye-level medium shot" not in out

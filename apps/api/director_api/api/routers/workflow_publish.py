@@ -27,6 +27,7 @@ from director_api.config import Settings
 from director_api.db.models import Job, Project
 from director_api.db.session import get_db
 from director_api.services.job_quota import assert_can_enqueue
+from director_api.services.publish_hook import find_hook_scene, remove_hook_scene, sync_hook_scene_from_project
 from director_api.services.publish_outro import find_outro_scene, remove_outro_scene
 from director_api.services.publish_pack import (
     merge_publish_pack,
@@ -212,6 +213,7 @@ def patch_opening_hook(
     project_id: UUID,
     body: OpeningHookPatch,
     db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
     auth: AuthContext = Depends(auth_context_dep),
     meta: dict = Depends(meta_dep),
 ) -> dict:
@@ -219,9 +221,83 @@ def patch_opening_hook(
     project.opening_hook_text = sanitize_jsonb_text(body.text.strip(), 8000)
     if project.workflow_phase in ("chapters_ready", "thumbnail_ready"):
         project.workflow_phase = "hook_ready"
+    sync_hook_scene_from_project(db, project, settings)
     db.commit()
     db.refresh(project)
     return {"data": {"opening_hook_text": project.opening_hook_text}, "meta": meta}
+
+
+@router.post("/{project_id}/hook/append")
+def hook_append(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    require_project_for_tenant(db, project_id, auth.tenant_id)
+    key = require_idempotency_key(idempotency_key)
+    route = f"POST /v1/projects/{project_id}/hook/append"
+    h = body_hash({})
+    replay = idempotency_replay_or_conflict(db, tenant_id=auth.tenant_id, route=route, key=key, h=h)
+    if replay:
+        return replay
+    assert_can_enqueue(db, settings, "hook_scene_append", tenant_id=auth.tenant_id)
+    job = Job(
+        id=uuid.uuid4(),
+        tenant_id=auth.tenant_id,
+        type="hook_scene_append",
+        status="queued",
+        payload={"tenant_id": auth.tenant_id, "project_id": str(project_id)},
+        project_id=project_id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    enqueue_job_task(run_phase2_job, job.id)
+    body = {"job": {"id": str(job.id), "status": job.status, "poll_url": f"/v1/jobs/{job.id}"}, "meta": meta}
+    store_idempotency(
+        db, tenant_id=auth.tenant_id, route=route, key=key, h=h, response_status=202, response_body=body
+    )
+    return JSONResponse(status_code=202, content=body)
+
+
+@router.delete("/{project_id}/hook")
+def hook_delete(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    require_project_for_tenant(db, project_id, auth.tenant_id)
+    removed = remove_hook_scene(db, project_id)
+    db.commit()
+    return {"data": {"removed": removed}, "meta": meta}
+
+
+@router.get("/{project_id}/hook")
+def hook_get(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    require_project_for_tenant(db, project_id, auth.tenant_id)
+    sc = find_hook_scene(db, project_id)
+    if not sc:
+        return {"data": {"hook_scene": None}, "meta": meta}
+    return {
+        "data": {
+            "hook_scene": {
+                "id": str(sc.id),
+                "chapter_id": str(sc.chapter_id),
+                "narration_text": sc.narration_text,
+                "order_index": sc.order_index,
+            }
+        },
+        "meta": meta,
+    }
 
 
 @router.patch("/{project_id}/outro-settings")

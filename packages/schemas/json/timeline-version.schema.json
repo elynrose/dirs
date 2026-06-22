@@ -63,6 +63,7 @@
       "type": "number",
       "minimum": 0,
       "maximum": 2,
+      "default": 0.65,
       "description": "Dissolve duration (seconds) between consecutive stills when rough-cut batches images; 0 = hard cuts."
     },
     "still_motion_mode": {

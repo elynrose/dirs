@@ -17,8 +17,8 @@ def test_extract_ignores_empty():
     assert extract_bracket_phrases("no [ ] brackets") == []
 
 
-def test_base_image_prefers_brackets_over_package():
-    pp = {"image_prompt": "A generic stock photo of waves"}
+def test_base_image_prefers_brackets_when_package_thin():
+    pp = {"image_prompt": "Short hint"}
     p, used, phrases = base_image_prompt_from_scene_fields(
         narration_text="See [the temple] at dawn.",
         prompt_package_json=pp,
@@ -26,7 +26,24 @@ def test_base_image_prefers_brackets_over_package():
     )
     assert used is True
     assert "the temple" in p
-    assert "generic stock" not in p.lower()
+    assert "Short hint" not in p
+
+
+def test_base_image_prefers_substantial_package_over_brackets():
+    detailed = (
+        "Subject: A distant long-lens shot compressing a Victorian classroom scene, "
+        "with a teacher pointing to a chalkboard showing Queen Victoria's portrait."
+    )
+    pp = {"image_prompt": detailed}
+    p, used, phrases = base_image_prompt_from_scene_fields(
+        narration_text="See [the temple] at dawn.",
+        prompt_package_json=pp,
+        image_prompt_override=None,
+    )
+    assert used is False
+    assert phrases == ["the temple"]
+    assert "Victorian classroom" in p
+    assert "the temple" not in p.lower()
 
 
 def test_base_image_override_wins():

@@ -158,12 +158,15 @@ def polish_scene_image_prompt(
     visual_preset_id: str | None,
     max_total: int = 4000,
     mood: str | None = None,
+    style_already_stripped: bool = False,
 ) -> str:
     """Rewrite into Flux-friendly labeled sections for any visual preset."""
     from director_api.services.flux_structured_prompt import structure_flux_scene_prompt
 
     vs = (vis_style or "").strip()
-    p = strip_redundant_visual_style_clauses((prompt or "").strip(), vs)
+    p = (prompt or "").strip()
+    if vs and not style_already_stripped:
+        p = strip_redundant_visual_style_clauses(p, vs)
     return structure_flux_scene_prompt(
         p,
         visual_preset_id=visual_preset_id,
@@ -181,12 +184,15 @@ def polish_scene_video_prompt(
     visual_preset_id: str | None,
     max_total: int = 3000,
     mood: str | None = None,
+    style_already_stripped: bool = False,
 ) -> str:
     """Structured Flux/WAN video prompt for any visual preset."""
     from director_api.services.flux_structured_prompt import structure_flux_scene_prompt
 
     vs = (vis_style or "").strip()
-    p = strip_redundant_visual_style_clauses((prompt or "").strip(), vs)
+    p = (prompt or "").strip()
+    if vs and not style_already_stripped:
+        p = strip_redundant_visual_style_clauses(p, vs)
     return structure_flux_scene_prompt(
         p,
         visual_preset_id=visual_preset_id,
@@ -195,6 +201,255 @@ def polish_scene_video_prompt(
         for_video=True,
         max_total=max_total,
     )
+
+
+_NO_PEOPLE_PHRASES = (
+    "no people",
+    "no humans",
+    "no human",
+    "no figures",
+    "no person",
+    "no characters",
+    "without people",
+    "without humans",
+    "empty street",
+    "empty room",
+    "empty courtyard",
+)
+
+_FRAMING_TAGS_NO_HUMAN_HEAD = {"[ECU]", "[INSERT]", "[BROLL]"}
+
+_FRAMING_SAFETY_POS = (
+    "Composition safety: keep the subject's full head and shoulders inside the frame with "
+    "breathing room above the crown; the top of the head must sit well below the upper edge "
+    "of the image; do not crop the face."
+)
+
+
+def prompt_leading_shot_tag(prompt: str | None) -> str | None:
+    if not prompt:
+        return None
+    s = prompt.lstrip()
+    if not s.startswith("["):
+        return None
+    end = s.find("]")
+    if end <= 1 or end > 12:
+        return None
+    return s[: end + 1].upper()
+
+
+def prompt_declares_no_humans(prompt: str | None) -> bool:
+    """True when the image prompt is explicitly people-free."""
+    if not prompt:
+        return False
+    if prompt_leading_shot_tag(prompt) in _FRAMING_TAGS_NO_HUMAN_HEAD:
+        return True
+    lowered = prompt.lower()
+    return any(phrase in lowered for phrase in _NO_PEOPLE_PHRASES)
+
+
+def should_append_framing_safety_positive(prompt: str, *, character_prefix_injected: bool) -> bool:
+    if prompt_declares_no_humans(prompt):
+        return False
+    return bool(character_prefix_injected)
+
+
+def assemble_scene_still_image_prompt(
+    db: Any,
+    scene: Any,
+    project: Any,
+    settings: Any,
+    prompt: str,
+    *,
+    exclude_character_bible: bool = False,
+    automation_character_prefix: str | None = None,
+    append_framing_safety: bool = False,
+    append_era_anchor: bool = False,
+    mood: str | None = None,
+) -> str:
+    """Shared Flux/Comfy still prompt recipe for image jobs, previews, and WAN auto-stills."""
+    return _assemble_scene_generative_prompt(
+        db,
+        scene,
+        project,
+        settings,
+        prompt,
+        for_video=False,
+        exclude_character_bible=exclude_character_bible,
+        automation_character_prefix=automation_character_prefix,
+        append_framing_safety=append_framing_safety,
+        append_era_anchor=append_era_anchor,
+        mood=mood,
+    )
+
+
+def assemble_scene_video_prompt(
+    db: Any,
+    scene: Any,
+    project: Any,
+    settings: Any,
+    prompt: str,
+    *,
+    exclude_character_bible: bool = False,
+    automation_character_prefix: str | None = None,
+    append_era_anchor: bool = False,
+    mood: str | None = None,
+) -> str:
+    """Shared Flux/WAN video prompt recipe for video jobs and resolved-prompt preview."""
+    return _assemble_scene_generative_prompt(
+        db,
+        scene,
+        project,
+        settings,
+        prompt,
+        for_video=True,
+        exclude_character_bible=exclude_character_bible,
+        automation_character_prefix=automation_character_prefix,
+        append_framing_safety=False,
+        append_era_anchor=append_era_anchor,
+        mood=mood,
+    )
+
+
+def _assemble_scene_generative_prompt(
+    db: Any,
+    scene: Any,
+    project: Any,
+    settings: Any,
+    prompt: str,
+    *,
+    for_video: bool,
+    exclude_character_bible: bool = False,
+    automation_character_prefix: str | None = None,
+    append_framing_safety: bool = False,
+    append_era_anchor: bool = False,
+    mood: str | None = None,
+) -> str:
+    from director_api.services import phase3 as phase3_svc
+    from director_api.services.camera_perspective import inject_camera_perspective_into_prompt
+    from director_api.services.flux_structured_prompt import (
+        inject_characters_into_labeled_prompt,
+        is_labeled_flux_prompt,
+    )
+    from director_api.services.narration_bracket_visual import maybe_prepend_topic_setting_anchor
+    from director_api.services.character_prompt import prompt_already_has_character_prefix
+    from director_api.style_presets import effective_visual_style
+
+    max_total = 3000 if for_video else 4000
+    vis_style = effective_visual_style(getattr(project, "visual_style", None), settings)
+    out = str(prompt).strip()
+    if vis_style:
+        out = strip_redundant_visual_style_clauses(out, vis_style)
+
+    labeled_prompt = is_labeled_flux_prompt(out)
+    character_prefix_injected = False
+
+    if not exclude_character_bible:
+        prefix = ""
+        if automation_character_prefix:
+            prefix = str(automation_character_prefix)[:2000]
+        elif not prompt_declares_no_humans(out):
+            prefix = character_consistency_block_for_image(
+                db,
+                project.id,
+                scene_text=scene_text_for_character_match(db, scene),
+                base_prompt=out,
+                max_chars=2000,
+            )
+        if prefix and not prompt_already_has_character_prefix(out, prefix):
+            if labeled_prompt:
+                out = inject_characters_into_labeled_prompt(out, prefix, max_total=max_total)
+            elif for_video:
+                room = max(400, max_total - len(prefix) - 3)
+                out = f"{prefix}\n\n{str(out)[:room]}"
+            else:
+                room = max(400, max_total - len(out) - 3)
+                out = f"{str(out)[:room]}\n\n{prefix}"
+            character_prefix_injected = True
+        elif prefix:
+            character_prefix_injected = True
+
+    if not labeled_prompt:
+        out = inject_camera_perspective_into_prompt(
+            out,
+            scene_key=str(scene.id),
+            order_index=int(scene.order_index),
+            for_video=for_video,
+            max_total=max_total,
+        )
+        out = maybe_prepend_topic_setting_anchor(
+            out, getattr(project, "topic", None), max_total=max_total
+        )
+
+    if append_framing_safety and should_append_framing_safety_positive(
+        out, character_prefix_injected=character_prefix_injected
+    ):
+        room_fr = max(0, max_total - len(out) - 2)
+        if room_fr > len(_FRAMING_SAFETY_POS):
+            out = f"{out}\n\n{_FRAMING_SAFETY_POS}"
+
+    if append_era_anchor:
+        from director_api.db.models import Chapter
+
+        try:
+            chapter = db.get(Chapter, scene.chapter_id) if getattr(scene, "chapter_id", None) else None
+        except Exception:  # noqa: BLE001
+            chapter = None
+        era_anchor = _scene_era_anchor_clause(scene, chapter, project)
+        if era_anchor:
+            room_ea = max(0, max_total - len(out) - 2)
+            if room_ea > len(era_anchor):
+                out = f"{out}\n\n{era_anchor}"
+
+    pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
+    resolved_mood = mood if mood is not None else (getattr(scene, "purpose", None) or "")[:240] or None
+    if for_video:
+        return polish_scene_video_prompt(
+            out,
+            vis_style=vis_style,
+            visual_preset_id=pid_vis,
+            max_total=max_total,
+            mood=resolved_mood,
+            style_already_stripped=True,
+        )
+    return polish_scene_image_prompt(
+        out,
+        vis_style=vis_style,
+        visual_preset_id=pid_vis,
+        max_total=max_total,
+        mood=resolved_mood,
+        style_already_stripped=True,
+    )
+
+
+def _scene_era_anchor_clause(
+    scene: Any,
+    chapter: Any | None,
+    project: Any | None,
+    *,
+    max_chars: int = 160,
+) -> str:
+    pieces: list[str] = []
+    ch_title = (chapter.title or "").strip() if chapter is not None else ""
+    pj_title = (project.title or "").strip() if project is not None else ""
+    if ch_title and ch_title.lower() != pj_title.lower():
+        pieces.append(ch_title)
+    if pj_title:
+        pieces.append(pj_title)
+    if not pieces:
+        return ""
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for p in pieces:
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(p)
+    clause = " — ".join(uniq)
+    if len(clause) > max_chars:
+        clause = clause[: max_chars - 1].rstrip(" ,;:.—-") + "…"
+    return f"Set in: {clause}."
 
 
 def scene_text_for_character_match(db: Any, scene: Any) -> str:
@@ -240,14 +495,18 @@ def character_consistency_block_for_image(
     )
 
     full = character_consistency_prefix_for_scene(
-        db, project_id, scene_text=scene_text, max_chars=max_chars
+        db, project_id, scene_text=scene_text, base_prompt=base_prompt, max_chars=max_chars
     )
     if not full:
         return ""
     base = (base_prompt or "").strip()
     if use_short_when_scene_detailed and len(base) >= 400:
         short = character_short_prefix_for_scene(
-            db, project_id, scene_text=scene_text, max_chars=min(800, max_chars)
+            db,
+            project_id,
+            scene_text=scene_text,
+            base_prompt=base_prompt,
+            max_chars=min(800, max_chars),
         )
         if short:
             return short

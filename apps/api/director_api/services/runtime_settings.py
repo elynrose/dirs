@@ -349,10 +349,18 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
         if pv not in ("public", "unlisted", "private"):
             pv = "unlisted"
         clean["youtube_default_privacy"] = pv
-    for _url_key in ("director_public_app_url", "public_api_base_url", "youtube_client_id"):
+    for _url_key in (
+        "director_public_app_url",
+        "public_api_base_url",
+        "local_api_base_url",
+        "youtube_client_id",
+    ):
         if _url_key in clean and isinstance(clean[_url_key], str):
             v = clean[_url_key].strip()
             clean[_url_key] = v or None
+    if "oauth_redirect_base" in clean:
+        mode = str(clean["oauth_redirect_base"] or "auto").strip().lower()
+        clean["oauth_redirect_base"] = mode if mode in ("auto", "local", "public", "request") else "auto"
     return clean
 
 

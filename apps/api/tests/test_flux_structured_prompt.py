@@ -88,3 +88,41 @@ def test_structure_uses_subject_framing_not_default_eye_level():
     assert "Composition:" in out
     assert "Dutch angle" in out
     assert "Eye-level medium shot" not in out
+
+
+def test_labeled_prompt_passes_through_without_restructure():
+    labeled = (
+        "Subject: A distant long-lens shot compressing a Victorian classroom scene, "
+        "with a teacher pointing to a chalkboard showing Queen Victoria's portrait.\n\n"
+        "Visual treatment: Photoreal cinematic historical epic, live cast in period costume.\n\n"
+        "Environment: After the Mourning: Debating Victoria's Legacy\n\n"
+        "Composition: wide elevated bird's-eye view establishing the environment\n\n"
+        "Lighting: Golden-hour motivated drama\n\n"
+        "Rendering: Prestige period-film quality\n\n"
+        "Mood: In classrooms and public squares, people asked about her legacy"
+    )
+    out = structure_flux_scene_prompt(
+        labeled,
+        visual_preset_id="cinematic_historical_epic",
+    )
+    assert "Victorian classroom" in out
+    assert "bird's-eye view" in out
+    assert out.count("Subject:") == 1
+    assert "Eye-level medium shot" not in out
+
+
+def test_inject_characters_into_labeled_prompt():
+    from director_api.services.flux_structured_prompt import inject_characters_into_labeled_prompt
+
+    labeled = (
+        "Subject: Victorian classroom with teacher and students.\n\n"
+        "Visual treatment: Photoreal historical epic.\n\n"
+        "Composition: wide establishing shot"
+    )
+    out = inject_characters_into_labeled_prompt(
+        labeled,
+        "CHARACTER CONSISTENCY — Queen Victoria: petite, fair skin, blue eyes",
+    )
+    assert "Queen Victoria" in out
+    assert out.index("Queen Victoria") < out.index("Visual treatment:")
+    assert "Photoreal historical epic" in out

@@ -88,6 +88,7 @@ export function agentStageHeadline(stepKey) {
     chapters: "Now writing chapter scripts…",
     thumbnail: "Now creating thumbnail and YouTube copy…",
     opening_hook: "Now writing the opening hook…",
+    hook_scene: "Now creating the opening hook scene…",
     scenes: "Now planning scenes and visuals…",
     outro: "Now adding the subscribe outro…",
     story_research_review: "Now reviewing the story against research…",
@@ -165,6 +166,7 @@ export function agentPipelineActivityIconClass(effKey, runStatus) {
     chapters: "fa-solid fa-file-lines fa-beat fa-fw pipeline-fa-icon",
     thumbnail: "fa-solid fa-image fa-beat-fade fa-fw pipeline-fa-icon",
     opening_hook: "fa-solid fa-bolt fa-shake fa-fw pipeline-fa-icon",
+    hook_scene: "fa-solid fa-play fa-beat fa-fw pipeline-fa-icon",
     scenes: "fa-solid fa-photo-film fa-beat-fade fa-fw pipeline-fa-icon",
     outro: "fa-solid fa-bell fa-beat fa-fw pipeline-fa-icon",
     story_research_review: "fa-solid fa-scale-balanced fa-shake fa-fw pipeline-fa-icon",
@@ -190,6 +192,7 @@ const JOB_TYPE_MACRO_STEP_RULES = [
   { macro: "chapters", types: new Set(["script_chapters", "script_chapter_regenerate"]) },
   { macro: "thumbnail", types: new Set(["thumbnail_generate"]) },
   { macro: "opening_hook", types: new Set(["opening_hook_generate"]) },
+  { macro: "hook_scene", types: new Set(["hook_scene_append"]) },
   { macro: "outro", types: new Set(["outro_append"]) },
   { macro: "outline", types: new Set(["script_outline"]) },
   { macro: "research", types: new Set(["research_run"]) },
@@ -255,6 +258,7 @@ export function studioJobKindHeadline(jobType) {
     script_chapter_regenerate: "Chapter script (regenerate)",
     thumbnail_generate: "Thumbnail",
     opening_hook_generate: "The Hook",
+    hook_scene_append: "Hook scene",
     outro_append: "Subscribe outro",
     characters_generate: "Character bible",
   };
@@ -402,6 +406,10 @@ const AGENT_STEP_STALL_COPY = {
   opening_hook: {
     title: "The Hook (text model)",
     body: "Writes the spoken opening hook from your script and research. Same LLM connectivity rules as other text steps.",
+  },
+  hook_scene: {
+    title: "Hook scene (scene 0)",
+    body: "Inserts the opening hook as the first scene in chapter 1, using the publish thumbnail as the still and your hook script for narration.",
   },
   outro: {
     title: "Subscribe outro (text model + scene)",

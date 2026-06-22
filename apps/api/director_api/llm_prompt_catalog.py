@@ -396,7 +396,8 @@ LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
         description="Lead sentence before character descriptions in image and video prompts.",
         default_content=(
             "CHARACTER CONSISTENCY — keep faces, age, body type, hair, and wardrobe aligned with these "
-            "descriptions whenever a named character appears: "
+            "descriptions whenever a named character is physically present on screen (not when they appear "
+            "only as a chalkboard portrait, photograph, statue, or background mention): "
         ),
         sort_order=160,
     ),

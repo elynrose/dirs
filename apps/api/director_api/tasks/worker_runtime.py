@@ -955,6 +955,10 @@ def _run_phase2_job_impl(job_id: str) -> None:
                     from director_api.services.publish_pack import opening_hook_core
 
                     opening_hook_core(db, project, settings)
+                elif job.type == "hook_scene_append":
+                    from director_api.services.publish_hook import append_hook_scene
+
+                    append_hook_scene(db, project, settings)
                 elif job.type == "outro_append":
                     from director_api.services.publish_outro import append_outro_scene
 

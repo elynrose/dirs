@@ -338,7 +338,6 @@ export function useEditorPipelineAgent({
             clip_frame_fit: collab.clipFrameFit === "letterbox" ? "letterbox" : "center_crop",
             no_narration: Boolean(collab.noNarration),
             ...briefPreferredMediaProvidersFromAppConfig(appConfig),
-            ...publishPatch,
           },
           pipeline_options,
         }),
@@ -719,6 +718,7 @@ export function useEditorPipelineAgent({
         "Batch-writing full scripts for every chapter in one model call — several minutes with no intermediate saves is normal.",
       thumbnail: "Generating YouTube title, description, and a 16:9 thumbnail still.",
       opening_hook: "Writing the spoken opening hook from your script and research.",
+      hook_scene: "Creating scene 0 in chapter 1 — cover still plus spoken hook before the documentary starts.",
       outro: "Appending the optional subscribe outro as the last scene (skipped when disabled on the project).",
       scenes:
         "Breaking each chapter script into scenes (visuals + timing). One LLM pass per chapter that needs planning — long scripts or many chapters can take several minutes with no other UI updates unless progress is shown below.",

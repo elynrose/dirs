@@ -14,6 +14,17 @@ def test_timeline_clip_crossfade_sec_optional():
     )
 
 
+def test_timeline_clip_crossfade_default_compile():
+    from director_api.tasks.phase5_compile_impl import (
+        DEFAULT_CLIP_CROSSFADE_SEC,
+        _timeline_clip_crossfade_sec,
+    )
+
+    assert DEFAULT_CLIP_CROSSFADE_SEC == 0.65
+    assert _timeline_clip_crossfade_sec({}) == 0.65
+    assert _timeline_clip_crossfade_sec({"clips": []}) == 0.65
+    assert _timeline_clip_crossfade_sec({"clip_crossfade_sec": 0}) == 0.0
+
 def test_timeline_still_motion_fields_optional():
     validate_timeline_document(
         {

@@ -16,6 +16,7 @@ from director_api.config import Settings, get_settings
 from director_api.db.models import Project
 from director_api.db.session import get_db
 from director_api.services.chat_studio_guide import run_setup_guide_turn
+from director_api.services.telegram_studio_bridge import get_telegram_studio_session_row
 from director_api.services.tenant_entitlements import assert_chat_allowed
 
 router = APIRouter(prefix="/chat-studio", tags=["chat-studio"])
@@ -39,6 +40,57 @@ def _brief_snapshot_from_project(p: Project) -> dict[str, Any]:
         "preferred_video_provider": p.preferred_video_provider,
         "preferred_speech_provider": p.preferred_speech_provider,
         "frame_aspect_ratio": getattr(p, "frame_aspect_ratio", None) or "16:9",
+    }
+
+
+@router.get("/telegram-session")
+def get_telegram_studio_session(
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
+    auth: AuthContext = Depends(auth_context_dep),
+    meta: dict = Depends(meta_dep),
+) -> dict:
+    """Messages + brief snapshot from the linked Telegram chat (same assistant as the webhook)."""
+    auth_on = bool(get_settings().director_auth_enabled)
+    assert_chat_allowed(db=db, tenant_id=auth.tenant_id, auth_enabled=auth_on)
+
+    chat_id = (settings.telegram_chat_id or "").strip()
+    if not chat_id:
+        return {
+            "data": {"configured": False, "messages": [], "brief_snapshot": {}},
+            "meta": meta,
+        }
+
+    row = get_telegram_studio_session_row(db, auth.tenant_id, chat_id)
+    if row is None:
+        return {
+            "data": {
+                "configured": True,
+                "telegram_chat_id": chat_id,
+                "messages": [],
+                "brief_snapshot": {},
+            },
+            "meta": meta,
+        }
+
+    messages: list[dict[str, str]] = []
+    for m in row.messages_json or []:
+        if (
+            isinstance(m, dict)
+            and m.get("role") in ("user", "assistant")
+            and isinstance(m.get("content"), str)
+        ):
+            messages.append({"role": str(m["role"]), "content": m["content"]})
+
+    return {
+        "data": {
+            "configured": True,
+            "telegram_chat_id": chat_id,
+            "messages": messages,
+            "brief_snapshot": dict(row.brief_snapshot_json or {}),
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        },
+        "meta": meta,
     }
 
 

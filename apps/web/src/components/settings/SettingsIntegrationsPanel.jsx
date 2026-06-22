@@ -25,6 +25,7 @@ import {
   agentRunMinSceneVideos,
 } from "../../lib/constants.js";
 import { formatPipelineStageSummary, PIPELINE_SPEED_SELECT_OPTIONS } from "../../lib/studioLabels.js";
+import { activeOAuthRedirectUri, oauthRedirectUriForBase } from "../../lib/oauthRedirectUri.js";
 
 /** Settings workspace UI — state/handlers passed via `p` from App (props must move with state). */
 
@@ -370,21 +371,64 @@ export default function SettingsIntegrationsPanel(props) {
                         <span className="settings-section-heading">YouTube &amp; export links</span>
                       </summary>
                       <div className="settings-section-body">
+                        {(() => {
+                          const activeRedirect =
+                            activeOAuthRedirectUri(appConfig, typeof window !== "undefined" ? window.location.hostname : "") ||
+                            oauthRedirectUriForBase(appConfig.public_api_base_url) ||
+                            "(incoming request host)";
+                          const localRedirect = oauthRedirectUriForBase(appConfig.local_api_base_url);
+                          const publicRedirect = oauthRedirectUriForBase(appConfig.public_api_base_url);
+                          return (
+                            <>
                         <p className="subtle" style={{ marginTop: -4 }}>
-                          OAuth uses Google&apos;s consent screen. Register redirect URI{" "}
-                          <code>
-                            {(appConfig.public_api_base_url || "").replace(/\/$/, "") || "(set PUBLIC_API_BASE_URL)"}
-                            /v1/integrations/youtube/oauth-callback
-                          </code>{" "}
-                          in Google Cloud Console for your OAuth client.
+                          OAuth uses Google&apos;s consent screen. Register the <strong>active</strong> redirect URI in
+                          Google Cloud Console (add both local and public if you switch environments):
                         </p>
-                        <label htmlFor="cfg-public-api-base">PUBLIC_API_BASE_URL (API base as Telegram / Google reach it, no trailing slash)</label>
+                        <p className="subtle" style={{ fontSize: "0.85rem" }}>
+                          Active now: <code>{activeRedirect}</code>
+                        </p>
+                        {localRedirect ? (
+                          <p className="subtle" style={{ fontSize: "0.85rem" }}>
+                            Local: <code>{localRedirect}</code>
+                          </p>
+                        ) : null}
+                        {publicRedirect ? (
+                          <p className="subtle" style={{ fontSize: "0.85rem" }}>
+                            Public: <code>{publicRedirect}</code>
+                          </p>
+                        ) : null}
+                            </>
+                          );
+                        })()}
+                        <label htmlFor="cfg-local-api-base">LOCAL_API_BASE_URL (loopback API, no trailing slash)</label>
+                        <input
+                          id="cfg-local-api-base"
+                          placeholder="http://127.0.0.1:8000"
+                          value={appConfig.local_api_base_url || ""}
+                          onChange={(e) => setAppConfig((p) => ({ ...p, local_api_base_url: e.target.value }))}
+                        />
+                        <label htmlFor="cfg-public-api-base" style={{ marginTop: 12 }}>
+                          PUBLIC_API_BASE_URL (production API as Google reaches it, no trailing slash)
+                        </label>
                         <input
                           id="cfg-public-api-base"
-                          placeholder="https://api.yourdomain.com"
+                          placeholder="https://directely.com"
                           value={appConfig.public_api_base_url || ""}
                           onChange={(e) => setAppConfig((p) => ({ ...p, public_api_base_url: e.target.value }))}
                         />
+                        <label htmlFor="cfg-oauth-redirect-base" style={{ marginTop: 12 }}>
+                          OAUTH_REDIRECT_BASE
+                        </label>
+                        <select
+                          id="cfg-oauth-redirect-base"
+                          value={appConfig.oauth_redirect_base || "auto"}
+                          onChange={(e) => setAppConfig((p) => ({ ...p, oauth_redirect_base: e.target.value }))}
+                        >
+                          <option value="auto">auto — loopback → local, else public</option>
+                          <option value="local">local — always LOCAL_API_BASE_URL</option>
+                          <option value="public">public — always PUBLIC_API_BASE_URL</option>
+                          <option value="request">request — incoming API host only</option>
+                        </select>
                         <label htmlFor="cfg-director-public-url" style={{ marginTop: 12 }}>
                           DIRECTOR_PUBLIC_APP_URL (Studio in the browser — for Telegram deep links)
                         </label>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiForm } from "../../lib/api.js";
+import { DEFAULT_CLIP_CROSSFADE_SEC } from "../../lib/constants.js";
 import {
   apiErrorMessage,
   formatUserFacingError,
@@ -55,7 +56,7 @@ export function useEditorAudioMix({
   );
   const [narrMixMode, setNarrMixMode] = useState("scene_timeline");
   const [musicBedPick, setMusicBedPick] = useState("");
-  const [clipCrossfadeSec, setClipCrossfadeSec] = useState(0);
+  const [clipCrossfadeSec, setClipCrossfadeSec] = useState(DEFAULT_CLIP_CROSSFADE_SEC);
   const [musicUploadLicense, setMusicUploadLicense] = useState("");
   const musicFileInputRef = useRef(null);
   const mixVolPersistTimerRef = useRef(null);
@@ -133,7 +134,7 @@ export function useEditorAudioMix({
       setClipCrossfadeSec(
         typeof tj.clip_crossfade_sec === "number" && Number.isFinite(tj.clip_crossfade_sec)
           ? Math.max(0, Math.min(2, tj.clip_crossfade_sec))
-          : 0,
+          : DEFAULT_CLIP_CROSSFADE_SEC,
       );
     } catch {
       /* ignore */
@@ -166,7 +167,13 @@ export function useEditorAudioMix({
           mix_narration_volume: Math.max(0, Math.min(4, Number.isFinite(mn) ? mn : 1)),
           final_cut_narration_mode: narrMixMode,
           music_bed_id: bedId && String(bedId).trim() ? String(bedId).trim() : null,
-          clip_crossfade_sec: Math.max(0, Math.min(2, Number(clipCrossfadeSec) || 0)),
+          clip_crossfade_sec: Math.max(
+            0,
+            Math.min(
+              2,
+              Number.isFinite(Number(clipCrossfadeSec)) ? Number(clipCrossfadeSec) : DEFAULT_CLIP_CROSSFADE_SEC,
+            ),
+          ),
         };
         const pr = await api(`/v1/timeline-versions/${encodeURIComponent(tid)}`, {
           method: "PATCH",

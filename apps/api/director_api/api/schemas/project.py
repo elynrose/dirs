@@ -42,7 +42,8 @@ class ProjectCreate(BaseModel):
     )
 
     def brief_dict(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        """Fields validated by ``documentary_brief.schema.json`` (excludes project/run flags)."""
+        return self.model_dump(exclude_none=True, exclude={"publish_to_youtube"})
 
 
 class ProjectPatch(BaseModel):

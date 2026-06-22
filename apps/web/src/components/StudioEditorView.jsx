@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { EditorCardColumn } from "../editor/EditorCard.jsx";
 import { InspectorPipelinePanel } from "../editor/InspectorPipelinePanel.jsx";
 import { CompiledVideoPreview } from "../editor/CompiledVideoPreview.jsx";
@@ -52,6 +52,8 @@ import {
   PHASE5_TIMELINE_UUID_RE,
 } from "../lib/constants.js";
 import { formatPipelineStageSummary } from "../lib/studioLabels.js";
+import { paginateProjectList } from "../lib/studio/projectListPagination.js";
+import { ProjectListPager } from "./ProjectListPager.jsx";
 
 /** Editor workspace UI — state/handlers via useStudioEditor() (props must move with state). */
 export function StudioEditorView() {
@@ -301,6 +303,18 @@ export function StudioEditorView() {
     workspaceRef
   } = useStudioEditor();
 
+  const [projectListPage, setProjectListPage] = useState(0);
+  const projectListPagination = useMemo(
+    () => paginateProjectList(projects, projectListPage),
+    [projects, projectListPage],
+  );
+
+  useEffect(() => {
+    if (projectListPagination.page !== projectListPage) {
+      setProjectListPage(projectListPagination.page);
+    }
+  }, [projectListPagination.page, projectListPage]);
+
   const onPublishScenesReload = useCallback(async () => {
     if (projectId) await loadChapters(projectId);
     if (chapterId) await loadScenes(chapterId);
@@ -360,7 +374,7 @@ export function StudioEditorView() {
                       </button>
                     </div>
                     <div className="projects-list">
-                      {projects.map((p) => {
+                      {projectListPagination.visible.map((p) => {
                         const activeAr =
                           p.active_agent_run_id &&
                           ["running", "queued", "paused"].includes(String(p.active_agent_run_status || ""));
@@ -431,6 +445,14 @@ export function StudioEditorView() {
                         </div>
                       ) : null}
                     </div>
+                    <ProjectListPager
+                      page={projectListPagination.page}
+                      pageCount={projectListPagination.pageCount}
+                      canPrev={projectListPagination.canPrev}
+                      canNext={projectListPagination.canNext}
+                      onPrev={() => setProjectListPage((p) => Math.max(0, p - 1))}
+                      onNext={() => setProjectListPage((p) => p + 1)}
+                    />
                   </>
                 ),
               },
@@ -840,6 +862,7 @@ export function StudioEditorView() {
                             ? s.prompt_package_json.scene_role
                             : null;
                         const isOutroScene = sceneRole === "outro";
+                        const isHookScene = sceneRole === "hook";
                         const sceneActive = String(selectedSceneId) === String(s.id);
                         return (
                           <button
@@ -854,7 +877,7 @@ export function StudioEditorView() {
                               loadSceneAssets(s.id);
                             }}
                             aria-current={sceneActive ? "true" : undefined}
-                            aria-label={`Scene ${s.order_index + 1}`}
+                            aria-label={isHookScene ? "Opening hook (scene 0)" : `Scene ${s.order_index + 1}`}
                           >
                             <div className="asset-row-thumb" aria-hidden="true">
                               {thumbSrc && thumbType === "image" ? (
@@ -878,6 +901,23 @@ export function StudioEditorView() {
                             </div>
                             <div className="asset-meta">
                               <div>
+                                {isHookScene ? (
+                                  <span
+                                    style={{
+                                      display: "inline-block",
+                                      marginRight: 6,
+                                      padding: "1px 6px",
+                                      fontSize: "0.65rem",
+                                      fontWeight: 600,
+                                      borderRadius: 4,
+                                      background: "rgb(234 179 8 / 18%)",
+                                      color: "var(--text, inherit)",
+                                    }}
+                                    title="Opening hook with cover still"
+                                  >
+                                    Hook
+                                  </span>
+                                ) : null}
                                 {isOutroScene ? (
                                   <span
                                     style={{

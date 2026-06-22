@@ -35,6 +35,7 @@ TEXT_TYPES = frozenset(
         "characters_generate",
         "thumbnail_generate",
         "opening_hook_generate",
+        "hook_scene_append",
         "outro_append",
         "scene_critique",
         "chapter_critique",

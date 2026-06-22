@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from director_api.services import agent_resume as ar
+from director_api.services.publish_hook import HOOK_SCENE_ROLE
 from director_api.services.publish_outro import OUTRO_SCENE_ROLE
 
 
@@ -47,6 +48,23 @@ def test_should_skip_opening_hook_when_text_long_enough() -> None:
 def test_should_skip_opening_hook_when_phase_rank() -> None:
     p = _project(workflow_phase="hook_ready", opening_hook_text=None)
     assert ar.should_skip_opening_hook(True, p) is True
+
+
+def test_should_skip_hook_scene_when_synced() -> None:
+    p = _project(opening_hook_text="x" * 60)
+    db = MagicMock()
+    sc = MagicMock()
+    sc.id = uuid4()
+    sc.narration_text = p.opening_hook_text
+    with patch("director_api.services.publish_hook.find_hook_scene", return_value=sc):
+        db.scalar.return_value = 1
+        assert ar.should_skip_hook_scene(True, p, db) is True
+
+
+def test_should_skip_hook_scene_when_text_too_short() -> None:
+    p = _project(opening_hook_text="short")
+    db = MagicMock()
+    assert ar.should_skip_hook_scene(True, p, db) is True
 
 
 def test_should_skip_outro_when_disabled() -> None:

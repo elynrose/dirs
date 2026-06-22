@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from director_api.db.models import Chapter, Project, ResearchDossier, Scene
+from director_api.db.models import Asset, Chapter, Project, ResearchDossier, Scene
 
 
 def workflow_phase_rank(phase: str | None) -> int:
@@ -94,6 +94,35 @@ def should_skip_opening_hook(continue_existing: bool, project: Project) -> bool:
     if workflow_phase_rank(project.workflow_phase) >= 7:
         return True
     return len((project.opening_hook_text or "").strip()) >= 50
+
+
+def should_skip_hook_scene(continue_existing: bool, project: Project, db: Session) -> bool:
+    text = (project.opening_hook_text or "").strip()
+    if len(text) < 12:
+        return True
+    if not continue_existing:
+        return False
+    from director_api.services.publish_hook import find_hook_scene
+
+    sc = find_hook_scene(db, project.id)
+    if not sc:
+        return False
+    if (sc.narration_text or "").strip() != text:
+        return False
+    n_img = (
+        db.scalar(
+            select(func.count())
+            .select_from(Scene)
+            .join(Asset, Asset.scene_id == Scene.id)
+            .where(
+                Scene.id == sc.id,
+                Asset.asset_type == "image",
+                Asset.status == "succeeded",
+            )
+        )
+        or 0
+    )
+    return int(n_img) >= 1
 
 
 def should_skip_outro(

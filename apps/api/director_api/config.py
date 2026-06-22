@@ -570,10 +570,23 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("director_public_app_url", "DIRECTOR_PUBLIC_APP_URL"),
     )
-    # Public API base for OAuth redirects (e.g. https://api.example.com). If unset, auth-url uses the incoming request host.
+    # Public API base for OAuth redirects (e.g. https://api.example.com). Used when not on loopback / auto picks public.
     public_api_base_url: str | None = Field(
         default=None,
         validation_alias=AliasChoices("public_api_base_url", "PUBLIC_API_BASE_URL"),
+    )
+    # Local API base for OAuth when Studio/API run on loopback (e.g. http://127.0.0.1:8000).
+    local_api_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("local_api_base_url", "LOCAL_API_BASE_URL"),
+    )
+    oauth_redirect_base: Literal["auto", "local", "public", "request"] = Field(
+        default="auto",
+        description=(
+            "Which API base builds YouTube OAuth redirect_uri: auto (loopback→local, else public), "
+            "or force local/public/incoming request."
+        ),
+        validation_alias=AliasChoices("oauth_redirect_base", "OAUTH_REDIRECT_BASE"),
     )
     # YouTube Data API v3 (optional). Refresh token is stored per workspace in app_settings.
     youtube_client_id: str | None = Field(

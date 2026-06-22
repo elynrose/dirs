@@ -45,6 +45,7 @@ from director_api.services.publish_youtube import resolve_publish_to_youtube
 from director_api.services import pipeline_fallback_events as pipeline_fallback_svc
 from director_api.tasks.agent_publish_steps import (
     run_agent_opening_hook_step,
+    run_agent_hook_scene_step,
     run_agent_outro_step,
     run_agent_thumbnail_step,
 )
@@ -57,6 +58,7 @@ from director_api.tasks.phase3_impl import (
     _phase3_scenes_plan_for_chapter,
     _phase3_video_generate,
 )
+from director_api.tasks.phase5_compile_impl import DEFAULT_CLIP_CROSSFADE_SEC
 from director_api.tasks.phase5_impl import _phase5_auto_heal_before_export
 from director_api.validation.timeline_schema import validate_timeline_document
 
@@ -1410,6 +1412,7 @@ def _run_agent_full_pipeline_tail(
         "schema_version": 2,
         "clips": clips,
         "music_bed_id": None,
+        "clip_crossfade_sec": DEFAULT_CLIP_CROSSFADE_SEC,
     }
     validate_timeline_document(tj)
     tv = TimelineVersion(
@@ -1424,6 +1427,17 @@ def _run_agent_full_pipeline_tail(
     db.add(tv)
     db.flush()
     tv_id = tv.id
+    try:
+        from director_api.services.scene_precompile_enqueue import schedule_precompile_for_timeline
+
+        schedule_precompile_for_timeline(
+            db,
+            settings,
+            project_id=pid,
+            timeline_json=tj,
+        )
+    except Exception as e:
+        log.warning("auto_timeline_precompile_schedule_failed", error=str(e)[:300])
     storage_root_pre = Path(settings.local_storage_root).resolve()
     proj_auto = db.get(Project, pid)
     if proj_auto:
@@ -2103,7 +2117,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                     run = db.get(AgentRun, aid)
                     if run:
                         _wt()._append_event(run, "scenes", "skipped", reason="scenes_already_planned")
-                        run.current_step = "outro"
+                        run.current_step = "hook_scene"
                         db.commit()
                 else:
                     try:
@@ -2195,7 +2209,7 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                                 chapters_skipped_short_script=skipped_short_script,
                                 chapters_skipped_existing_scenes=chapters_skipped_existing_scenes,
                             )
-                            run.current_step = "outro"
+                            run.current_step = "hook_scene"
                             db.commit()
                     except Exception as e:  # noqa: BLE001
                         run = db.get(AgentRun, aid)
@@ -2203,6 +2217,30 @@ def _run_agent_run_impl(agent_run_id: str) -> None:
                             _wt()._agent_run_mark_failed(db, run, "scenes", e)
                         log.exception("agent_run_scenes_failed", agent_run_id=agent_run_id)
                         return
+
+                if halt():
+                    return
+
+                project = db.get(Project, run_project_id)
+                run = db.get(AgentRun, aid)
+                if project and run:
+                    res = run_agent_hook_scene_step(
+                        db,
+                        run=run,
+                        aid=aid,
+                        agent_run_id=agent_run_id,
+                        project=project,
+                        settings=settings,
+                        cont=cont,
+                        oversight_earliest=oversight_earliest,
+                        force_steps=force_steps,
+                        halt=halt,
+                        wt=_wt(),
+                    )
+                    if res != "ok":
+                        return
+                    project = db.get(Project, run_project_id)
+                    run = db.get(AgentRun, aid)
 
                 if halt():
                     return

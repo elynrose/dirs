@@ -33,16 +33,17 @@ OVERSIGHT_STEP_RANK: dict[str, int] = {
     "thumbnail": 4,
     "opening_hook": 5,
     "scenes": 6,
-    "outro": 7,
-    "story_research_review": 8,
-    "auto_characters": 9,
-    "auto_narration": 10,
-    "auto_scene_coverage": 11,
-    "auto_images": 12,
-    "auto_videos": 13,
-    "auto_timeline": 14,
-    "auto_rough_cut": 15,
-    "auto_final_cut": 16,
+    "hook_scene": 7,
+    "outro": 8,
+    "story_research_review": 9,
+    "auto_characters": 10,
+    "auto_narration": 11,
+    "auto_scene_coverage": 12,
+    "auto_images": 13,
+    "auto_videos": 14,
+    "auto_timeline": 15,
+    "auto_rough_cut": 16,
+    "auto_final_cut": 17,
 }
 
 TAIL_STEPS: tuple[str, ...] = (
@@ -84,6 +85,7 @@ def _canonical_step(name: str | None) -> str | None:
         "final_cut": "auto_final_cut",
         "story_review": "story_research_review",
         "hook": "opening_hook",
+        "hook_scene": "hook_scene",
     }
     return aliases.get(s)
 

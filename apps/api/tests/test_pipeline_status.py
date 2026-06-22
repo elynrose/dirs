@@ -8,6 +8,7 @@ from uuid import uuid4
 from director_api.services.pipeline_status import compute_pipeline_status
 
 
+@patch("director_api.services.publish_hook.find_hook_scene")
 @patch("director_api.services.publish_outro.find_outro_scene")
 @patch("director_api.services.publish_pack.publish_pack_done")
 @patch("director_api.services.pipeline_status.compute_phase5_readiness")
@@ -19,6 +20,7 @@ def test_compute_pipeline_status_characters_row_after_scenes_pending_when_empty(
     mock_p5: MagicMock,
     mock_publish_done: MagicMock,
     mock_find_outro: MagicMock,
+    mock_find_hook: MagicMock,
 ) -> None:
     pid = uuid4()
     tenant = "t1"
@@ -39,6 +41,7 @@ def test_compute_pipeline_status_characters_row_after_scenes_pending_when_empty(
     mock_p5.return_value = {"ready": False, "issues": []}
     mock_publish_done.return_value = False
     mock_find_outro.return_value = None
+    mock_find_hook.return_value = None
     db.scalar.side_effect = [1, 1, 0, 0]
     scalars_result = MagicMock()
     scalars_result.all.return_value = []
@@ -63,6 +66,7 @@ def test_compute_pipeline_status_characters_row_after_scenes_pending_when_empty(
     assert char_step["detail"] == "—"
 
 
+@patch("director_api.services.publish_hook.find_hook_scene")
 @patch("director_api.services.publish_outro.find_outro_scene")
 @patch("director_api.services.publish_pack.publish_pack_done")
 @patch("director_api.services.pipeline_status.compute_phase5_readiness")
@@ -74,6 +78,7 @@ def test_compute_pipeline_status_characters_done_when_rows_exist(
     mock_p5: MagicMock,
     mock_publish_done: MagicMock,
     mock_find_outro: MagicMock,
+    mock_find_hook: MagicMock,
 ) -> None:
     pid = uuid4()
     tenant = "t1"
@@ -94,6 +99,7 @@ def test_compute_pipeline_status_characters_done_when_rows_exist(
     mock_p5.return_value = {"ready": False, "issues": []}
     mock_publish_done.return_value = False
     mock_find_outro.return_value = None
+    mock_find_hook.return_value = None
     db.scalar.side_effect = [1, 1, 3, 0]
     scalars_result = MagicMock()
     scalars_result.all.return_value = []

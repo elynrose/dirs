@@ -392,6 +392,7 @@ from director_api.tasks.prompt_runtime_helpers import (  # noqa: E402
     _resolve_still_motion,
     _scene_era_anchor,
     _scene_still_prompt_for_comfy,
+    _scene_video_prompt_for_provider,
     _scene_text_for_character_match,
     _should_append_framing_safety_positive,
 )

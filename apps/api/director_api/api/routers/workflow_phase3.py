@@ -83,8 +83,8 @@ from director_api.services.scene_timeline_duration import get_scene_narration_au
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.tasks.job_enqueue import enqueue_run_phase3_job
 from director_api.tasks.prompt_runtime_helpers import (
-    _resolve_phase3_video_text_prompt,
     _scene_still_prompt_for_comfy,
+    _scene_video_prompt_for_provider,
 )
 from ffmpeg_pipelines.paths import path_from_storage_url, path_is_readable_file
 
@@ -594,7 +594,7 @@ def get_scene_resolved_prompts(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "project not found"})
     pp = sc.prompt_package_json if isinstance(sc.prompt_package_json, dict) else {}
     image_prompt = _scene_still_prompt_for_comfy(db, sc, project, settings)
-    video_prompt = _resolve_phase3_video_text_prompt(sc, pp, project=project, settings=settings)
+    video_prompt = _scene_video_prompt_for_provider(db, sc, project, settings)
     return {
         "data": {
             "scene_id": str(sc.id),

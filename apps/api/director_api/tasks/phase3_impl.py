@@ -23,18 +23,13 @@ from director_api.providers.media_fal import (
     generate_scene_image,
     generate_scene_video_fal,
 )
-from director_api.services.camera_perspective import inject_camera_perspective_into_prompt
 from director_api.services.character_prompt import (
     character_bible_for_llm_context,
     character_consistency_prefix,
-    prompt_already_has_character_prefix,
 )
 from director_api.services.image_prompt_assembly import (
-    character_consistency_block_for_image,
-    polish_scene_image_prompt,
-    polish_scene_video_prompt,
+    assemble_scene_still_image_prompt,
     scene_text_for_character_match,
-    strip_redundant_visual_style_clauses,
 )
 from director_api.agents import phase3_llm
 from director_api.services import phase3 as phase3_svc
@@ -65,6 +60,7 @@ from director_api.tasks.prompt_runtime_helpers import (
     _local_ffmpeg_motion_from_video_prompt,
     _resolve_phase3_video_text_prompt,
     _scene_still_prompt_for_comfy,
+    _scene_video_prompt_for_provider,
 )
 
 log = structlog.get_logger(__name__)
@@ -193,9 +189,13 @@ def _phase3_scenes_plan_for_chapter(
             pass
     validate_scene_plan_batch(batch)
 
-    for sc in list(chapter.scenes):
-        db.delete(sc)
-    db.flush()
+    from director_api.services.publish_hook import (
+        delete_chapter_scenes_preserving_hook,
+        order_index_offset_for_chapter_replan,
+    )
+
+    delete_chapter_scenes_preserving_hook(db, chapter, project.id)
+    idx_offset = order_index_offset_for_chapter_replan(db, chapter)
 
     for item in sorted(batch["scenes"], key=lambda x: int(x["order_index"])):
         pp = item.get("prompt_package_json")
@@ -216,7 +216,7 @@ def _phase3_scenes_plan_for_chapter(
             Scene(
                 id=uuid.uuid4(),
                 chapter_id=chapter.id,
-                order_index=int(item["order_index"]),
+                order_index=int(item["order_index"]) + idx_offset,
                 purpose=sanitize_jsonb_text(str(item["purpose"]), 2000),
                 planned_duration_sec=int(item["planned_duration_sec"]),
                 narration_text=sanitize_jsonb_text(narr_out, 12_000),
@@ -494,39 +494,18 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         }
 
     prompt = str(prompt).strip()
-    if vis_style:
-        prompt = strip_redundant_visual_style_clauses(prompt, vis_style)
-
-    if not bool(payload.get("exclude_character_bible")):
-        if "_automation_character_prefix" in payload:
-            prefix = str(payload.get("_automation_character_prefix") or "")[:2000]
-        else:
-            prefix = character_consistency_block_for_image(
-                db,
-                project.id,
-                scene_text=scene_text_for_character_match(db, scene),
-                base_prompt=prompt,
-                max_chars=2000,
-            )
-        if prefix and not prompt_already_has_character_prefix(prompt, prefix):
-            room = max(400, 4000 - len(prompt) - 3)
-            prompt = f"{str(prompt)[:room]}\n\n{prefix}"
-
-    prompt = inject_camera_perspective_into_prompt(
+    prompt = assemble_scene_still_image_prompt(
+        db,
+        scene,
+        project,
+        settings,
         prompt,
-        scene_key=str(scene.id),
-        order_index=int(scene.order_index),
-        for_video=False,
-        max_total=4000,
-    )
-    prompt = maybe_prepend_topic_setting_anchor(prompt, project.topic, max_total=4000)
-    pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
-    prompt = polish_scene_image_prompt(
-        prompt,
-        vis_style=vis_style,
-        visual_preset_id=pid_vis,
-        max_total=4000,
-        mood=(scene.purpose or "")[:240] or None,
+        exclude_character_bible=bool(payload.get("exclude_character_bible")),
+        automation_character_prefix=(
+            str(payload.get("_automation_character_prefix") or "")[:2000]
+            if "_automation_character_prefix" in payload
+            else None
+        ),
     )
 
     scene_neg = _package_negative_prompt(pp, project=project, settings=settings)
@@ -874,27 +853,19 @@ def _phase3_video_generate(db, job: Job) -> dict[str, Any]:
         )
 
     if selected_video_provider in ("fal", "comfyui_wan"):
-        prompt = base_video_text_prompt
-        if not bool(payload.get("exclude_character_bible")):
-            vprefix = character_consistency_prefix(db, project.id, max_chars=2000)
-            if vprefix and not prompt_already_has_character_prefix(prompt, vprefix):
-                room = max(400, 3000 - len(vprefix) - 3)
-                prompt = f"{vprefix}\n\n{str(prompt)[:room]}"
-        vis_style = effective_visual_style(project.visual_style, settings)
-        prompt = inject_camera_perspective_into_prompt(
-            prompt,
-            scene_key=str(scene.id),
-            order_index=int(scene.order_index),
-            for_video=True,
-            max_total=3000,
-        )
-        pid_vis = phase3_svc.resolve_visual_preset_id_for_project(project, settings)
-        prompt = polish_scene_video_prompt(
-            prompt,
-            vis_style=vis_style,
-            visual_preset_id=pid_vis,
-            max_total=3000,
-            mood=(scene.purpose or "")[:240] or None,
+        prompt = _scene_video_prompt_for_provider(
+            db,
+            scene,
+            project,
+            settings,
+            override=payload.get("video_prompt_override"),
+            suffix=payload.get("video_prompt_suffix"),
+            exclude_character_bible=bool(payload.get("exclude_character_bible")),
+            automation_character_prefix=(
+                str(payload.get("_automation_character_prefix") or "")[:2000]
+                if "_automation_character_prefix" in payload
+                else None
+            ),
         )
         fal_video_override = payload.get("fal_video_model")
         if not isinstance(fal_video_override, str) or not fal_video_override.strip():

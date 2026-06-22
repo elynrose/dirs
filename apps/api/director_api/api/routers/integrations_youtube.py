@@ -21,6 +21,7 @@ from director_api.auth.deps import auth_context_dep
 from director_api.config import Settings, get_settings
 from director_api.db.models import Project, TimelineVersion
 from director_api.db.session import get_db
+from director_api.services.api_base_url import oauth_redirect_uri_candidates, youtube_oauth_redirect_uri
 from director_api.services.runtime_settings import (
     get_or_create_app_settings,
     invalidate_runtime_settings_cache_after_tenant_config_persisted,
@@ -41,11 +42,13 @@ router = APIRouter(prefix="/integrations/youtube", tags=["integrations"])
 log = structlog.get_logger(__name__)
 
 
-def _oauth_redirect_uri(request: Request, base: Settings) -> str:
-    pub = (getattr(base, "public_api_base_url", None) or "").strip().rstrip("/")
-    if pub:
-        return f"{pub}/v1/integrations/youtube/oauth-callback"
-    return str(request.url_for("youtube_oauth_callback"))
+def _oauth_redirect_uri(request: Request, settings: Settings) -> str:
+    return youtube_oauth_redirect_uri(
+        settings,
+        request_host=request.url.hostname,
+        request_base_url=str(request.base_url).rstrip("/"),
+        fallback_callback_url=str(request.url_for("youtube_oauth_callback")),
+    )
 
 
 def _persist_youtube_refresh(db: Session, tenant_id: str, refresh_token: str) -> None:
@@ -78,6 +81,7 @@ class YoutubeManualUploadBody(BaseModel):
 
 @router.get("/status")
 def youtube_status(
+    request: Request,
     db: Session = Depends(get_db),
     settings: Settings = Depends(settings_dep),
     meta: dict = Depends(meta_dep),
@@ -85,6 +89,11 @@ def youtube_status(
 ) -> dict[str, Any]:
     has_refresh = bool((settings.youtube_refresh_token or "").strip())
     has_client = bool((settings.youtube_client_id or "").strip() and (settings.youtube_client_secret or "").strip())
+    redirect_info = oauth_redirect_uri_candidates(
+        settings,
+        request_host=request.url.hostname if request else None,
+        request_base_url=str(request.base_url).rstrip("/") if request else None,
+    )
     return {
         "data": {
             "connected": has_refresh and has_client,
@@ -92,6 +101,7 @@ def youtube_status(
             "has_client_secret": bool((settings.youtube_client_secret or "").strip()),
             "youtube_auto_upload_after_export": bool(settings.youtube_auto_upload_after_export),
             "youtube_default_privacy": (settings.youtube_default_privacy or "unlisted").strip().lower(),
+            **redirect_info,
         },
         "meta": meta,
     }
@@ -122,10 +132,23 @@ def youtube_auth_url(
             status_code=400,
             detail={"code": "YOUTUBE_CLIENT_NOT_CONFIGURED", "message": "Set youtube_client_id and youtube_client_secret"},
         )
-    redirect_uri = _oauth_redirect_uri(request, base)
+    redirect_uri = _oauth_redirect_uri(request, settings)
     state = sign_youtube_oauth_state(auth.tenant_id, secret)
     url = build_google_authorize_url(client_id=cid, redirect_uri=redirect_uri, state=state)
-    return {"data": {"authorize_url": url, "redirect_uri": redirect_uri, "state": state}, "meta": meta}
+    redirect_info = oauth_redirect_uri_candidates(
+        settings,
+        request_host=request.url.hostname,
+        request_base_url=str(request.base_url).rstrip("/"),
+    )
+    return {
+        "data": {
+            "authorize_url": url,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            **redirect_info,
+        },
+        "meta": meta,
+    }
 
 
 @router.get("/oauth-callback", name="youtube_oauth_callback")
@@ -156,14 +179,17 @@ def youtube_oauth_callback(
             "<html><body>Invalid or expired OAuth state. Close this tab and start Connect again from Studio.</body></html>",
             status_code=400,
         )
-    cid = (base.youtube_client_id or "").strip()
-    csec = (base.youtube_client_secret or "").strip()
+    from director_api.services.runtime_settings import resolve_runtime_settings
+
+    settings = resolve_runtime_settings(db, base, tenant_id)
+    cid = (settings.youtube_client_id or "").strip()
+    csec = (settings.youtube_client_secret or "").strip()
     if not cid or not csec:
         return HTMLResponse(
             "<html><body>YouTube client id/secret not set on the server. Configure them, then try again.</body></html>",
             status_code=400,
         )
-    redirect_uri = _oauth_redirect_uri(request, base)
+    redirect_uri = _oauth_redirect_uri(request, settings)
     try:
         tok = exchange_authorization_code(
             code=code,

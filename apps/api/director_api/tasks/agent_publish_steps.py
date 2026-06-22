@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from director_api.db.models import AgentRun, Project
 from director_api.services import agent_resume as agent_resume_svc
 from director_api.services import pipeline_oversight as pipeline_oversight_svc
+from director_api.services.publish_hook import append_hook_scene
 from director_api.services.publish_outro import append_outro_scene, resolve_include_outro_scene
 from director_api.services.publish_pack import opening_hook_core, thumbnail_core
 
@@ -125,6 +126,37 @@ def run_agent_opening_hook_step(
         would_skip=agent_resume_svc.should_skip_opening_hook(cont, project),
         run_core=lambda: opening_hook_core(db, project, settings),
         next_step="scenes",
+        cont=cont,
+        oversight_earliest=oversight_earliest,
+        force_steps=force_steps,
+        halt=halt,
+        wt=wt,
+    )
+
+
+def run_agent_hook_scene_step(
+    db: Session,
+    *,
+    run: AgentRun,
+    aid: UUID,
+    agent_run_id: str,
+    project: Project,
+    settings: Any,
+    cont: bool,
+    oversight_earliest: str | None,
+    force_steps: frozenset[str],
+    halt: Callable[[], bool],
+    wt: Any,
+) -> StepResult:
+    return _agent_publish_step(
+        db,
+        run=run,
+        aid=aid,
+        agent_run_id=agent_run_id,
+        step_key="hook_scene",
+        would_skip=agent_resume_svc.should_skip_hook_scene(cont, project, db),
+        run_core=lambda: append_hook_scene(db, project, settings),
+        next_step="outro",
         cont=cont,
         oversight_earliest=oversight_earliest,
         force_steps=force_steps,

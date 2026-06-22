@@ -10,6 +10,23 @@ from director_api.services.research_service import sanitize_jsonb_text
 # Non-nested segments: [like this] — avoids greedy crossing.
 _BRACKET_RE = re.compile(r"\[([^\[\]]+)\]")
 
+# When ``prompt_package_json.image_prompt`` / ``video_prompt`` is at least this long, it beats ``[bracket]`` hints.
+_MIN_PACKAGE_IMAGE_PROMPT_CHARS = 180
+
+
+def package_scene_prompt_is_substantial(raw: str | None) -> bool:
+    p = (raw or "").strip()
+    if not p:
+        return False
+    if len(p) >= _MIN_PACKAGE_IMAGE_PROMPT_CHARS:
+        return True
+    # Labeled Flux prompts from planning or manual edit always beat bracket hints.
+    return bool(re.search(r"(?m)^Subject:\s*\S", p))
+
+
+def _package_image_prompt_is_substantial(raw: str | None) -> bool:
+    return package_scene_prompt_is_substantial(raw)
+
 
 def extract_bracket_phrases(narration_text: str | None) -> list[str]:
     """Return non-empty inner strings for each ``[...]`` segment in order."""
@@ -67,7 +84,11 @@ def base_image_prompt_from_scene_fields(
 ) -> tuple[str, bool, list[str]]:
     """Return ``(prompt, used_bracket_hints, bracket_phrases)`` before character/style prefixes.
 
-    Precedence: explicit job override → ``[bracket]`` hints in narration → ``image_prompt`` in package → narration excerpt.
+    Precedence: explicit job override → substantial ``image_prompt`` in package → ``[bracket]`` hints
+    → short/missing ``image_prompt`` → narration excerpt.
+
+    Bracket hints are for quick VO stage directions; a detailed scene ``image_prompt`` from planning
+    or manual edit always wins so generation matches the intended composition.
     ``visual_style_effective`` is accepted for API compatibility; callers typically append style after character bible.
     """
     del visual_style_effective  # applied by phase-3 worker after character prefix
@@ -79,13 +100,18 @@ def base_image_prompt_from_scene_fields(
     pp = prompt_package_json if isinstance(prompt_package_json, dict) else {}
     narr = narration_text or ""
     phrases = extract_bracket_phrases(narr)
+    package_prompt = pp.get("image_prompt") if isinstance(pp.get("image_prompt"), str) else None
+    package_substantial = _package_image_prompt_is_substantial(package_prompt)
+
+    if package_substantial:
+        p = sanitize_jsonb_text(str(package_prompt).strip(), 4000)
+        return _append_image_prompt_suffix(p, image_prompt_suffix), False, phrases
+
     if phrases:
         p = compose_bracket_visual_prompt(phrases, narration_full=narr, for_video_motion_hint=False)
         return _append_image_prompt_suffix(p, image_prompt_suffix), True, phrases
 
-    prompt = pp.get("image_prompt") if isinstance(pp.get("image_prompt"), str) else None
-    if not prompt:
-        prompt = narr[:1200]
+    prompt = package_prompt or narr[:1200]
     p = sanitize_jsonb_text(str(prompt), 4000)
     return _append_image_prompt_suffix(p, image_prompt_suffix), False, []
 
@@ -109,26 +135,37 @@ def video_text_prompt_from_scene_fields(
     visual_style_effective: str | None = None,
     video_prompt_suffix: str | None = None,
 ) -> str:
-    """Resolve text for video models: override → ``video_prompt`` → ``[bracket]`` hints → VO/purpose."""
+    """Resolve text for video models: override → substantial package → ``[bracket]`` hints → VO/purpose."""
     if isinstance(video_prompt_override, str) and video_prompt_override.strip():
         return _append_video_prompt_suffix(
             sanitize_jsonb_text(video_prompt_override.strip(), 3000),
             video_prompt_suffix,
         )
     pp = prompt_package_json if isinstance(prompt_package_json, dict) else {}
-    vp = pp.get("video_prompt") if isinstance(pp.get("video_prompt"), str) else None
-    if vp and str(vp).strip():
-        return _append_video_prompt_suffix(sanitize_jsonb_text(str(vp).strip(), 3000), video_prompt_suffix)
     narr = narration_text or ""
     phrases = extract_bracket_phrases(narr)
+    package_video = pp.get("video_prompt") if isinstance(pp.get("video_prompt"), str) else None
+    package_image = pp.get("image_prompt") if isinstance(pp.get("image_prompt"), str) else None
+    video_substantial = package_scene_prompt_is_substantial(package_video)
+    image_substantial = package_scene_prompt_is_substantial(package_image)
+
+    if video_substantial:
+        p = sanitize_jsonb_text(str(package_video).strip(), 3000)
+        return _append_video_prompt_suffix(p, video_prompt_suffix)
+
+    if image_substantial:
+        p = sanitize_jsonb_text(str(package_image).strip(), 3000)
+        return _append_video_prompt_suffix(p, video_prompt_suffix)
+
     if phrases:
         out = sanitize_jsonb_text(
             compose_bracket_visual_prompt(phrases, narration_full=narr, for_video_motion_hint=True),
             3000,
         )
         return _append_video_prompt_suffix(out, video_prompt_suffix)
-    base = narr or purpose or visual_type or "cinematic documentary scene"
-    out = sanitize_jsonb_text(str(base)[:3000], 3000)
+
+    prompt = package_video or narr or purpose or visual_type or "cinematic documentary scene"
+    out = sanitize_jsonb_text(str(prompt)[:3000], 3000)
     vs = (visual_style_effective or "").strip()
     if vs and vs[:100] not in (out[-min(len(out), 800) :] if out else ""):
         room = max(0, 3000 - len(out) - 24)

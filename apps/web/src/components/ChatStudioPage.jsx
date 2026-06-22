@@ -19,6 +19,8 @@ import {
   friendlyAgentRunStatusLabel,
   friendlyProjectListMeta,
 } from "../lib/studioLabels.js";
+import { paginateProjectList } from "../lib/studio/projectListPagination.js";
+import { ProjectListPager } from "./ProjectListPager.jsx";
 
 const CHAT_RUN_STORAGE_PREFIX = "director_chat_agent_run:";
 const CHAT_STUDIO_STATE_PREFIX = "director_chat_studio_state:";
@@ -248,6 +250,7 @@ export function ChatStudioPage({
   const [agentRunRows, setAgentRunRows] = useState([]);
   const [agentRunsLoading, setAgentRunsLoading] = useState(false);
   const [agentRunsListTick, setAgentRunsListTick] = useState(0);
+  const [projectListPage, setProjectListPage] = useState(0);
   /** Which run id is currently performing stop/delete from the sidebar list. */
   const [runListActionId, setRunListActionId] = useState("");
   const [eraseConfirmModal, setEraseConfirmModal] = useState(null);
@@ -890,6 +893,54 @@ export function ChatStudioPage({
     }
   }, []);
 
+  const telegramSessionUpdatedRef = useRef("");
+
+  const hydrateFromTelegramSession = useCallback(async () => {
+    const chatId = String(appConfig?.telegram_chat_id || "").trim();
+    if (!chatId || !isPageActive) return;
+    try {
+      const r = await api("/v1/chat-studio/telegram-session");
+      const body = await parseJson(r);
+      if (!r.ok) return;
+      const data = body.data || {};
+      const serverMsgs = Array.isArray(data.messages) ? data.messages : [];
+      if (serverMsgs.length === 0) return;
+
+      const stamp = `${data.updated_at || ""}:${serverMsgs.length}`;
+      if (stamp === telegramSessionUpdatedRef.current) return;
+      telegramSessionUpdatedRef.current = stamp;
+
+      const mapped = serverMsgs.map((m, i) => ({
+        id: `tg-${i + 1}`,
+        role: m.role === "assistant" ? "assistant" : "user",
+        text: m.content,
+      }));
+
+      setSetupMessages((prev) => {
+        if (mapped.length > prev.length) {
+          setupMsgIdRef.current = Math.max(setupMsgIdRef.current, mapped.length);
+          return mapped;
+        }
+        return prev;
+      });
+
+      const snap = data.brief_snapshot;
+      if (snap && typeof snap === "object" && Object.keys(snap).length > 0) {
+        applyBriefPatchToState(snap);
+      }
+    } catch {
+      /* offline or telegram not linked */
+    }
+  }, [appConfig?.telegram_chat_id, isPageActive, applyBriefPatchToState]);
+
+  useEffect(() => {
+    void hydrateFromTelegramSession();
+    const chatId = String(appConfig?.telegram_chat_id || "").trim();
+    if (!chatId || !isPageActive) return undefined;
+    const id = setInterval(() => void hydrateFromTelegramSession(), 15000);
+    return () => clearInterval(id);
+  }, [hydrateFromTelegramSession, appConfig?.telegram_chat_id, isPageActive]);
+
   const postCharacterDrafts = useCallback(async (projectId, drafts) => {
       if (!projectId || !Array.isArray(drafts) || drafts.length === 0) return;
       for (const d of drafts) {
@@ -1216,6 +1267,17 @@ export function ChatStudioPage({
       apiCompiledVideoUrl(selectedProjectId, timelineVersionId, { download: true, cacheBust: timelineVersionId })
     : "";
 
+  const projectListPagination = useMemo(
+    () => paginateProjectList(projects, projectListPage),
+    [projects, projectListPage],
+  );
+
+  useEffect(() => {
+    if (projectListPagination.page !== projectListPage) {
+      setProjectListPage(projectListPagination.page);
+    }
+  }, [projectListPagination.page, projectListPage]);
+
   return (
     <div className="chat-studio" data-testid="chat-studio-root">
       <aside className="chat-studio__sidebar panel" aria-label="Projects">
@@ -1253,7 +1315,7 @@ export function ChatStudioPage({
           </button>
         </div>
         <ul className="chat-studio__project-list">
-          {(projects || []).map((p) => (
+          {projectListPagination.visible.map((p) => (
             <li key={p.id}>
               <button
                 type="button"
@@ -1270,6 +1332,15 @@ export function ChatStudioPage({
             </li>
           ))}
         </ul>
+        <ProjectListPager
+          page={projectListPagination.page}
+          pageCount={projectListPagination.pageCount}
+          canPrev={projectListPagination.canPrev}
+          canNext={projectListPagination.canNext}
+          onPrev={() => setProjectListPage((p) => Math.max(0, p - 1))}
+          onNext={() => setProjectListPage((p) => p + 1)}
+          className="chat-studio__project-pager"
+        />
         {selectedProjectId ? (
           <div className="chat-studio__prev-runs" style={{ marginTop: 12 }}>
             <strong style={{ fontSize: "0.9rem" }}>Hands-off runs</strong>

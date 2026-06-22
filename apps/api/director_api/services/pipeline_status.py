@@ -128,7 +128,11 @@ def compute_pipeline_status(
     from director_api.services.publish_pack import publish_pack_done
 
     thumbnail_done = publish_pack_done(p.publish_pack_json)
-    hook_done = len((p.opening_hook_text or "").strip()) >= 50 or rank >= 7
+    from director_api.services.publish_hook import find_hook_scene
+
+    hook_sc = find_hook_scene(db, project_id)
+    hook_text_ok = len((p.opening_hook_text or "").strip()) >= 12
+    hook_done = hook_sc is not None or hook_text_ok or rank >= 7
     scenes_done = rank >= 8 or scenes_tot > 0
     from director_api.services.publish_outro import find_outro_scene
 
@@ -215,7 +219,7 @@ def compute_pipeline_status(
             "id": "opening_hook",
             "label": "The Hook",
             "status": st(hook_done),
-            "detail": "Ready" if hook_done else _EM,
+            "detail": "Scene 0" if hook_sc else ("Ready" if hook_text_ok else _EM),
         },
         {"id": "scenes", "label": "Scene planning", "status": st(scenes_done), "detail": scenes_detail},
         {

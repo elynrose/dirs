@@ -183,6 +183,9 @@ def thumbnail_core(db: Session, project: Project, settings: Settings) -> None:
     flag_modified(project, "publish_pack_json")
     project.workflow_phase = "thumbnail_ready"
     db.flush()
+    from director_api.services.publish_hook import sync_hook_scene_from_project
+
+    sync_hook_scene_from_project(db, project, settings)
     if llm_u:
         from director_api.tasks.worker_runtime import _flush_llm_usage
 
@@ -225,6 +228,9 @@ def save_thumbnail_upload(
     flag_modified(project, "publish_pack_json")
     project.workflow_phase = "thumbnail_ready"
     db.flush()
+    from director_api.services.publish_hook import sync_hook_scene_from_project
+
+    sync_hook_scene_from_project(db, project, settings)
     return pack
 
 

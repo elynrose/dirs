@@ -1365,6 +1365,11 @@ export default function App() {
       if (d.webhook_action_required || d.webhook_registered_with_telegram === false) {
         bits.push("run setWebhook (curl below) — Telegram is not posting to Directely yet");
       }
+      if (d.webhook_local_dev_mismatch) {
+        bits.push(
+          `webhook is ${d.webhook_registered_url || "remote"} — Telegram won't update this local Studio; use an HTTPS tunnel + setWebhook, or use production Studio`,
+        );
+      }
       showToast(`Telegram: ${bits.join(" · ")}`, {
         type: d.webhook_action_required ? "warning" : "success",
         durationMs: d.webhook_action_required ? 12000 : 7000,

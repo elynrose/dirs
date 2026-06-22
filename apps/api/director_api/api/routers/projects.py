@@ -119,6 +119,7 @@ def create_project(
         frame_aspect_ratio=(body.frame_aspect_ratio or "16:9"),
         clip_frame_fit=coerce_clip_frame_fit(getattr(body, "clip_frame_fit", None)),
         no_narration=bool(getattr(body, "no_narration", False)),
+        publish_to_youtube=bool(getattr(body, "publish_to_youtube", False)),
     )
     db.add(p)
     db.commit()
