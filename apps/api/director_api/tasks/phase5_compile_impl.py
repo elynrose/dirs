@@ -76,6 +76,15 @@ def _export_chapter_title_card_sec(settings: Any) -> float:
     return max(0.0, min(30.0, v))
 
 
+def _export_outro_music_tail_sec(settings: Any) -> float:
+    """Workspace setting: seconds of held final visual + music after the last narration (final cut; 0 = disabled)."""
+    try:
+        v = float(getattr(settings, "export_outro_music_tail_sec", 5.0) or 0.0)
+    except (TypeError, ValueError):
+        return 5.0
+    return max(0.0, min(30.0, v))
+
+
 DEFAULT_CLIP_CROSSFADE_SEC = 0.65
 
 
@@ -222,8 +231,22 @@ def _expand_manifest_and_slots_for_full_narration(
     ffprobe_bin: str,
     timeout_sec: float,
     tail_padding_sec: float,
+    outro_tail_sec: float = 0.0,
+    visual_crossfade_pad_sec: float = 0.0,
 ) -> tuple[list[dict[str, Any]], list[tuple[float, uuid.UUID | None]]]:
-    """Widen the first timeline clip per scene so visuals run at least VO length + tail padding (export)."""
+    """Widen the first timeline clip per scene so visuals run at least VO length + tail padding (export).
+
+    ``outro_tail_sec`` (>0) additionally holds the **final** clip and its audio slot for that many extra
+    seconds so the music bed keeps playing after the last scene's narration finishes before the video ends.
+
+    ``visual_crossfade_pad_sec`` (>0) is added to each visual clip's on-screen duration **without** touching
+    the matching audio slot. Slide-to-slide crossfades overlap adjacent clips by that many seconds, which
+    otherwise shrinks the compiled video below the narration timeline (silently trimming trailing VO) and
+    drifts visuals ahead of the audio. Padding each clip by the crossfade amount makes each scene's slide
+    begin dissolving in exactly as its narration starts (in sync) and keeps the compiled video at least as
+    long as the narration stem, so no narration is cut while the dissolves are preserved.
+    """
+    xf_pad = max(0.0, float(visual_crossfade_pad_sec))
     asset_by_id, scene_by_id, ch_by_id = manifest_prefetch_asset_hierarchy(db, manifest)
     adjusted: list[dict[str, Any]] = [copy.deepcopy(m) for m in manifest]
     slots: list[tuple[float, uuid.UUID | None]] = []
@@ -270,8 +293,24 @@ def _expand_manifest_and_slots_for_full_narration(
         slots.append((new_dur, sid))
         at = str(adjusted[mi].get("asset_type") or "").lower()
         if at in ("image", "video"):
-            adjusted[mi]["duration_sec"] = new_dur
+            # Audio slot stays ``new_dur``; the visual gets the crossfade overlap added back so the
+            # dissolve does not eat into the scene's on-screen (and in-sync narration) time.
+            adjusted[mi]["duration_sec"] = new_dur + xf_pad
         mi += 1
+
+    # Outro tail: extend the final visual + its audio slot so the music bed plays out after the last
+    # scene's narration ends (narration is already fully contained in the scene's first clip, so the
+    # extra seconds are music-only). The final slot always maps to the last manifest clip because
+    # chapter-title card slots are inserted *before* a chapter's first clip, never after.
+    if outro_tail_sec > 0 and slots and adjusted:
+        last_dur, last_sid = slots[-1]
+        slots[-1] = (float(last_dur) + float(outro_tail_sec), last_sid)
+        last_at = str(adjusted[-1].get("asset_type") or "").lower()
+        if last_at in ("image", "video"):
+            base_dur = adjusted[-1].get("duration_sec")
+            base_dur = float(base_dur) if base_dur is not None else float(last_dur)
+            adjusted[-1]["duration_sec"] = base_dur + float(outro_tail_sec)
+
     return adjusted, slots
 
 
@@ -523,6 +562,89 @@ def _build_scene_timeline_narration_stem(
     return merged, cleanup
 
 
+def _gpu_still_motion_mp4(
+    m: dict[str, Any],
+    lp: Path,
+    dur: float,
+    *,
+    settings: Any,
+    cache_dir: Path,
+    ffmpeg_bin: str,
+    width: int,
+    height: int,
+    timeout: float,
+) -> Path:
+    """Render (and cache) a GPU Ken Burns MP4 for a still. Falls back to CPU inside the renderer."""
+    from director_api.services.still_motion import pick_motion_for_asset, render_still_motion_mp4
+
+    motion, direction = pick_motion_for_asset(m["asset_id"], settings)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = f"{m['asset_id']}_{int(round(float(dur) * 1000))}_{motion}_{direction}.mp4"
+    out = cache_dir / key
+    if path_is_readable_file(out) and path_stat(out).st_size >= 32:
+        return out
+    tmp = out.with_suffix(".tmp.mp4")
+    render_still_motion_mp4(
+        lp,
+        tmp,
+        duration_sec=float(dur),
+        width=width,
+        height=height,
+        settings=settings,
+        ffmpeg_bin=ffmpeg_bin,
+        timeout_sec=timeout,
+        motion=motion,
+        direction=direction,
+        asset_id=m["asset_id"],
+    )
+    if out.exists():
+        out.unlink()
+    tmp.replace(out)
+    return out
+
+
+def _still_image_visual_segment(
+    m: dict[str, Any],
+    lp: Path,
+    dur: float,
+    *,
+    settings: Any,
+    gpu_cache_dir: Path,
+    ffmpeg_bin: str,
+    width: int,
+    height: int,
+    timeout: float,
+) -> tuple[Any, ...]:
+    """Build the timeline segment for a still, honoring the still_motion_renderer setting.
+
+    - ``off`` → plain ``("image", path, dur)`` (static).
+    - ``cpu`` → ``("image", path, dur, motion)`` so the frozen slideshow adds zoompan + keeps dissolves.
+    - ``gpu`` → pre-render to an MP4 via the CUDA sidecar and return ``("video", mp4, None)``.
+    """
+    from director_api.services.still_motion import pick_motion_for_asset, resolve_still_motion_renderer
+
+    renderer = resolve_still_motion_renderer(settings)
+    if renderer == "off":
+        return ("image", lp, float(dur))
+    motion, _direction = pick_motion_for_asset(m["asset_id"], settings)
+    if motion == "none":
+        return ("image", lp, float(dur))
+    if renderer == "cpu":
+        return ("image", lp, float(dur), motion)
+    pre = _gpu_still_motion_mp4(
+        m,
+        lp,
+        dur,
+        settings=settings,
+        cache_dir=gpu_cache_dir,
+        ffmpeg_bin=ffmpeg_bin,
+        width=width,
+        height=height,
+        timeout=timeout,
+    )
+    return ("video", pre, None)
+
+
 def _rough_cut_visual_segments_with_chapter_cards(
     db,
     manifest: list[dict[str, Any]],
@@ -530,6 +652,12 @@ def _rough_cut_visual_segments_with_chapter_cards(
     card_sec: float,
     storage_root: Path,
     ffprobe_bin: str = "ffprobe",
+    settings: Any = None,
+    gpu_cache_dir: Path | None = None,
+    ffmpeg_bin: str = "ffmpeg",
+    width: int = 1280,
+    height: int = 720,
+    timeout: float = 3600.0,
 ) -> list[Any]:
     """Build mixed-timeline segments: optional black title cards at chapter boundaries + clip assets."""
     asset_by_id, scene_by_id, ch_by_id = manifest_prefetch_asset_hierarchy(db, manifest)
@@ -580,7 +708,22 @@ def _rough_cut_visual_segments_with_chapter_cards(
             ds = m.get("duration_sec")
             if ds is None or float(ds) <= 0:
                 raise ValueError(f"invalid duration_sec for image asset {m.get('asset_id')}")
-            segments.append(("image", lp, float(ds)))
+            if settings is not None and gpu_cache_dir is not None:
+                segments.append(
+                    _still_image_visual_segment(
+                        m,
+                        lp,
+                        float(ds),
+                        settings=settings,
+                        gpu_cache_dir=gpu_cache_dir,
+                        ffmpeg_bin=ffmpeg_bin,
+                        width=width,
+                        height=height,
+                        timeout=timeout,
+                    )
+                )
+            else:
+                segments.append(("image", lp, float(ds)))
         else:
             raise ValueError("ROUGH_CUT_FFMPEG: unsupported asset_type for compile")
     return segments
@@ -1036,6 +1179,7 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         ffprobe_bin=ffprobe_bin,
         timeout_sec=float(settings.ffmpeg_timeout_sec),
     )
+    clip_xf = _timeline_clip_crossfade_sec(tj)
     manifest_exp, slots_fc = _expand_manifest_and_slots_for_full_narration(
         db,
         manifest_fc,
@@ -1045,6 +1189,8 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         ffprobe_bin=ffprobe_bin,
         timeout_sec=float(settings.ffmpeg_timeout_sec),
         tail_padding_sec=scene_vo_tail_padding_sec_from_settings(settings),
+        outro_tail_sec=_export_outro_music_tail_sec(settings),
+        visual_crossfade_pad_sec=clip_xf,
     )
     sum_o = _slots_total_duration(slots_orig)
     sum_e = _slots_total_duration(slots_fc)
@@ -1076,6 +1222,10 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
             sum_expanded_sec=sum_e,
             base_video_sec=vid_len,
         )
+        # ``manifest_exp`` already pads each visual clip by the crossfade overlap (see
+        # _expand_manifest_and_slots_for_full_narration), so keep the normal dissolves: the
+        # padded clips absorb the overlap, leaving the compiled video at least as long as the
+        # narration stem (no trailing VO cut) while preserving the slide-to-slide fades.
         _rough_cut(db, job, settings, manifest_override=manifest_exp)
         if path_is_readable_file(fine_p):
             try:
@@ -1249,6 +1399,7 @@ def _rough_cut(
     settings: Any,
     *,
     manifest_override: list[dict[str, Any]] | None = None,
+    clip_crossfade_override: float | None = None,
 ) -> dict[str, Any]:
     payload = job.payload or {}
     tv_id = uuid.UUID(str(payload["timeline_version_id"]))
@@ -1285,7 +1436,11 @@ def _rough_cut(
         raise_phase5_gate(readiness)
 
     tj = tv.timeline_json if isinstance(tv.timeline_json, dict) else {}
-    clip_xf = _timeline_clip_crossfade_sec(tj)
+    clip_xf = (
+        max(0.0, float(clip_crossfade_override))
+        if clip_crossfade_override is not None
+        else _timeline_clip_crossfade_sec(tj)
+    )
     if manifest_override is not None:
         manifest = manifest_override
     else:
@@ -1331,6 +1486,7 @@ def _rough_cut(
             raise ValueError("ROUGH_CUT_FFMPEG: only image or video assets are supported for compile")
         try:
             out_path = storage_root / "exports" / str(project.id) / str(tv.id) / "rough_cut.mp4"
+            still_motion_cache_dir = out_path.parent / ".still_motion"
             card_sec = _export_chapter_title_card_sec(settings)
             if card_sec > 0:
                 mixed_segments = _rough_cut_visual_segments_with_chapter_cards(
@@ -1339,6 +1495,12 @@ def _rough_cut(
                     card_sec=card_sec,
                     storage_root=storage_root,
                     ffprobe_bin=ffprobe_bin,
+                    settings=settings,
+                    gpu_cache_dir=still_motion_cache_dir,
+                    ffmpeg_bin=ffmpeg_bin,
+                    width=ew,
+                    height=eh,
+                    timeout=float(settings.ffmpeg_timeout_sec),
                 )
                 compile_meta = compile_mixed_visual_timeline(
                     mixed_segments,
@@ -1364,7 +1526,19 @@ def _rough_cut(
                         ds = m.get("duration_sec")
                         if ds is None or float(ds) <= 0:
                             raise ValueError(f"invalid duration_sec for image asset {m.get('asset_id')}")
-                        mixed_segments.append(("image", lp, float(ds)))
+                        mixed_segments.append(
+                            _still_image_visual_segment(
+                                m,
+                                lp,
+                                float(ds),
+                                settings=settings,
+                                gpu_cache_dir=still_motion_cache_dir,
+                                ffmpeg_bin=ffmpeg_bin,
+                                width=ew,
+                                height=eh,
+                                timeout=float(settings.ffmpeg_timeout_sec),
+                            )
+                        )
                     else:
                         raise ValueError("ROUGH_CUT_FFMPEG: unsupported asset_type for compile")
                 compile_meta = compile_mixed_visual_timeline(
@@ -1395,7 +1569,15 @@ def _rough_cut(
                     image_batch_crossfade_sec=0.0,
                 )
             elif types == {"image"}:
-                slides: list[tuple[Path, float]] = []
+                from director_api.services.still_motion import (
+                    pick_motion_for_asset,
+                    resolve_still_motion_renderer,
+                )
+
+                _renderer = resolve_still_motion_renderer(settings)
+                slides = []
+                slide_motions = []
+                image_rows = []
                 for m in manifest:
                     lp = path_from_storage_url(m.get("storage_url"), storage_root=storage_root)
                     if lp is None or not path_is_readable_file(lp):
@@ -1404,17 +1586,50 @@ def _rough_cut(
                     if ds is None or float(ds) <= 0:
                         raise ValueError(f"invalid duration_sec for image asset {m.get('asset_id')}")
                     slides.append((lp, float(ds)))
-                compile_meta = compile_image_slideshow(
-                    slides,
-                    out_path,
-                    width=ew,
-                    height=eh,
-                    ffmpeg_bin=ffmpeg_bin,
-                    timeout_sec=float(settings.ffmpeg_timeout_sec),
-                    motion="none",
-                    crossfade_sec=clip_xf,
-                    slow_zoom=False,
-                )
+                    slide_motions.append(pick_motion_for_asset(m["asset_id"], settings)[0])
+                    image_rows.append((m, lp, float(ds)))
+                if _renderer == "gpu":
+                    # GPU stills are pre-rendered to MP4 and concatenated (hard cuts between them).
+                    gpu_segments = [
+                        _still_image_visual_segment(
+                            m,
+                            lp,
+                            ds,
+                            settings=settings,
+                            gpu_cache_dir=still_motion_cache_dir,
+                            ffmpeg_bin=ffmpeg_bin,
+                            width=ew,
+                            height=eh,
+                            timeout=float(settings.ffmpeg_timeout_sec),
+                        )
+                        for (m, lp, ds) in image_rows
+                    ]
+                    compile_meta = compile_mixed_visual_timeline(
+                        gpu_segments,
+                        out_path,
+                        width=ew,
+                        height=eh,
+                        ffmpeg_bin=ffmpeg_bin,
+                        ffprobe_bin=ffprobe_bin,
+                        timeout_sec=float(settings.ffmpeg_timeout_sec),
+                        image_batch_crossfade_sec=0.0,
+                    )
+                    compile_meta["still_motion_renderer"] = "gpu"
+                else:
+                    use_motions = _renderer == "cpu" and any(x in ("pan", "zoom") for x in slide_motions)
+                    compile_meta = compile_image_slideshow(
+                        slides,
+                        out_path,
+                        width=ew,
+                        height=eh,
+                        ffmpeg_bin=ffmpeg_bin,
+                        timeout_sec=float(settings.ffmpeg_timeout_sec),
+                        motion="none",
+                        slide_motions=slide_motions if use_motions else None,
+                        crossfade_sec=clip_xf,
+                        slow_zoom=False,
+                    )
+                    compile_meta["still_motion_renderer"] = _renderer if use_motions else "off"
             else:
                 raise ValueError("ROUGH_CUT_FFMPEG: unsupported asset_type for compile")
             compile_meta["invoked"] = True
@@ -1609,6 +1824,9 @@ def _scene_precompile(db, job: Job, settings: Any) -> dict[str, Any]:
         duration_sec = default_duration_sec_for_asset(
             asset, settings, storage_root=storage_root
         )
+    from director_api.services.still_motion import motion_signature
+
+    motion_sig = motion_signature(settings) if asset.asset_type == "image" else ""
     fp = str(payload.get("fingerprint") or "").strip() or precompile_storage_fingerprint_for_asset(
         asset
     )
@@ -1618,6 +1836,7 @@ def _scene_precompile(db, job: Job, settings: Any) -> dict[str, Any]:
         asset_id=asset.id,
         fingerprint=fp,
         clip_duration_sec=duration_sec,
+        motion_sig=motion_sig or None,
     ):
         return {"skipped": True, "reason": "already_current"}
 
@@ -1639,6 +1858,7 @@ def _scene_precompile(db, job: Job, settings: Any) -> dict[str, Any]:
         duration_sec=duration_sec,
         width=ew,
         height=eh,
+        motion_sig=motion_sig,
     )
     return {
         "ok": True,

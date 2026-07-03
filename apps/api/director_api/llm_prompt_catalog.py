@@ -410,7 +410,10 @@ LLM_PROMPT_SPECS: tuple[LlmPromptDefinitionSpec, ...] = (
             "youtube_title (string, max 100 chars, clickable but accurate), "
             "youtube_description (string, max 500 chars, 2–4 sentences with keywords), "
             "thumbnail_prompt (string, vivid still-image prompt for a bold 16:9 YouTube thumbnail — "
-            "large readable composition, high contrast, no tiny text in the image). "
+            "large readable composition, high contrast. The image itself must render the youtube_title "
+            "as a large, bold, legible headline (spelled exactly), placed as prominent display typography "
+            "the way a real YouTube thumbnail shows its title). Describe the title text placement and style "
+            "in the prompt. Avoid clutter and tiny secondary text. "
             "Match the documentary topic; avoid clickbait lies."
         ),
         sort_order=165,

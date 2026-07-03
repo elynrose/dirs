@@ -132,9 +132,12 @@ export default function SettingsGenerationEnginesPanel(props) {
                 >
                   <option value="fal">fal (image)</option>
                   <option value="comfyui">ComfyUI (stills)</option>
+                  <option value="openai">OpenAI (gpt-image-1)</option>
+                  <option value="grok">Grok / xAI (grok-2-image)</option>
+                  <option value="gemini">Gemini / Imagen (Google)</option>
                 </select>
                 <p className="subtle" style={{ marginTop: -6 }}>
-                  Studio scene images use <strong>fal</strong> or <strong>ComfyUI</strong> only. Save settings to persist; unsaved changes still apply for this browser session. Configure ComfyUI under <strong>ComfyUI</strong> below.
+                  Studio scene images use <strong>fal</strong>, <strong>ComfyUI</strong>, <strong>OpenAI</strong>, <strong>Grok</strong>, or <strong>Gemini</strong>. Cloud engines use their key + image model under <strong>API keys</strong>. Save settings to persist; unsaved changes still apply for this browser session.
                 </p>
                 <label htmlFor="cfg-active-video">Video provider</label>
                 <select
@@ -326,6 +329,26 @@ export default function SettingsGenerationEnginesPanel(props) {
                     }))
                   }
                 />
+                <label htmlFor="cfg-still-motion" style={{ marginTop: 14 }}>
+                  Ken Burns motion (still scenes)
+                </label>
+                <p className="subtle" style={{ marginTop: -4 }}>
+                  Random slow zoom / pan on still-image scenes. <strong>Off</strong> = static.{" "}
+                  <strong>CPU (FFmpeg)</strong> uses the zoompan filter and keeps scene-to-scene dissolves — no extra
+                  setup. <strong>GPU (CUDA sidecar)</strong> warps each frame on the NVIDIA GPU and encodes with NVENC
+                  (needs the GPU renderer venv from <code>scripts/setup-gpu-renderer.ps1</code>; falls back to CPU if
+                  unavailable — GPU stills are hard cuts, no dissolve). The motion per scene is chosen deterministically,
+                  so re-compiles are stable. Save, then re-run rough / final cut.
+                </p>
+                <select
+                  id="cfg-still-motion"
+                  value={appConfig.still_motion_renderer || "off"}
+                  onChange={(e) => setAppConfig((p) => ({ ...p, still_motion_renderer: e.target.value }))}
+                >
+                  <option value="off">Off (static stills)</option>
+                  <option value="cpu">CPU — FFmpeg zoompan (keeps dissolves)</option>
+                  <option value="gpu">GPU — CUDA sidecar + NVENC</option>
+                </select>
                 <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", marginTop: 14 }}>
                   <input
                     type="checkbox"

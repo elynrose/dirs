@@ -201,8 +201,8 @@ class Settings(BaseSettings):
     openai_tts_voice: str = "alloy"
 
     active_text_provider: str = "openai"
-    active_image_provider: str = "fal"
-    active_video_provider: str = "fal"
+    active_image_provider: str = "comfyui"
+    active_video_provider: str = "comfyui_wan"
     active_speech_provider: str = "openai"
 
     # When true, worker uses placeholder lavfi images (and similar) instead of cloud image APIs where
@@ -337,7 +337,7 @@ class Settings(BaseSettings):
     # ComfyUI
     # ------------------------------------------------------------------
     comfyui_base_url: str = Field(
-        default="",
+        default="http://127.0.0.1:8188",
         validation_alias=AliasChoices("comfyui_base_url", "COMFYUI_BASE_URL"),
     )
     comfyui_api_key: str | None = Field(
@@ -353,11 +353,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("comfyui_api_flavor", "COMFYUI_API_FLAVOR"),
     )
     comfyui_workflow_json_path: str = Field(
-        default="",
+        default="data/comfyui_workflows/flux_dev.json",
         validation_alias=AliasChoices("comfyui_workflow_json_path", "COMFYUI_WORKFLOW_JSON_PATH"),
     )
     comfyui_prompt_node_id: str = Field(
-        default="",
+        default="56:51",
         validation_alias=AliasChoices("comfyui_prompt_node_id", "COMFYUI_PROMPT_NODE_ID"),
     )
     comfyui_prompt_input_key: str = Field(
@@ -392,7 +392,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("comfyui_poll_interval_sec", "COMFYUI_POLL_INTERVAL_SEC"),
     )
     comfyui_video_workflow_json_path: str = Field(
-        default="",
+        default="data/comfyui_workflows/wan_t2v_api.json",
         validation_alias=AliasChoices(
             "comfyui_video_workflow_json_path",
             "COMFYUI_VIDEO_WORKFLOW_JSON_PATH",
@@ -409,14 +409,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("comfyui_video_model_name", "COMFYUI_VIDEO_MODEL_NAME"),
     )
     comfyui_video_prompt_node_id: str = Field(
-        default="",
+        default="6",
         validation_alias=AliasChoices(
             "comfyui_video_prompt_node_id",
             "COMFYUI_VIDEO_PROMPT_NODE_ID",
         ),
     )
     comfyui_video_negative_node_id: str = Field(
-        default="",
+        default="7",
         validation_alias=AliasChoices(
             "comfyui_video_negative_node_id",
             "COMFYUI_VIDEO_NEGATIVE_NODE_ID",
@@ -430,14 +430,14 @@ class Settings(BaseSettings):
         ),
     )
     comfyui_video_prompt_input_key: str = Field(
-        default="",
+        default="text",
         validation_alias=AliasChoices(
             "comfyui_video_prompt_input_key",
             "COMFYUI_VIDEO_PROMPT_INPUT_KEY",
         ),
     )
     comfyui_video_use_scene_image: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices(
             "comfyui_video_use_scene_image",
             "COMFYUI_VIDEO_USE_SCENE_IMAGE",
@@ -676,6 +676,24 @@ class Settings(BaseSettings):
         ),
         validation_alias=AliasChoices("scene_precompile_enabled", "SCENE_PRECOMPILE_ENABLED"),
     )
+    still_motion_renderer: str = Field(
+        default="off",
+        description=(
+            "Random Ken Burns (zoom/pan) applied to still-image scenes. "
+            "'off' = static stills; 'cpu' = FFmpeg zoompan (no extra deps); "
+            "'gpu' = PyTorch/CUDA sidecar warp piped into NVENC (needs the GPU renderer venv). "
+            "The motion per scene is chosen deterministically from the asset id so re-compiles are stable."
+        ),
+        validation_alias=AliasChoices("still_motion_renderer", "STILL_MOTION_RENDERER"),
+    )
+    gpu_still_motion_python: str = Field(
+        default="",
+        description=(
+            "Path to the Python executable of the CUDA sidecar venv used when still_motion_renderer='gpu'. "
+            "Created by scripts/setup-gpu-renderer.ps1. If empty or unavailable, 'gpu' falls back to 'cpu'."
+        ),
+        validation_alias=AliasChoices("gpu_still_motion_python", "GPU_STILL_MOTION_PYTHON"),
+    )
     ffmpeg_slideshow_default_sec: float = 3.0
     scene_clip_duration_sec: int = Field(default=10, ge=5, le=10, description="5 or 10 seconds")
     scene_plan_target_scenes_per_chapter: int = Field(default=0, ge=0, le=48)
@@ -683,6 +701,16 @@ class Settings(BaseSettings):
     ffmpeg_output_height: int = 720
     ffmpeg_timeout_sec: float = 3600.0
     export_chapter_title_card_sec: float = Field(default=0.0, ge=0.0, le=30.0)
+    export_outro_music_tail_sec: float = Field(
+        default=5.0,
+        ge=0.0,
+        le=30.0,
+        description=(
+            "After the last scene's narration finishes, hold the final visual and keep the music bed "
+            "playing for this many seconds before the video ends (final cut only; 0 disables)."
+        ),
+        validation_alias=AliasChoices("export_outro_music_tail_sec", "EXPORT_OUTRO_MUSIC_TAIL_SEC"),
+    )
     scene_vo_tail_padding_sec: float = Field(
         default=1.5,
         ge=0.0,

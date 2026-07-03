@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from director_api.config import Settings
 from director_api.db.models import Asset, Chapter, Project, Scene
 from director_api.services.phase3 import default_scene_negative_prompt_for_project
-from director_api.services.publish_pack import resolve_thumbnail_content_path
+from director_api.services.publish_pack import compose_titled_image_prompt, resolve_thumbnail_content_path
 from director_api.services.research_service import sanitize_jsonb_text
 from director_api.storage.filesystem import FilesystemStorage
 from director_api.style_presets import effective_visual_style
@@ -69,15 +69,12 @@ def _hook_narration(project: Project, *, narration_override: str | None = None) 
 
 def _thumbnail_prompt(project: Project) -> str:
     pack = project.publish_pack_json if isinstance(project.publish_pack_json, dict) else {}
-    prompt = str(pack.get("thumbnail_prompt") or "").strip()
-    if prompt:
-        return sanitize_jsonb_text(prompt, 4000)
     title = str(pack.get("youtube_title") or project.title or "").strip()
-    vis = (project.visual_style or "cinematic documentary").strip()
-    return sanitize_jsonb_text(
-        f"YouTube documentary opening cover art, bold composition, topic: {title}, {vis}.",
-        4000,
-    )
+    prompt = str(pack.get("thumbnail_prompt") or "").strip()
+    if not prompt:
+        vis = (project.visual_style or "cinematic documentary").strip()
+        prompt = f"YouTube documentary opening cover art, bold composition, topic: {title}, {vis}."
+    return compose_titled_image_prompt(prompt, title)
 
 
 def _estimate_planned_duration_sec(narration: str) -> int:
@@ -102,14 +99,14 @@ def attach_publish_thumbnail_to_hook_scene(
     if len(raw) < 64:
         return None
 
+    ext = path.suffix.lstrip(".").lower() or "png"
+    content_type = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+
     for asset in list(scene.assets):
         params = asset.params_json if isinstance(asset.params_json, dict) else {}
         if params.get("source") == "publish_thumbnail" or (asset.provider or "") == "publish_thumbnail":
             db.delete(asset)
     db.flush()
-
-    ext = path.suffix.lstrip(".").lower() or "png"
-    content_type = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
     asset_id = uuid.uuid4()
     storage = FilesystemStorage(settings.local_storage_root)
     key = f"assets/{project.id}/{scene.id}/{asset_id}.{ext}"
@@ -125,7 +122,10 @@ def attach_publish_thumbnail_to_hook_scene(
         generation_tier="production",
         provider="publish_thumbnail",
         model_name=None,
-        params_json={"source": "publish_thumbnail", "thumbnail_storage_key": thumb_key},
+        params_json={
+            "source": "publish_thumbnail",
+            "thumbnail_storage_key": thumb_key,
+        },
         storage_url=url,
         preview_url=url,
         error_message=None,

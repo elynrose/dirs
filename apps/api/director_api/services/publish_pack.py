@@ -17,8 +17,11 @@ from director_api.agents.phase2_publish_llm import (
 )
 from director_api.config import Settings, get_settings
 from director_api.db.models import Chapter, Project, ResearchDossier
-from director_api.providers.media_fal import generate_scene_image
-from director_api.services.image_provider_routing import resolve_image_provider
+from director_api.services.image_provider_routing import (
+    IMAGE_GENERATION_PROVIDERS,
+    dispatch_image_generation,
+    resolve_image_provider,
+)
 from director_api.services.project_frame import coerce_frame_aspect_ratio
 from director_api.services.runtime_settings import resolve_runtime_settings
 from director_api.services import phase2 as phase2_svc
@@ -34,6 +37,24 @@ DEFAULT_OPENING_HOOK = (
 )
 
 THUMBNAIL_ASPECT = "16:9"
+
+
+def compose_titled_image_prompt(base_prompt: str, title: str) -> str:
+    """Augment a still-image prompt so the image model itself renders the video title as headline text.
+
+    The title is burned in by the image generator (no post-hoc ffmpeg overlay), so we pass the exact
+    title string and ask for prominent, legible, YouTube-thumbnail-style display typography.
+    """
+    t = sanitize_jsonb_text((title or "").strip(), 100)
+    base = (base_prompt or "").strip()
+    if not t:
+        return sanitize_jsonb_text(base, 4000)
+    instruction = (
+        f'Render the title text "{t}" prominently in the image as a large, bold, legible headline '
+        "in YouTube-thumbnail-style display typography — spelled exactly, high contrast against the "
+        "background, no misspellings."
+    )
+    return sanitize_jsonb_text(f"{base}\n\n{instruction}" if base else instruction, 4000)
 
 
 def _latest_dossier(db: Session, project_id: uuid.UUID) -> ResearchDossier | None:
@@ -79,16 +100,7 @@ def _generate_thumbnail_image(
 ) -> tuple[str, str, str]:
     """Returns (storage_key, file_url, provider_used)."""
     aspect = coerce_frame_aspect_ratio(frame_aspect_ratio)
-    if provider == "comfyui":
-        from director_api.providers.media_comfyui import generate_scene_image_comfyui
-
-        result = generate_scene_image_comfyui(
-            settings,
-            prompt,
-            negative_prompt=negative_prompt or None,
-            frame_aspect_ratio=aspect,
-        )
-    elif provider == "placeholder":
+    if provider == "placeholder":
         from director_api.providers.media_placeholder import render_placeholder_scene_png_bytes
 
         raw = render_placeholder_scene_png_bytes(
@@ -99,11 +111,12 @@ def _generate_thumbnail_image(
         )
         result = {"ok": True, "bytes": raw, "content_type": "image/png", "provider": "placeholder"}
     else:
-        result = generate_scene_image(
+        result = dispatch_image_generation(
             settings,
+            provider,
             prompt,
-            frame_aspect_ratio=aspect,
             negative_prompt=negative_prompt or None,
+            frame_aspect_ratio=aspect,
         )
     if not result.get("ok") or not result.get("bytes"):
         raise ValueError(str(result.get("error") or result.get("detail") or "thumbnail image generation failed"))
@@ -142,7 +155,7 @@ def thumbnail_core(db: Session, project: Project, settings: Settings) -> None:
     provider = "none"
     resolved = resolve_image_provider(project, settings, prefer_workspace_settings=True)
     frame_aspect = str(getattr(project, "frame_aspect_ratio", None) or THUMBNAIL_ASPECT)
-    if resolved.provider in ("comfyui", "fal", "placeholder"):
+    if resolved.provider in (*IMAGE_GENERATION_PROVIDERS, "placeholder"):
         log.info(
             "thumbnail_image_dispatch",
             project_id=str(project.id),
@@ -156,7 +169,7 @@ def thumbnail_core(db: Session, project: Project, settings: Settings) -> None:
             settings,
             tenant_id=project.tenant_id,
             project_id=project.id,
-            prompt=meta["thumbnail_prompt"],
+            prompt=compose_titled_image_prompt(meta["thumbnail_prompt"], meta.get("youtube_title")),
             provider=resolved.provider,
             frame_aspect_ratio=frame_aspect,
         )

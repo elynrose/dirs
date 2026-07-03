@@ -20,9 +20,9 @@ from director_api.providers.media_comfyui import generate_scene_image_comfyui, g
 from director_api.providers.media_fal import (
     fal_model_is_image_to_video,
     format_fal_result_message,
-    generate_scene_image,
     generate_scene_video_fal,
 )
+from director_api.services.image_provider_routing import dispatch_image_generation
 from director_api.services.character_prompt import (
     character_bible_for_llm_context,
     character_consistency_prefix,
@@ -523,9 +523,11 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         )
     req_l = str(requested).lower().strip()
     if req_l in ("auto", "default", ""):
-        req_l = "fal"
-    if req_l in ("openai", "grok", "xai", "gemini", "google"):
-        req_l = "fal"
+        req_l = str(getattr(settings, "active_image_provider", None) or "fal").lower().strip()
+    if req_l == "xai":
+        req_l = "grok"
+    if req_l == "google":
+        req_l = "gemini"
 
     if req_l == "placeholder":
         from director_api.providers.media_placeholder import render_placeholder_scene_png_bytes
@@ -604,7 +606,7 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             out_ph["error_message"] = str(asset_ph.error_message)[:2000]
         return out_ph
 
-    if req_l not in ("fal", "comfyui", "comfy"):
+    if req_l not in ("fal", "comfyui", "comfy", "openai", "grok", "gemini"):
         failed_params: dict[str, Any] = {
             "continuity_tags_json": scene.continuity_tags_json,
             "continuity_tags_summary": scene.continuity_tags_json
@@ -628,8 +630,8 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             model_name=None,
             params_json=failed_params,
             error_message=(
-                f"Image provider '{requested}' is not supported; use fal, ComfyUI, or placeholder "
-                f"(see scripts/budget_pipeline_test.py / DIRECTOR_PLACEHOLDER_MEDIA)."
+                f"Image provider '{requested}' is not supported; use fal, ComfyUI, OpenAI, Grok, "
+                f"Gemini, or placeholder (see scripts/budget_pipeline_test.py / DIRECTOR_PLACEHOLDER_MEDIA)."
             ),
         )
         db.add(asset)
@@ -665,6 +667,15 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
         model_name = (settings.comfyui_model_name or "").strip() or (
             Path(wf).name if wf else "comfyui"
         )
+    elif req_l == "openai":
+        resolved_provider = "openai"
+        model_name = (getattr(settings, "openai_image_model", None) or "gpt-image-1").strip()
+    elif req_l == "grok":
+        resolved_provider = "grok"
+        model_name = (getattr(settings, "grok_image_model", None) or "grok-2-image-1212").strip()
+    elif req_l == "gemini":
+        resolved_provider = "gemini"
+        model_name = (getattr(settings, "gemini_image_model", None) or "imagen-4.0-generate-001").strip()
 
     image_params: dict[str, Any] = {
         "continuity_tags_json": scene.continuity_tags_json,
@@ -718,10 +729,11 @@ def _phase3_image_generate(db, job: Job) -> dict[str, Any]:
             generation_tier=tier,
         )
     else:
-        res = generate_scene_image(
+        res = dispatch_image_generation(
             settings,
+            resolved_provider,
             str(prompt),
-            model_path=fal_image_override,
+            model_path=fal_image_override if resolved_provider == "fal" else None,
             negative_prompt=scene_neg,
             frame_aspect_ratio=str(getattr(project, "frame_aspect_ratio", None) or "16:9"),
         )

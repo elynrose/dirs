@@ -163,6 +163,12 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             clean["scene_vo_tail_padding_sec"] = max(0.0, min(120.0, fv))
         except (TypeError, ValueError):
             clean.pop("scene_vo_tail_padding_sec", None)
+    if "export_outro_music_tail_sec" in clean:
+        try:
+            fv = float(clean["export_outro_music_tail_sec"])
+            clean["export_outro_music_tail_sec"] = max(0.0, min(30.0, fv))
+        except (TypeError, ValueError):
+            clean.pop("export_outro_music_tail_sec", None)
     if "comfyui_poll_interval_sec" in clean:
         try:
             fv = float(clean["comfyui_poll_interval_sec"])
@@ -231,8 +237,13 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
 
     if "active_image_provider" in clean:
         v = str(clean["active_image_provider"] or "").strip().lower()
-        if v not in ("fal", "comfyui", "comfy", "placeholder"):
-            clean["active_image_provider"] = "fal"
+        if v == "xai":
+            v = "grok"
+        if v == "google":
+            v = "gemini"
+        if v not in ("fal", "comfyui", "comfy", "openai", "grok", "gemini", "placeholder"):
+            v = "fal"
+        clean["active_image_provider"] = v
     if "active_video_provider" in clean:
         v = str(clean["active_video_provider"] or "").strip().lower()
         if v not in ("fal", "comfyui_wan", "local_ffmpeg"):
@@ -342,6 +353,9 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
         clean["burn_subtitles_in_final_cut_default"] = bool(clean["burn_subtitles_in_final_cut_default"])
     if "scene_precompile_enabled" in clean:
         clean["scene_precompile_enabled"] = bool(clean["scene_precompile_enabled"])
+    if "still_motion_renderer" in clean:
+        smr = str(clean["still_motion_renderer"] or "").strip().lower()
+        clean["still_motion_renderer"] = smr if smr in ("off", "cpu", "gpu") else "off"
     if "ffmpeg_compile_enabled" in clean:
         clean["ffmpeg_compile_enabled"] = bool(clean["ffmpeg_compile_enabled"])
     if "youtube_default_privacy" in clean:

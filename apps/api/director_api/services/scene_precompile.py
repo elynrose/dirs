@@ -103,12 +103,15 @@ def precompile_is_current(
     asset_id: uuid.UUID,
     fingerprint: str,
     clip_duration_sec: float | None = None,
+    motion_sig: str | None = None,
 ) -> bool:
     mp4 = precompile_mp4_path(storage_root, project_id, asset_id)
     meta = read_precompile_meta(precompile_meta_path(storage_root, project_id, asset_id))
     if not path_is_readable_file(mp4) or meta is None:
         return False
     if _meta_storage_fingerprint(meta) != fingerprint:
+        return False
+    if motion_sig is not None and str(meta.get("motion_sig") or "") != motion_sig:
         return False
     pre_dur = _duration_sec_value(meta.get("duration_sec"))
     clip_dur = clip_duration_sec
@@ -159,6 +162,7 @@ def resolve_precompiled_video_path(
     storage_root: Path,
     project_id: uuid.UUID,
     manifest_row: dict[str, Any],
+    motion_sig: str | None = None,
 ) -> Path | None:
     aid = uuid.UUID(str(manifest_row["asset_id"]))
     fp = precompile_storage_fingerprint(manifest_row)
@@ -169,6 +173,7 @@ def resolve_precompiled_video_path(
         asset_id=aid,
         fingerprint=fp,
         clip_duration_sec=clip_dur,
+        motion_sig=motion_sig,
     ):
         return None
     p = precompile_mp4_path(storage_root, project_id, aid)
@@ -201,15 +206,18 @@ def compile_asset_precompile(
     dur = max(0.5, min(float(duration_sec), 7200.0))
 
     if asset.asset_type == "image":
-        encode_image_to_mp4(
+        from director_api.services.still_motion import render_still_motion_mp4
+
+        render_still_motion_mp4(
             lp,
             tmp,
             duration_sec=dur,
             width=width,
             height=height,
+            settings=settings,
             ffmpeg_bin=ffmpeg_bin,
             timeout_sec=min(timeout, 7200.0),
-            slow_zoom=False,
+            asset_id=asset.id,
         )
     else:
         encode_video_to_target_duration_mp4(
@@ -242,6 +250,7 @@ def write_precompile_meta(
     duration_sec: float,
     width: int,
     height: int,
+    motion_sig: str = "",
 ) -> None:
     meta_path = precompile_meta_path(storage_root, project_id, asset.id)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -255,6 +264,7 @@ def write_precompile_meta(
         "width": int(width),
         "height": int(height),
         "asset_type": str(asset.asset_type),
+        "motion_sig": str(motion_sig or ""),
     }
     meta_path.write_text(json.dumps(payload, indent=0), encoding="utf-8")
 
@@ -306,6 +316,7 @@ def substitute_precompiled_clip_segments(
     *,
     storage_root: Path,
     project_id: uuid.UUID,
+    motion_sig: str | None = None,
 ) -> tuple[list[Any], int]:
     """
     Replace image/video segments with precompiled MP4 paths when fingerprints match.
@@ -334,6 +345,7 @@ def substitute_precompiled_clip_segments(
             storage_root=storage_root,
             project_id=project_id,
             manifest_row=m,
+            motion_sig=motion_sig if kind == "image" else None,
         )
         if pre is None:
             out.append(seg)

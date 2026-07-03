@@ -60,6 +60,8 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel.force-include]
 "director_api/schemas/documentary_brief.schema.json" = "director_api/schemas/documentary_brief.schema.json"
+"director_api/gpu/ken_burns_render.py" = "director_api/gpu/ken_burns_render.py"
+"director_api/gpu/requirements-gpu.txt" = "director_api/gpu/requirements-gpu.txt"
 
 [tool.ruff]
 line-length = 100

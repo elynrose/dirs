@@ -1,0 +1,13 @@
+# CUDA sidecar dependencies for the "GPU" Ken Burns renderer (Settings > Generation).
+#
+# These are installed into a SEPARATE Python 3.11 venv (NOT the Python 3.14 worker venv,
+# which has no CUDA torch wheels). Use scripts/setup-gpu-renderer.ps1, which installs from
+# this file with the correct CUDA index.
+#
+# torch must come from the PyTorch CUDA index, e.g.:
+#   pip install --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0
+#   pip install -r requirements-gpu.txt
+#
+# numpy resolves from PyPI. Pins are kept loose enough to match common CUDA builds.
+torch==2.6.0
+numpy>=1.26,<3
