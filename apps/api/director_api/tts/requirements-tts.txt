@@ -1,0 +1,10 @@
+# Local-TTS sidecar deps (Python 3.11). Installed into a dedicated venv by
+# scripts/setup-tts-renderer.ps1 and run out-of-process by the Director worker
+# (which itself runs on Python 3.14 without torch). See director_api/tts/kokoro_render.py.
+#
+# `kokoro` pulls in a CPU build of torch from PyPI, which is plenty for the 82M model.
+# For NVIDIA acceleration, install a CUDA torch build first, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# then `pip install -r requirements-tts.txt`.
+kokoro>=0.9.4
+soundfile>=0.12.1

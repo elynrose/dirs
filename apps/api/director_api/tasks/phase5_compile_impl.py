@@ -102,6 +102,66 @@ def _timeline_clip_crossfade_sec(tj: dict[str, Any] | None) -> float:
     return max(0.0, min(v, 2.0))
 
 
+def _visual_crossfade_pad_sec(settings: Any, clip_xf: float) -> float:
+    """Padding added to visual clip durations when expanding for full narration.
+
+    CPU still slideshows dissolve between slides; each overlap shortens total video length,
+    so ``clip_xf`` is added back per clip (audio slots stay unpadded). GPU stills are
+    pre-rendered to MP4 and concatenated with hard cuts (``image_batch_crossfade_sec=0``);
+    applying the same pad would make every scene's visual longer than its audio slot and
+    drift narration ahead of the picture.
+    """
+    from director_api.services.still_motion import resolve_still_motion_renderer
+
+    if resolve_still_motion_renderer(settings) == "gpu":
+        return 0.0
+    return max(0.0, float(clip_xf))
+
+
+def _drop_stale_fine_cut_if_mismatch(
+    fine_p: Path,
+    *,
+    expected_sec: float,
+    ffprobe_bin: str,
+    timeout_sec: float,
+) -> bool:
+    """Remove ``fine_cut.mp4`` when its length disagrees with the narration timeline."""
+    if not path_is_readable_file(fine_p):
+        return False
+    try:
+        fl = float(
+            ffprobe_duration_seconds(
+                fine_p,
+                ffprobe_bin=ffprobe_bin,
+                timeout_sec=min(120.0, float(timeout_sec)),
+            )
+        )
+    except (FileNotFoundError, OSError, RuntimeError, ValueError, TypeError):
+        return False
+    if fl <= 0 or abs(float(expected_sec) - fl) <= 0.25:
+        return False
+    try:
+        fine_p.unlink()
+    except OSError:
+        pass
+    log.info(
+        "final_cut_dropped_stale_fine_cut",
+        fine_cut_sec=fl,
+        expected_sec=float(expected_sec),
+    )
+    return True
+
+
+def _clear_gpu_still_motion_cache(cache_dir: Path) -> None:
+    """Drop cached GPU Ken Burns MP4s so recompiles pick up new slot durations."""
+    if not cache_dir.is_dir():
+        return
+    try:
+        shutil.rmtree(cache_dir)
+    except OSError as e:
+        log.warning("gpu_still_motion_cache_clear_failed", error=str(e)[:200])
+
+
 def _build_timeline_export_manifest(
     db: Any,
     project: Project,
@@ -619,7 +679,7 @@ def _still_image_visual_segment(
 
     - ``off`` → plain ``("image", path, dur)`` (static).
     - ``cpu`` → ``("image", path, dur, motion)`` so the frozen slideshow adds zoompan + keeps dissolves.
-    - ``gpu`` → pre-render to an MP4 via the CUDA sidecar and return ``("video", mp4, None)``.
+    - ``gpu`` → pre-render to an MP4 via the CUDA sidecar and return ``("video", mp4, dur)``.
     """
     from director_api.services.still_motion import pick_motion_for_asset, resolve_still_motion_renderer
 
@@ -642,7 +702,8 @@ def _still_image_visual_segment(
         height=height,
         timeout=timeout,
     )
-    return ("video", pre, None)
+    # Force exact slot duration at concat time (native NVENC length can drift from manifest).
+    return ("video", pre, float(dur))
 
 
 def _rough_cut_visual_segments_with_chapter_cards(
@@ -1180,6 +1241,7 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         timeout_sec=float(settings.ffmpeg_timeout_sec),
     )
     clip_xf = _timeline_clip_crossfade_sec(tj)
+    visual_xf_pad = _visual_crossfade_pad_sec(settings, clip_xf)
     manifest_exp, slots_fc = _expand_manifest_and_slots_for_full_narration(
         db,
         manifest_fc,
@@ -1190,25 +1252,34 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         timeout_sec=float(settings.ffmpeg_timeout_sec),
         tail_padding_sec=scene_vo_tail_padding_sec_from_settings(settings),
         outro_tail_sec=_export_outro_music_tail_sec(settings),
-        visual_crossfade_pad_sec=clip_xf,
+        visual_crossfade_pad_sec=visual_xf_pad,
     )
     sum_o = _slots_total_duration(slots_orig)
     sum_e = _slots_total_duration(slots_fc)
+    _drop_stale_fine_cut_if_mismatch(
+        fine_p,
+        expected_sec=sum_e,
+        ffprobe_bin=ffprobe_bin,
+        timeout_sec=float(settings.ffmpeg_timeout_sec),
+    )
+    # Prefer rough_cut for sync checks — fine_cut can hide an out-of-sync rough_cut.
+    sync_probe = rough_p if path_is_readable_file(rough_p) else fine_p
     vid_len = (
         float(
             ffprobe_duration_seconds(
-                base_video,
+                sync_probe,
                 ffprobe_bin=ffprobe_bin,
                 timeout_sec=float(settings.ffmpeg_timeout_sec),
             )
         )
-        if path_is_readable_file(base_video)
+        if path_is_readable_file(sync_probe)
         else 0.0
     )
     want_visual_recompile = (sum_e > sum_o + 0.05) or (
-        path_is_readable_file(base_video) and abs(sum_e - vid_len) > 0.25
+        path_is_readable_file(sync_probe) and abs(sum_e - vid_len) > 0.25
     )
     need_visual_recompile = False
+    still_motion_cache_dir = rough_p.parent / ".still_motion"
     if (
         want_visual_recompile
         and manifest_fc
@@ -1222,10 +1293,13 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
             sum_expanded_sec=sum_e,
             base_video_sec=vid_len,
         )
-        # ``manifest_exp`` already pads each visual clip by the crossfade overlap (see
-        # _expand_manifest_and_slots_for_full_narration), so keep the normal dissolves: the
-        # padded clips absorb the overlap, leaving the compiled video at least as long as the
-        # narration stem (no trailing VO cut) while preserving the slide-to-slide fades.
+        from director_api.services.still_motion import resolve_still_motion_renderer
+
+        if resolve_still_motion_renderer(settings) == "gpu":
+            _clear_gpu_still_motion_cache(still_motion_cache_dir)
+        # ``manifest_exp`` may pad each visual clip by the crossfade overlap when dissolves are
+        # used (CPU stills). GPU stills skip that pad (hard cuts). Recompile so video length
+        # matches the narration stem.
         _rough_cut(db, job, settings, manifest_override=manifest_exp)
         if path_is_readable_file(fine_p):
             try:
@@ -1241,6 +1315,14 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
                 log.warning("final_cut_fine_cut_after_narration_expand_failed", error=str(e)[:400])
         db.commit()
         db.refresh(tv)
+        base_video = fine_p if path_is_readable_file(fine_p) else rough_p
+    else:
+        _drop_stale_fine_cut_if_mismatch(
+            fine_p,
+            expected_sec=sum_e,
+            ffprobe_bin=ffprobe_bin,
+            timeout_sec=float(settings.ffmpeg_timeout_sec),
+        )
         base_video = fine_p if path_is_readable_file(fine_p) else rough_p
 
     if not path_is_readable_file(base_video):

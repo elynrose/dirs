@@ -62,6 +62,9 @@ allow-direct-references = true
 "director_api/schemas/documentary_brief.schema.json" = "director_api/schemas/documentary_brief.schema.json"
 "director_api/gpu/ken_burns_render.py" = "director_api/gpu/ken_burns_render.py"
 "director_api/gpu/requirements-gpu.txt" = "director_api/gpu/requirements-gpu.txt"
+"director_api/tts/__init__.py" = "director_api/tts/__init__.py"
+"director_api/tts/kokoro_render.py" = "director_api/tts/kokoro_render.py"
+"director_api/tts/requirements-tts.txt" = "director_api/tts/requirements-tts.txt"
 
 [tool.ruff]
 line-length = 100

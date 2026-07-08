@@ -694,6 +694,16 @@ class Settings(BaseSettings):
         ),
         validation_alias=AliasChoices("gpu_still_motion_python", "GPU_STILL_MOTION_PYTHON"),
     )
+    tts_sidecar_python: str = Field(
+        default="",
+        description=(
+            "Path to the Python executable of the local-TTS sidecar venv (Python 3.11 + torch + kokoro). "
+            "Used to run Kokoro out-of-process when the worker runtime cannot import kokoro/torch "
+            "(e.g. Python 3.14). Created by scripts/setup-tts-renderer.ps1. When empty and kokoro is not "
+            "importable in-process, Kokoro narration raises a helpful error."
+        ),
+        validation_alias=AliasChoices("tts_sidecar_python", "TTS_SIDECAR_PYTHON"),
+    )
     ffmpeg_slideshow_default_sec: float = 3.0
     scene_clip_duration_sec: int = Field(default=10, ge=5, le=10, description="5 or 10 seconds")
     scene_plan_target_scenes_per_chapter: int = Field(default=0, ge=0, le=48)
