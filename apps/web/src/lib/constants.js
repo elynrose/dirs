@@ -12,6 +12,14 @@ export const DEFAULT_NARRATION_PRESET_ID = "narrative_documentary";
 /** Dissolve between consecutive stills in rough-cut slideshow batches (seconds). */
 export const DEFAULT_CLIP_CROSSFADE_SEC = 0.65;
 
+/** Job types hidden from the Studio job queue (internal cache warming). */
+export const HIDDEN_STUDIO_JOB_TYPES = new Set(["scene_precompile"]);
+
+/** Drop internal cache-warming jobs from Studio job lists. */
+export function visibleStudioJobs(jobs) {
+  return (Array.isArray(jobs) ? jobs : []).filter((j) => j && !HIDDEN_STUDIO_JOB_TYPES.has(j.type));
+}
+
 /**
  * Job types that the main Studio active-job poller tracks.
  * Matches GET /v1/projects/{id}/jobs/active payload types.

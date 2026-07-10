@@ -180,6 +180,18 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("lm_studio_text_model", "LM_STUDIO_TEXT_MODEL"),
     )
+    ollama_api_base_url: str = Field(
+        default="http://127.0.0.1:11434",
+        validation_alias=AliasChoices("ollama_api_base_url", "OLLAMA_API_BASE_URL"),
+    )
+    ollama_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ollama_api_key", "OLLAMA_API_KEY"),
+    )
+    ollama_text_model: str = Field(
+        default="",
+        validation_alias=AliasChoices("ollama_text_model", "OLLAMA_TEXT_MODEL"),
+    )
     openai_local_chat_max_tokens: int = Field(
         default=16384,
         ge=512,

@@ -4,13 +4,26 @@ Place platform icon files here. electron-builder picks them up automatically.
 
 | File | Format | Size | Used for |
 |------|--------|------|----------|
+| `icon-source-1024.png` | PNG | 1024×1024 master (center-cropped from logo) | Regenerate platform icons |
 | `icon.icns` | Apple Icon Image | 1024×1024 (includes all sub-sizes) | macOS .app + DMG |
 | `icon.ico` | Windows Icon | multi-size (16/32/48/64/128/256 px) | Windows installer + taskbar |
 | `icon.png` | PNG | 512×512 minimum | Linux AppImage |
 
 ## Generating icons from a master PNG
 
-```bash
+From the repo root (requires Pillow in `apps/api/.venv-win`):
+
+```powershell
+.\apps\api\.venv-win\Scripts\python.exe .\scripts\generate-app-icons.py path\to\logo.png
+```
+
+Or re-run from the saved master:
+
+```powershell
+.\apps\api\.venv-win\Scripts\python.exe .\scripts\generate-app-icons.py
+```
+
+Manual (macOS):
 # macOS — requires Xcode Command Line Tools
 mkdir icon.iconset
 sips -z 1024 1024 master-1024.png --out icon.iconset/icon_512x512@2x.png

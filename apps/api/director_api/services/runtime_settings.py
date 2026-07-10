@@ -137,12 +137,17 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             clean.pop("openai_local_chat_max_tokens", None)
     if "openai_compatible_text_source" in clean:
         v = str(clean["openai_compatible_text_source"] or "").strip().lower()
-        clean["openai_compatible_text_source"] = "lm_studio" if v == "lm_studio" else "openai"
+        if v == "lm_studio":
+            clean["openai_compatible_text_source"] = "lm_studio"
+        elif v == "ollama":
+            clean["openai_compatible_text_source"] = "ollama"
+        else:
+            clean["openai_compatible_text_source"] = "openai"
     if "active_text_provider" in clean:
         v = str(clean["active_text_provider"] or "").strip().lower()
         if v == "google":
             v = "gemini"
-        if v not in ("openai", "lm_studio", "openrouter", "xai", "grok", "gemini", "default", "auto", ""):
+        if v not in ("openai", "lm_studio", "ollama", "openrouter", "xai", "grok", "gemini", "default", "auto", ""):
             v = "openai"
         clean["active_text_provider"] = "openai" if v in ("", "default", "auto") else v
     if "comfyui_timeout_sec" in clean:
@@ -315,6 +320,7 @@ def sanitize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
             "fal_key",
             "openai_api_key",
             "lm_studio_api_key",
+            "ollama_api_key",
             "openrouter_api_key",
             "xai_api_key",
             "grok_api_key",
@@ -384,6 +390,7 @@ PLATFORM_CREDENTIAL_SETTING_KEYS = frozenset(
         "fal_key",
         "openai_api_key",
         "lm_studio_api_key",
+        "ollama_api_key",
         "openrouter_api_key",
         "xai_api_key",
         "grok_api_key",

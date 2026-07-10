@@ -28,12 +28,15 @@
     "productName": "Directely",
     "copyright": "Copyright © 2026 Directely",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "forceCodeSigning": false,
+    "icon": "build-assets/icon.png",
     "directories": {
-      "output": "release",
+      "output": "release-build",
       "buildResources": "build-assets"
     },
     "files": [
       "main.js",
+      "preload.cjs",
       "lib/**/*"
     ],
     "extraResources": [
@@ -144,7 +147,9 @@
           ]
         }
       ],
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "signDlls": false,
+      "icon": "build-assets/icon.ico"
     },
     "nsis": {
       "include": "build-assets/nsis-docker-note.nsh",

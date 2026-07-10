@@ -35,6 +35,7 @@ import {
 import {
   DIRECTOR_UI_SESSION_KEY,
   FAL_CATALOG_MIN_REFRESH_MS,
+  HIDDEN_STUDIO_JOB_TYPES,
   STUDIO_MEDIA_JOB_TYPES,
   EXPORT_COMPILE_JOB_TYPES,
   OPENAI_TTS_VOICE_OPTIONS,
@@ -49,6 +50,7 @@ import {
   agentRunAutoGenerateSceneImages,
   agentRunMinSceneImages,
   agentRunMinSceneVideos,
+  visibleStudioJobs,
 } from "./lib/constants.js";
 import { usePollJob } from "./hooks/usePollJob.js";
 import { useToast } from "./hooks/useToast.js";
@@ -1224,7 +1226,7 @@ export default function App() {
       void loadActiveProjectJobsRef.current();
     }, []),
     onJobsUpdate: useCallback((jobs) => {
-      setActiveProjectJobs(jobs);
+      setActiveProjectJobs(visibleStudioJobs(jobs));
     }, []),
     onAgentRunUpdate: useCallback((updatedRun) => {
       if (!updatedRun) return;
@@ -1401,7 +1403,7 @@ export default function App() {
         return;
       }
       setActiveJobsLoadErr("");
-      const jobs = body.data?.jobs || [];
+      const jobs = visibleStudioJobs(body.data?.jobs || []);
       const js = activeJobsPollSnapshot(jobs);
       if (js !== lastActiveJobsPollSnapshotRef.current) {
         lastActiveJobsPollSnapshotRef.current = js;

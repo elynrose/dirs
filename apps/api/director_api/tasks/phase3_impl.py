@@ -68,9 +68,9 @@ log = structlog.get_logger(__name__)
 
 def _schedule_scene_precompile(db: Session, settings: Any, asset: Asset) -> None:
     try:
-        from director_api.services.scene_precompile_enqueue import schedule_scene_precompile_for_asset
+        from director_api.services.scene_precompile_enqueue import schedule_scene_precompile_if_on_timeline
 
-        schedule_scene_precompile_for_asset(db, settings, asset)
+        schedule_scene_precompile_if_on_timeline(db, settings, asset)
     except Exception as e:  # noqa: BLE001
         log.warning(
             "scene_precompile_schedule_failed",

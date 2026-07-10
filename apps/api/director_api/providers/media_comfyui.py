@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import copy
 import json
-import logging
 import threading
 import time
 import uuid
@@ -22,11 +21,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 import httpx
+import structlog
 
 from director_api.config import Settings
 from director_api.services.project_frame import frame_pixel_size
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 # Only one local WAN render at a time — concurrent prompts queue-block and look "stuck".
 _COMFYUI_VIDEO_LOCK = threading.Lock()

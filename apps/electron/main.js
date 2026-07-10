@@ -1,7 +1,7 @@
 /**
  * Directely desktop shell: Docker stack + Python venv (API, Celery worker+beat) + local UI server (/v1 proxy).
  */
-import { app, BrowserWindow, dialog } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
@@ -10,6 +10,15 @@ import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import getPort from "get-port";
 import treeKill from "tree-kill";
+import {
+  clearSavedDockerExe,
+  DOCKER_DESKTOP_DOWNLOAD_URL,
+  getDockerConfigSummary,
+  isDockerInstalled,
+  resolveDockerExecutable,
+  testDockerCompose,
+  writeSavedDockerExe,
+} from "./lib/docker-config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +28,8 @@ const BACKEND_BOOTSTRAP_VERSION = "2";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = 8000;
+/** Stable Compose project name (must match dev repo folder name so ports/containers are shared). */
+const DOCKER_COMPOSE_PROJECT = "directely";
 
 let mainWindow = null;
 /** @type {import('node:child_process').ChildProcess[]} */
@@ -138,140 +149,253 @@ function augmentedProcessEnv(extra = {}) {
   return base;
 }
 
-function dockerCliConfigPath() {
-  return path.join(app.getPath("userData"), "docker-cli.json");
+function userDataDir() {
+  return app.getPath("userData");
 }
 
-function readSavedDockerExe() {
-  try {
-    const j = JSON.parse(fs.readFileSync(dockerCliConfigPath(), "utf8"));
-    const exe = typeof j.dockerExe === "string" ? j.dockerExe.trim() : "";
-    if (exe && fs.existsSync(exe)) return path.normalize(exe);
-  } catch {
-    /* missing or invalid */
-  }
-  return null;
-}
-
-function writeSavedDockerExe(exe) {
-  fs.mkdirSync(app.getPath("userData"), { recursive: true });
-  fs.writeFileSync(dockerCliConfigPath(), JSON.stringify({ dockerExe: exe }, null, 2), "utf8");
-}
-
-function defaultWindowsDockerExeCandidates() {
-  const pf = process.env.ProgramFiles;
-  const pf86 = process.env["ProgramFiles(x86)"];
-  return [
-    pf && path.join(pf, "Docker", "Docker", "resources", "bin", "docker.exe"),
-    pf86 && path.join(pf86, "Docker", "Docker", "resources", "bin", "docker.exe"),
-  ].filter(Boolean);
-}
-
-/** Docker CLI for `docker compose`: saved path, then DOCKER_BIN in .env, then common install dirs, then `docker`. */
-function resolveDockerExecutable() {
-  const saved = readSavedDockerExe();
-  if (saved) return saved;
-  try {
-    const env = loadMergedEnv();
-    const fromEnv = (env.DOCKER_BIN || "")
-      .trim()
-      .replace(/^["']|["']$/g, "");
-    if (fromEnv && fs.existsSync(fromEnv)) return path.normalize(fromEnv);
-  } catch {
-    /* ignore */
-  }
-  if (process.platform === "win32") {
-    for (const p of defaultWindowsDockerExeCandidates()) {
-      if (fs.existsSync(p)) return p;
-    }
-  }
-  return "docker";
+function resolvedDockerExe() {
+  return resolveDockerExecutable({
+    userData: userDataDir(),
+    userEnvPath: userEnvPath(),
+    mergedEnv: loadMergedEnv(),
+  }).exe;
 }
 
 function dockerComposeCliWorks(dockerExe) {
-  const r = spawnSync(dockerExe, ["compose", "version"], {
-    encoding: "utf8",
-    timeout: 30_000,
-    windowsHide: true,
-    env: loadMergedEnv(),
-  });
-  return r.status === 0;
+  return testDockerCompose(dockerExe, loadMergedEnv()).ok;
+}
+
+async function pickDockerExeViaDialog() {
+  const defaultPath =
+    process.platform === "win32"
+      ? path.join(process.env.ProgramFiles || "C:\\Program Files", "Docker", "Docker", "resources", "bin")
+      : "/usr/local/bin";
+
+  const openOpts = {
+    title: process.platform === "win32" ? "Select docker.exe" : "Select docker CLI",
+    defaultPath: fs.existsSync(defaultPath) ? defaultPath : undefined,
+    properties: ["openFile"],
+  };
+  if (process.platform === "win32") {
+    openOpts.filters = [{ name: "Docker CLI", extensions: ["exe"] }];
+  }
+  const { canceled, filePaths } = await dialog.showOpenDialog(openOpts);
+  if (canceled || !filePaths?.[0]) return null;
+
+  const picked = path.normalize(filePaths[0]);
+  if (process.platform === "win32") {
+    const base = path.basename(picked).toLowerCase();
+    if (base !== "docker.exe") {
+      const confirm = await dialog.showMessageBox({
+        type: "question",
+        buttons: ["Use this file", "Cancel"],
+        defaultId: 0,
+        cancelId: 1,
+        message: `The selected file is "${path.basename(picked)}". It is usually named docker.exe.`,
+      });
+      if (confirm.response !== 0) return null;
+    }
+  }
+  return picked;
 }
 
 /**
- * If `docker compose` cannot run, prompt for docker.exe (Windows) or docker (macOS/Linux) and save under userData.
+ * Ensure Docker CLI works. If Docker Desktop is not installed, ask the user to install it
+ * (open download page). If installed but not on PATH / not running, offer locate docker.exe.
  * Runs before the stack is brought up (no BrowserWindow yet — native dialogs only).
  */
 async function ensureDockerCli() {
+  const env = loadMergedEnv();
+  const installOpts = {
+    userData: userDataDir(),
+    userEnvPath: userEnvPath(),
+    mergedEnv: env,
+  };
+
+  // Not installed at all → send user to Docker Desktop download (do not ask to browse for docker.exe).
+  if (!isDockerInstalled(installOpts)) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (isDockerInstalled(installOpts) && dockerComposeCliWorks(resolvedDockerExe())) return;
+
+      const pick = await dialog.showMessageBox({
+        type: "warning",
+        buttons: ["Open Docker download…", "I installed it — Retry", "Quit"],
+        defaultId: 0,
+        cancelId: 2,
+        title: "Docker required",
+        message: "Docker Desktop is not installed.",
+        detail:
+          "Directely needs Docker Desktop for the local database (PostgreSQL / Redis).\n\n" +
+          "1. Install Docker Desktop from the official site.\n" +
+          "2. Finish setup and start Docker Desktop once.\n" +
+          "3. Return here and click Retry.\n\n" +
+          DOCKER_DESKTOP_DOWNLOAD_URL,
+      });
+
+      if (pick.response === 2) {
+        throw new Error(
+          "Docker Desktop is required. Install it from https://www.docker.com/products/docker-desktop/ then start Directely again.",
+        );
+      }
+      if (pick.response === 0) {
+        await shell.openExternal(DOCKER_DESKTOP_DOWNLOAD_URL);
+      }
+      // Retry (response 1) or after opening download — re-check on next loop.
+    }
+    throw new Error(
+      "Docker Desktop is still not available. Install it, start Docker Desktop, then launch Directely again.",
+    );
+  }
+
   const envHint =
     process.platform === "win32"
-      ? "Typical Docker Desktop path:\nC:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\n\nYou can also set DOCKER_BIN in your app .env:\n" +
+      ? "Typical Docker Desktop path:\nC:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\n\n" +
+        "If Docker Desktop is installed but not running, start it from the Start menu, wait until it says Ready, then Retry.\n\n" +
+        "You can also set DOCKER_BIN in Settings → Desktop or in your app .env:\n" +
         userEnvPath()
-      : "Install Docker and ensure `docker compose version` works in a terminal, or set DOCKER_BIN in your app .env.";
+      : "Start Docker Desktop (or the Docker daemon), or set DOCKER_BIN in Settings → Desktop or your app .env.";
 
   for (let attempt = 0; attempt < 5; attempt++) {
-    const exe = resolveDockerExecutable();
+    const exe = resolvedDockerExe();
     if (dockerComposeCliWorks(exe)) return;
 
     const detail =
       attempt === 0
-        ? `Directely could not run:\n  ${exe} compose version\n\n${envHint}`
+        ? `Docker appears installed, but Directely could not run:\n  ${exe} compose version\n\n${envHint}`
         : `Still could not run Docker Compose with:\n  ${exe}\n\n${envHint}`;
+
+    const buttons =
+      process.platform === "win32"
+        ? ["Retry", "Locate docker.exe…", "Quit"]
+        : ["Retry", "Locate docker CLI…", "Quit"];
 
     const pick = await dialog.showMessageBox({
       type: "warning",
-      buttons: process.platform === "win32" ? ["Locate docker.exe…", "Quit"] : ["Locate docker CLI…", "Quit"],
+      buttons,
       defaultId: 0,
-      cancelId: 1,
+      cancelId: 2,
       title: "Docker required",
       message: "Docker is required to start the local database stack (PostgreSQL / Redis).",
       detail,
     });
 
-    if (pick.response !== 0) {
+    if (pick.response === 2) {
       throw new Error(
-        "Docker is required. Install Docker Desktop, or set DOCKER_BIN in your .env to the full path of docker.exe, then start Directely again.",
+        "Docker is required. Start Docker Desktop, or set DOCKER_BIN in Settings → Desktop or your .env, then start Directely again.",
       );
     }
-
-    const defaultPath =
-      process.platform === "win32"
-        ? path.join(process.env.ProgramFiles || "C:\\Program Files", "Docker", "Docker", "resources", "bin")
-        : "/usr/local/bin";
-
-    const openOpts = {
-      title: process.platform === "win32" ? "Select docker.exe" : "Select docker CLI",
-      defaultPath: fs.existsSync(defaultPath) ? defaultPath : undefined,
-      properties: ["openFile"],
-    };
-    if (process.platform === "win32") {
-      openOpts.filters = [{ name: "Docker CLI", extensions: ["exe"] }];
+    if (pick.response === 0) {
+      continue; // Retry — engine may still be starting
     }
-    const { canceled, filePaths } = await dialog.showOpenDialog(openOpts);
 
-    if (canceled || !filePaths?.[0]) {
+    const picked = await pickDockerExeViaDialog();
+    if (!picked) {
       throw new Error("No Docker executable was selected.");
     }
 
-    const picked = path.normalize(filePaths[0]);
-    if (process.platform === "win32") {
-      const base = path.basename(picked).toLowerCase();
-      if (base !== "docker.exe") {
-        const confirm = await dialog.showMessageBox({
-          type: "question",
-          buttons: ["Use this file", "Pick again"],
-          defaultId: 0,
-          cancelId: 1,
-          message: `The selected file is "${path.basename(picked)}". It is usually named docker.exe.`,
-        });
-        if (confirm.response !== 0) continue;
-      }
-    }
-
-    writeSavedDockerExe(picked);
+    writeSavedDockerExe(userDataDir(), picked, { userEnvPath: userEnvPath() });
   }
 
   throw new Error("Could not configure Docker after multiple attempts.");
+}
+
+function registerDesktopIpc() {
+  ipcMain.handle("desktop:getDockerConfig", () =>
+    getDockerConfigSummary({
+      userData: userDataDir(),
+      userEnvPath: userEnvPath(),
+      mergedEnv: loadMergedEnv(),
+    }),
+  );
+
+  ipcMain.handle("desktop:testDocker", (_evt, exe) => {
+    const target = String(exe || "").trim() || resolvedDockerExe();
+    return testDockerCompose(target, loadMergedEnv());
+  });
+
+  ipcMain.handle("desktop:setDockerExe", (_evt, exe) => {
+    const p = String(exe || "").trim();
+    if (!p || !fs.existsSync(p)) {
+      return { ok: false, error: "Path does not exist." };
+    }
+    const saved = writeSavedDockerExe(userDataDir(), p, { userEnvPath: userEnvPath() });
+    const test = testDockerCompose(saved, loadMergedEnv());
+    return { ok: test.ok, dockerExe: saved, testDetail: test.detail };
+  });
+
+  ipcMain.handle("desktop:browseDockerExe", async () => {
+    const picked = await pickDockerExeViaDialog();
+    if (!picked) return { canceled: true };
+    const saved = writeSavedDockerExe(userDataDir(), picked, { userEnvPath: userEnvPath() });
+    const test = testDockerCompose(saved, loadMergedEnv());
+    return { canceled: false, dockerExe: saved, works: test.ok, testDetail: test.detail };
+  });
+
+  ipcMain.handle("desktop:clearDockerExe", () => {
+    clearSavedDockerExe(userDataDir());
+    const { exe, source } = resolveDockerExecutable({
+      userData: userDataDir(),
+      userEnvPath: userEnvPath(),
+      mergedEnv: loadMergedEnv(),
+    });
+    const test = testDockerCompose(exe, loadMergedEnv());
+    return { dockerExe: exe, source, works: test.ok, testDetail: test.detail };
+  });
+
+  ipcMain.handle("desktop:openUserDataFolder", () => {
+    shell.openPath(userDataDir());
+    return { path: userDataDir() };
+  });
+}
+
+function buildAppMenu() {
+  const template = [
+    ...(process.platform === "darwin"
+      ? [
+          {
+            label: app.name,
+            submenu: [{ role: "quit" }],
+          },
+        ]
+      : []),
+    {
+      label: "File",
+      submenu: [process.platform === "win32" ? { role: "quit" } : { role: "close" }],
+    },
+    {
+      label: "Directely",
+      submenu: [
+        {
+          label: "Configure Docker…",
+          click: async () => {
+            const picked = await pickDockerExeViaDialog();
+            if (!picked) return;
+            writeSavedDockerExe(userDataDir(), picked, { userEnvPath: userEnvPath() });
+            const test = testDockerCompose(picked, loadMergedEnv());
+            await dialog.showMessageBox({
+              type: test.ok ? "info" : "warning",
+              title: "Docker",
+              message: test.ok ? "Docker path saved and verified." : "Docker path saved but compose test failed.",
+              detail: test.ok
+                ? picked
+                : `${picked}\n\n${test.detail || "Start Docker Desktop and try again."}`,
+            });
+          },
+        },
+        {
+          label: "Open app data folder",
+          click: () => {
+            shell.openPath(userDataDir());
+          },
+        },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [{ role: "reload" }, { role: "toggleDevTools" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function loadMergedEnv() {
@@ -303,18 +427,28 @@ function ensureUserEnvFile(paths) {
 }
 
 function run(cmd, args, options = {}) {
-  const { env: envOverride, ...spawnRest } = options;
+  const { env: envOverride, captureOutput = false, ...spawnRest } = options;
   const env = envOverride ? { ...augmentedProcessEnv(), ...envOverride } : augmentedProcessEnv();
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
-      stdio: "inherit",
+      stdio: captureOutput ? ["ignore", "pipe", "pipe"] : "inherit",
       ...spawnRest,
       env,
     });
-    child.on("error", (err) => {
+    let out = "";
+    let err = "";
+    if (captureOutput) {
+      child.stdout?.on("data", (d) => {
+        out += d;
+      });
+      child.stderr?.on("data", (d) => {
+        err += d;
+      });
+    }
+    child.on("error", (errObj) => {
       reject(
         new Error(
-          `Failed to run "${cmd}": ${err.message}${err.code != null ? ` (${String(err.code)})` : ""}. ` +
+          `Failed to run "${cmd}": ${errObj.message}${errObj.code != null ? ` (${String(errObj.code)})` : ""}. ` +
             (process.platform === "win32"
               ? "Install Docker Desktop and Python 3.11+, then fully quit and reopen Directely (GUI apps may not see a fresh PATH until you sign out or restart)."
               : "Ensure Docker and Python 3.11+ are installed and on PATH."),
@@ -323,7 +457,11 @@ function run(cmd, args, options = {}) {
     });
     child.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`${cmd} ${args.join(" ")} exited ${code}`));
+      else {
+        const tail = (err || out).trim().split(/\r?\n/).slice(-8).join("\n");
+        const detail = tail ? `\n\n${tail}` : "";
+        reject(new Error(`${cmd} ${args.join(" ")} exited ${code}${detail}`));
+      }
     });
   });
 }
@@ -461,12 +599,17 @@ async function runMigrations(paths, env) {
 
 function dockerCompose(paths, args) {
   const composeDir = path.dirname(paths.dockerComposeFile);
-  const dockerExe = resolveDockerExecutable();
-  return run(dockerExe, ["compose", "-f", paths.dockerComposeFile, ...args], {
-    cwd: composeDir,
-    stdio: "inherit",
-    env: loadMergedEnv(),
-  });
+  const dockerExe = resolvedDockerExe();
+  const env = { ...loadMergedEnv(), COMPOSE_PROJECT_NAME: DOCKER_COMPOSE_PROJECT };
+  return run(
+    dockerExe,
+    ["compose", "-p", DOCKER_COMPOSE_PROJECT, "-f", paths.dockerComposeFile, ...args],
+    {
+      cwd: composeDir,
+      captureOutput: true,
+      env,
+    },
+  );
 }
 
 function pushChild(proc) {
@@ -489,6 +632,22 @@ async function waitForApiReady(timeoutMs = 120_000) {
   throw new Error("API did not become ready (GET /v1/ready). Check Docker, Postgres, Redis, and API logs.");
 }
 
+function celeryWorkerArgs() {
+  const args = [
+    "-A",
+    "director_api.tasks.celery_app",
+    "worker",
+    "-Q",
+    "text,media,compile",
+    "-l",
+    "info",
+  ];
+  if (process.platform === "win32") {
+    args.push("--pool=solo");
+  }
+  return args;
+}
+
 function startBackendProcesses(env) {
   const apiDir = getPaths().apiDir;
   const vpy = venvPython();
@@ -501,7 +660,7 @@ function startBackendProcesses(env) {
   pushChild(api);
 
   const celery = venvBin("celery");
-  const worker = spawn(celery, ["-A", "director_api.tasks.celery_app", "worker", "-l", "info"], {
+  const worker = spawn(celery, celeryWorkerArgs(), {
     cwd: apiDir,
     env,
     stdio: "inherit",
@@ -607,13 +766,24 @@ async function boot() {
   return `http://${API_HOST}:${port}/`;
 }
 
+function appIconPath() {
+  const assets = path.join(__dirname, "build-assets");
+  const ico = path.join(assets, "icon.ico");
+  const png = path.join(assets, "icon.png");
+  if (process.platform === "win32" && fs.existsSync(ico)) return ico;
+  if (fs.existsSync(png)) return png;
+  return undefined;
+}
+
 function createWindow(url) {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    icon: appIconPath(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs"),
     },
   });
   mainWindow.loadURL(url);
@@ -635,6 +805,8 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     const paths = getPaths();
+    registerDesktopIpc();
+    buildAppMenu();
     try {
       const url = await boot();
       app.on("before-quit", async (e) => {

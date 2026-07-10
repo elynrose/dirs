@@ -1418,6 +1418,17 @@ def _final_cut(db, job: Job, settings: Any) -> dict[str, Any]:
         publish_to_youtube=publish_flag,
         timeline_version_id=tv_id,
     )
+    try:
+        from director_api.services.scene_precompile_enqueue import cancel_project_scene_precompile_backlog
+
+        cancel_project_scene_precompile_backlog(
+            db,
+            tenant_id=tenant,
+            project_id=project_id,
+            reason="cancelled_after_final_cut",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("scene_precompile_backlog_cancel_failed", stage="final_cut", error=str(e)[:200])
     return {
         "timeline_version_id": str(tv.id),
         "output_url": tv.output_url,
@@ -1763,6 +1774,17 @@ def _rough_cut(
 
     tv.render_status = render_status
     tv.output_url = output_url
+    try:
+        from director_api.services.scene_precompile_enqueue import cancel_project_scene_precompile_backlog
+
+        cancel_project_scene_precompile_backlog(
+            db,
+            tenant_id=tenant,
+            project_id=project_id,
+            reason="cancelled_after_rough_cut",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("scene_precompile_backlog_cancel_failed", stage="rough_cut", error=str(e)[:200])
     return {
         "timeline_version_id": str(tv.id),
         "clip_count": len(manifest),

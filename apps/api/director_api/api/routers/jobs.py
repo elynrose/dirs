@@ -211,12 +211,12 @@ def create_job(
         )
 
     prov = body.provider.lower().strip()
-    if prov not in ("openai", "lm_studio", "openrouter", "fal", "gemini", "google"):
+    if prov not in ("openai", "lm_studio", "ollama", "openrouter", "fal", "gemini", "google"):
         raise HTTPException(
             status_code=400,
             detail={
                 "code": "VALIDATION_ERROR",
-                "message": "provider must be openai, lm_studio, openrouter, fal, or gemini",
+                "message": "provider must be openai, lm_studio, ollama, openrouter, fal, or gemini",
             },
         )
 

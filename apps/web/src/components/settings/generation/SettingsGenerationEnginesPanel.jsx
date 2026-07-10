@@ -117,12 +117,13 @@ export default function SettingsGenerationEnginesPanel(props) {
                 >
                   <option value="openai">openai (text)</option>
                   <option value="lm_studio">lm_studio (text, local)</option>
+                  <option value="ollama">ollama (text, local)</option>
                   <option value="openrouter">openrouter (text)</option>
                   <option value="xai">grok/xai (text)</option>
                   <option value="gemini">gemini (text)</option>
                 </select>
                 <p className="subtle" style={{ marginTop: -6 }}>
-                  <strong>lm_studio</strong> uses the LM Studio block under <strong>API keys</strong> (base URL + model). The OpenAI/LM routing dropdown there applies only when this is set to <strong>openai</strong>.
+                  <strong>lm_studio</strong> / <strong>ollama</strong> use their blocks under <strong>API keys</strong> (base URL + model). The OpenAI-compatible routing dropdown there applies only when this is set to <strong>openai</strong>.
                 </p>
                 <label htmlFor="cfg-active-image">Image provider</label>
                 <select
@@ -358,8 +359,8 @@ export default function SettingsGenerationEnginesPanel(props) {
                     }
                   />
                   <span style={{ fontSize: "0.88rem", lineHeight: 1.45 }}>
-                    <strong>Background scene precompile</strong> — after each scene image or video succeeds, encode a
-                    timeline-ready clip in the background so rough and final cuts are faster. Uses extra disk under{" "}
+                    <strong>Background scene precompile</strong> — for clips on the timeline, encode a
+                    timeline-ready MP4 in the background so rough and final cuts are faster. Uses extra disk under{" "}
                     <code>precompiled/</code> until you download the final MP4. Turn off on slower machines or to reduce
                     background CPU use.
                   </span>

@@ -4,3 +4,4 @@ export const LazySettingsAutomationPanel = lazy(() => import("./SettingsAutomati
 export const LazySettingsStudioPanel = lazy(() => import("./SettingsStudioPanel.jsx"));
 export const LazySettingsIntegrationsPanel = lazy(() => import("./SettingsIntegrationsPanel.jsx"));
 export const LazySettingsVoiceRefPanel = lazy(() => import("./SettingsVoiceRefPanel.jsx"));
+export const LazySettingsDesktopPanel = lazy(() => import("./SettingsDesktopPanel.jsx"));

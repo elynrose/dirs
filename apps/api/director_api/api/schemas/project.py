@@ -167,7 +167,7 @@ class JobCreate(BaseModel):
     type: str = Field(..., pattern="^adapter_smoke$")
     provider: str = Field(
         ...,
-        description="openai | lm_studio | openrouter | fal | gemini | comfyui (aliases: comfy)",
+        description="openai | lm_studio | ollama | openrouter | fal | gemini | comfyui (aliases: comfy)",
     )
     project_id: UUID | None = None
 

@@ -1118,9 +1118,9 @@ async def upload_scene_clip(
         db.commit()
         db.refresh(a)
         try:
-            from director_api.services.scene_precompile_enqueue import schedule_scene_precompile_for_asset
+            from director_api.services.scene_precompile_enqueue import schedule_scene_precompile_if_on_timeline
 
-            schedule_scene_precompile_for_asset(db, settings, a)
+            schedule_scene_precompile_if_on_timeline(db, settings, a)
             db.commit()
         except Exception:  # noqa: BLE001
             log.warning("scene_precompile_schedule_failed", asset_id=str(asset_id))

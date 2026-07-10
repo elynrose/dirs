@@ -151,7 +151,18 @@ async function startFullStack() {
     env: backendEnv,
     logsDir,
     name: "celery-worker",
-    args: ["-m", "celery", "-A", "director_api.tasks.celery_app", "worker", "-l", "info"],
+    args: [
+      "-m",
+      "celery",
+      "-A",
+      "director_api.tasks.celery_app",
+      "worker",
+      "-Q",
+      "text,media,compile",
+      "-l",
+      "info",
+      ...(process.platform === "win32" ? ["--pool=solo"] : []),
+    ],
   });
   childProcesses.push(workerChild);
 

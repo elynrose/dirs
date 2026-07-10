@@ -17,6 +17,9 @@ def _base_ns(**overrides):
         "lm_studio_api_base_url": None,
         "lm_studio_api_key": None,
         "lm_studio_text_model": "",
+        "ollama_api_base_url": "http://127.0.0.1:11434",
+        "ollama_api_key": None,
+        "ollama_text_model": "",
         "openai_smoke_model": "gpt-4o-mini",
         "xai_api_key": None,
         "grok_api_key": None,
@@ -46,3 +49,13 @@ def test_require_active_text_llm_raises_when_not_configured() -> None:
 def test_active_text_llm_gemini_requires_key() -> None:
     assert _active_text_llm_configured(_base_ns(active_text_provider="gemini", gemini_api_key="g")) is True
     assert _active_text_llm_configured(_base_ns(active_text_provider="google", gemini_api_key=None)) is False
+
+
+def test_active_text_llm_ollama_uses_base_url() -> None:
+    assert (
+        _active_text_llm_configured(
+            _base_ns(active_text_provider="ollama", ollama_api_base_url="http://127.0.0.1:11434")
+        )
+        is True
+    )
+    assert _active_text_llm_configured(_base_ns(active_text_provider="ollama", ollama_api_base_url="")) is False

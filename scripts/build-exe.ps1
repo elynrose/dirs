@@ -11,7 +11,7 @@
       4. Runs electron-builder to produce Directely Setup <version>.exe
 
     The finished installer is written to:
-      apps\electron\release\Directely Setup <version>.exe
+      apps\electron\release-build\Directely-<version>-win-x64.exe
 
     The installed app requires Docker Desktop at runtime (for PostgreSQL + Redis).
     FFmpeg must be on PATH or configured via FFMPEG_BIN in the app's .env file.
@@ -91,7 +91,7 @@ $repoRoot    = Split-Path $PSScriptRoot -Parent
 $webDir      = Join-Path $repoRoot "apps\web"
 $electronDir = Join-Path $repoRoot "apps\electron"
 $webDist     = Join-Path $webDir "dist"
-$releaseDir  = Join-Path $electronDir "release"
+$releaseDir  = Join-Path $electronDir "release-build"
 
 # ── 1. Prerequisite checks ────────────────────────────────────────────────────
 
@@ -174,6 +174,11 @@ if (-not $SkipElectronInstall) {
 
 # ── 5. electron-builder ────────────────────────────────────────────────────────
 
+Write-Step "Stopping running Directely / Electron processes (avoids locked app.asar)"
+Get-Process -Name "Directely","director-electron","electron" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+
 Write-Step "Running electron-builder (target: Windows NSIS + ZIP, arch: $Arch)"
 
 Push-Location $electronDir
@@ -182,6 +187,7 @@ try {
     if (-not $Sign) {
         # Disable signing even if CSC_LINK/CSC_KEY_PASSWORD happen to be set in env
         $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+        $env:WIN_CSC_LINK = ""
     }
     node ./node_modules/electron-builder/cli.js @builderArgs
     if ($LASTEXITCODE -ne 0) { Fail "electron-builder failed (exit $LASTEXITCODE)" }

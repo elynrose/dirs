@@ -1,4 +1,4 @@
-; Shown after files are installed (non-silent installs). One click — explains first-run Docker picker.
+; Shown after files are installed (non-silent installs).
 !macro customInstall
-  MessageBox MB_OK|MB_ICONINFORMATION "Directely: If Docker is not found on first start, you will be asked to locate docker.exe.$\n$\nTypical Docker Desktop path:$\nC:\Program Files\Docker\Docker\resources\bin\docker.exe$\n$\nYou can also set DOCKER_BIN in the app .env (see README)." /SD IDOK
+  MessageBox MB_OK|MB_ICONINFORMATION "Directely requires Docker Desktop.$\n$\nIf Docker is not installed, the app will open the download page on first start.$\n$\nInstall from:$\nhttps://www.docker.com/products/docker-desktop/$\n$\nThen start Docker Desktop once before launching Directely." /SD IDOK
 !macroend

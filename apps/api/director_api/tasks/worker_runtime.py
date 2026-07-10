@@ -126,7 +126,7 @@ _CELERY_PHASE5_HARD_SEC = 9000
 from director_api.tasks.worker_helpers import (
     _worker_runtime_for_agent_run,
     _worker_runtime_for_job,
-)
+    )
 
 
 configure_logging()
@@ -161,9 +161,9 @@ from director_api.tasks.phase5_compile_impl import (
 
 
 _ACTIVE_TEXT_PROVIDER_ALLOWED = frozenset(
-    ("", "openai", "default", "auto", "openrouter", "xai", "grok", "gemini", "google", "lm_studio")
+    ("", "openai", "default", "auto", "openrouter", "xai", "grok", "gemini", "google", "lm_studio", "ollama")
 )
-_TEXT_USES_OPENAI_SDK = frozenset(("", "openai", "default", "auto", "lm_studio"))
+_TEXT_USES_OPENAI_SDK = frozenset(("", "openai", "default", "auto", "lm_studio", "ollama"))
 
 
 def _active_text_llm_configured(settings: Any) -> bool:
@@ -175,7 +175,7 @@ def _active_text_llm_configured(settings: Any) -> bool:
         p = "gemini"
     if p == "openai":
         return openai_compatible_configured(settings)
-    if p == "lm_studio":
+    if p in ("lm_studio", "ollama"):
         return openai_compatible_configured(settings)
     if p == "openrouter":
         return bool(getattr(settings, "openrouter_api_key", None))
@@ -192,7 +192,7 @@ def _require_active_text_llm(settings: Any, *, for_what: str) -> None:
         return
     raise ValueError(
         f"Active text provider is not fully configured for {for_what}. "
-        "Set API keys and (for OpenAI-compatible / LM Studio) base URL under workspace Settings → Providers, then retry."
+        "Set API keys and (for OpenAI-compatible / LM Studio / Ollama) base URL under workspace Settings → Providers, then retry."
     )
 
 
@@ -359,7 +359,7 @@ def _phase2_research_core(
     text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
     if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
         raise ValueError(
-            "active_text_provider must be one of: openai, lm_studio, openrouter, xai/grok, gemini"
+            "active_text_provider must be one of: openai, lm_studio, ollama, openrouter, xai/grok, gemini"
         )
     if not project.director_output_json:
         raise ValueError("director_output_json required before research")
@@ -457,7 +457,7 @@ def _phase2_outline_core(
     text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
     if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
         raise ValueError(
-            "active_text_provider must be one of: openai, lm_studio, openrouter, xai/grok, gemini"
+            "active_text_provider must be one of: openai, lm_studio, ollama, openrouter, xai/grok, gemini"
         )
     if not project.director_output_json:
         raise ValueError("project or director pack missing")
@@ -518,7 +518,7 @@ def _phase2_chapters_core(
     text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
     if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
         raise ValueError(
-            "active_text_provider must be one of: openai, lm_studio, openrouter, xai/grok, gemini"
+            "active_text_provider must be one of: openai, lm_studio, ollama, openrouter, xai/grok, gemini"
         )
     chapters = (
         db.scalars(
@@ -720,7 +720,7 @@ def _phase2_chapter_script_regenerate_core(
     text_provider = str(getattr(settings, "active_text_provider", "openai")).strip().lower()
     if text_provider not in _ACTIVE_TEXT_PROVIDER_ALLOWED:
         raise ValueError(
-            "active_text_provider must be one of: openai, lm_studio, openrouter, xai/grok, gemini"
+            "active_text_provider must be one of: openai, lm_studio, ollama, openrouter, xai/grok, gemini"
         )
     if not project.director_output_json:
         raise ValueError("director pack missing — start the project first")

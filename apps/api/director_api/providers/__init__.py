@@ -26,6 +26,8 @@ SMOKE_BY_PROVIDER: dict[str, SmokeFn] = {
     "openai": openai_smoke,
     # Same OpenAI SDK path as openai; with active_text_provider=lm_studio (or routing) hits LM Studio.
     "lm_studio": openai_smoke,
+    # Same OpenAI SDK path; active_text_provider=ollama hits Ollama's OpenAI-compatible /v1.
+    "ollama": openai_smoke,
     "openrouter": openrouter_smoke,
     "fal": fal_smoke,
     "comfyui": comfyui_smoke,

@@ -61,6 +61,8 @@ def resolve_workspace_text_chat_model(settings: Settings) -> tuple[str, str]:
         return prov, str(getattr(settings, "gemini_text_model", None) or "gemini-2.0-flash").strip()
     if prov == "lm_studio":
         return "lm_studio", resolve_openai_compatible_chat_model(settings)
+    if prov == "ollama":
+        return "ollama", resolve_openai_compatible_chat_model(settings)
     return "openai", resolve_openai_compatible_chat_model(settings)
 
 
@@ -194,6 +196,8 @@ def _chat_json_object_ex(
         if not openai_compatible_configured(settings):
             if provider == "lm_studio":
                 return None, "LM_STUDIO_API_BASE_URL is required (active text provider is lm_studio)"
+            if provider == "ollama":
+                return None, "OLLAMA_API_BASE_URL is required (active text provider is ollama)"
             return None, "OPENAI_API_KEY or compatible endpoint is required (active text provider is openai)"
 
         client = make_openai_client(settings)
@@ -211,7 +215,12 @@ def _chat_json_object_ex(
         if local:
             base_kw["max_tokens"] = int(settings.openai_local_chat_max_tokens)
 
-        usage_provider = "lm_studio" if provider == "lm_studio" else "openai"
+        if provider == "ollama":
+            usage_provider = "ollama"
+        elif provider == "lm_studio":
+            usage_provider = "lm_studio"
+        else:
+            usage_provider = "openai"
 
         def _finish(r: Any) -> tuple[dict[str, Any] | None, str | None]:
             u = parse_openai_chat_usage(r)

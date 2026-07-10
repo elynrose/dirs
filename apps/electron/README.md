@@ -2,6 +2,8 @@
 
 Desktop shell for the studio UI: starts **Docker Compose** (Postgres, Redis, MinIO), bootstraps a **Python venv** under the app user-data directory, runs **migrations**, then **API + Celery worker + Celery beat**, and serves the built web app on a local port with a **`/v1` proxy** to the API.
 
+The Celery worker subscribes to **`text,media,compile`** queues (image/video generation uses `media`; export uses `compile`).
+
 ## Prerequisites
 
 - **Docker Desktop** (or Docker Engine) with `docker compose` on `PATH` (or a path you configure — see below)
@@ -33,7 +35,7 @@ Asset storage defaults to `<userData>/storage` (`LOCAL_STORAGE_ROOT`).
 
 The NSIS installer shows a short tip: if Docker is not on `PATH` when the app starts from the Start menu, you can point Directely at **`docker.exe`**.
 
-- **First run:** if `docker compose version` fails, the app opens a native dialog so you can **browse to `docker.exe`** (typical Docker Desktop: `C:\Program Files\Docker\Docker\resources\bin\docker.exe`). The choice is saved to **`<userData>/docker-cli.json`**.
+- **First run:** if Docker Desktop is **not installed**, the app shows a dialog with **Open Docker download…** / **Retry** / **Quit**. If Docker is installed but `docker compose` fails (not running / not on PATH), you can **Retry** or **browse to `docker.exe`** (typical: `C:\Program Files\Docker\Docker\resources\bin\docker.exe`). The choice is saved to **`<userData>/docker-cli.json`**.
 - **Manual:** set **`DOCKER_BIN`** in the app **`.env`** (same folder as above — `%APPDATA%\director-electron\.env` on Windows) to the full path of `docker.exe`, then restart Directely. This overrides the saved file if you remove `docker-cli.json`, or you can delete `docker-cli.json` to prefer `.env` again.
 
 ## Pointing the UI at a hosted API (SaaS)

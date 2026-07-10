@@ -117,6 +117,7 @@ export default function SettingsIntegrationsPanel(props) {
                           {[
                             { provider: "openai", label: "OpenAI" },
                             { provider: "lm_studio", label: "LM Studio" },
+                            { provider: "ollama", label: "Ollama" },
                             { provider: "openrouter", label: "OpenRouter" },
                             { provider: "fal", label: "FAL" },
                             { provider: "gemini", label: "Gemini" },
@@ -565,23 +566,33 @@ export default function SettingsIntegrationsPanel(props) {
                       <div className="settings-section-body">
                         <p className="subtle" style={{ marginTop: -4 }}>
                           When <strong>Generation → Text provider</strong> is <strong>openai</strong>, choose whether chat
-                          hits OpenAI/Azure (OpenAI section below) or <strong>LM Studio</strong> (next section). If the text
-                          provider is <strong>lm_studio</strong>, chat always uses the LM Studio section and this choice is
-                          ignored. TTS and image settings always use the OpenAI block (cloud).
+                          hits OpenAI/Azure (OpenAI section below), <strong>LM Studio</strong>, or <strong>Ollama</strong>.
+                          If the text provider is <strong>lm_studio</strong> or <strong>ollama</strong>, chat always uses
+                          that section and this choice is ignored. TTS and image settings always use the OpenAI block
+                          (cloud).
                         </p>
                         <label htmlFor="cfg-openai-text-source">Chat backend</label>
                         <select
                           id="cfg-openai-text-source"
-                          value={appConfig.openai_compatible_text_source === "lm_studio" ? "lm_studio" : "openai"}
-                          onChange={(e) =>
+                          value={
+                            appConfig.openai_compatible_text_source === "lm_studio"
+                              ? "lm_studio"
+                              : appConfig.openai_compatible_text_source === "ollama"
+                                ? "ollama"
+                                : "openai"
+                          }
+                          onChange={(e) => {
+                            const v = e.target.value;
                             setAppConfig((p) => ({
                               ...p,
-                              openai_compatible_text_source: e.target.value === "lm_studio" ? "lm_studio" : "openai",
-                            }))
-                          }
+                              openai_compatible_text_source:
+                                v === "lm_studio" ? "lm_studio" : v === "ollama" ? "ollama" : "openai",
+                            }));
+                          }}
                         >
                           <option value="openai">OpenAI cloud / Azure (OpenAI section)</option>
                           <option value="lm_studio">LM Studio (local — LM Studio section)</option>
+                          <option value="ollama">Ollama (local — Ollama section)</option>
                         </select>
                       </div>
                     </details>
@@ -709,6 +720,51 @@ export default function SettingsIntegrationsPanel(props) {
                             const v = Math.max(512, Math.min(200_000, Number.parseInt(e.target.value, 10) || 16384));
                             setAppConfig((p) => ({ ...p, openai_local_chat_max_tokens: v }));
                           }}
+                        />
+                      </div>
+                    </details>
+
+                    <details className="settings-section">
+                      <summary className="settings-section-summary">
+                        <span className="settings-section-heading">Ollama</span>
+                      </summary>
+                      <div className="settings-section-body">
+                        <p className="subtle">
+                          Local Ollama server (OpenAI-compatible <code>/v1</code>). Set{" "}
+                          <strong>Generation → Text provider</strong> to <strong>ollama</strong>, or set{" "}
+                          <strong>OpenAI SDK — text chat backend</strong> to Ollama when text provider is openai. Default
+                          base URL: <code>http://127.0.0.1:11434</code> — no trailing <code>/v1</code>. Model id must match
+                          a pulled model (<code>ollama pull llama3.2</code>).
+                        </p>
+                        <label htmlFor="cfg-ollama-base">OLLAMA_API_BASE_URL</label>
+                        <input
+                          id="cfg-ollama-base"
+                          placeholder="http://127.0.0.1:11434"
+                          value={appConfig.ollama_api_base_url || ""}
+                          onChange={(e) => setAppConfig((p) => ({ ...p, ollama_api_base_url: e.target.value }))}
+                        />
+                        <label htmlFor="cfg-ollama-key" style={{ marginTop: 12 }}>
+                          OLLAMA_API_KEY (optional)
+                        </label>
+                        {credKeyNote("ollama_api_key")}
+                        <input
+                          id="cfg-ollama-key"
+                          type="password"
+                          autoComplete="off"
+                          value={appConfig.ollama_api_key || ""}
+                          onChange={(e) => setAppConfig((p) => ({ ...p, ollama_api_key: e.target.value }))}
+                        />
+                        <label htmlFor="cfg-ollama-text-model" style={{ marginTop: 12 }}>
+                          OLLAMA_TEXT_MODEL
+                        </label>
+                        <p className="subtle" style={{ marginTop: -4 }}>
+                          Empty = fall back to <strong>OPENAI_TEXT_MODEL</strong> / default <code>llama3.2</code>.
+                        </p>
+                        <input
+                          id="cfg-ollama-text-model"
+                          placeholder="e.g. llama3.2"
+                          value={appConfig.ollama_text_model || ""}
+                          onChange={(e) => setAppConfig((p) => ({ ...p, ollama_text_model: e.target.value }))}
                         />
                       </div>
                     </details>

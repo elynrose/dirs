@@ -1,0 +1,10 @@
+{
+  "directories": {
+    "output": "release-build"
+  },
+  "win": {
+    "signAndEditExecutable": false,
+    "signDlls": false
+  },
+  "forceCodeSigning": false
+}

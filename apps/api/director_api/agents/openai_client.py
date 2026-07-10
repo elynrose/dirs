@@ -1,4 +1,4 @@
-"""Factory for OpenAI SDK clients: official API, Azure/custom base, or LM Studio (separate settings)."""
+"""Factory for OpenAI SDK clients: official API, Azure/custom base, LM Studio, or Ollama."""
 
 from __future__ import annotations
 
@@ -20,7 +20,11 @@ def normalize_openai_base_url_for_sdk(raw: str | None) -> str | None:
 
 def openai_compatible_text_source_normalized(settings: Settings) -> str:
     v = str(getattr(settings, "openai_compatible_text_source", "openai") or "openai").strip().lower()
-    return "lm_studio" if v == "lm_studio" else "openai"
+    if v == "lm_studio":
+        return "lm_studio"
+    if v == "ollama":
+        return "ollama"
+    return "openai"
 
 
 def active_text_provider_is_lm_studio(settings: Settings) -> bool:
@@ -29,13 +33,26 @@ def active_text_provider_is_lm_studio(settings: Settings) -> bool:
     return p == "lm_studio"
 
 
+def active_text_provider_is_ollama(settings: Settings) -> bool:
+    """True when Generation uses Ollama as the text provider."""
+    p = str(getattr(settings, "active_text_provider", "openai") or "openai").strip().lower()
+    return p == "ollama"
+
+
 def _use_lm_studio_openai_host(settings: Settings) -> bool:
     """LM Studio base URL + keys apply (either text provider or OpenAI-tab routing)."""
     return active_text_provider_is_lm_studio(settings) or openai_compatible_text_source_normalized(settings) == "lm_studio"
 
 
+def _use_ollama_openai_host(settings: Settings) -> bool:
+    """Ollama base URL + keys apply (either text provider or OpenAI-tab routing)."""
+    return active_text_provider_is_ollama(settings) or openai_compatible_text_source_normalized(settings) == "ollama"
+
+
 def effective_openai_compatible_base_url(settings: Settings) -> str | None:
     """Which OpenAI-compatible host chat/completions use (or None for default api.openai.com)."""
+    if _use_ollama_openai_host(settings):
+        return normalize_openai_base_url_for_sdk(getattr(settings, "ollama_api_base_url", None))
     if _use_lm_studio_openai_host(settings):
         return normalize_openai_base_url_for_sdk(getattr(settings, "lm_studio_api_base_url", None))
     return normalize_openai_base_url_for_sdk(getattr(settings, "openai_api_base_url", None))
@@ -43,6 +60,11 @@ def effective_openai_compatible_base_url(settings: Settings) -> str | None:
 
 def resolve_openai_compatible_chat_model(settings: Settings) -> str:
     """Chat model id for the active OpenAI-compatible text source."""
+    if _use_ollama_openai_host(settings):
+        om = (getattr(settings, "ollama_text_model", None) or "").strip()
+        if om:
+            return om
+        return str(settings.openai_smoke_model or "llama3.2").strip()
     if _use_lm_studio_openai_host(settings):
         lm = (getattr(settings, "lm_studio_text_model", None) or "").strip()
         if lm:
@@ -54,6 +76,15 @@ def openai_sdk_connection_kwargs(settings: Settings) -> dict[str, Any]:
     """Arguments for ``openai.OpenAI`` / ``openai.AsyncOpenAI``."""
     timeout = float(settings.openai_timeout_sec)
     base = effective_openai_compatible_base_url(settings)
+    if _use_ollama_openai_host(settings):
+        key = (
+            (getattr(settings, "ollama_api_key", None) or "").strip()
+            or (settings.openai_api_key or "").strip()
+            or "ollama"
+        )
+        if base:
+            return {"api_key": key, "base_url": base, "timeout": timeout}
+        return {"api_key": key, "timeout": timeout}
     if _use_lm_studio_openai_host(settings):
         key = (
             (getattr(settings, "lm_studio_api_key", None) or "").strip()
@@ -75,7 +106,7 @@ def openai_sdk_connection_kwargs(settings: Settings) -> dict[str, Any]:
 
 def openai_compatible_configured(settings: Settings) -> bool:
     """True when chat/completions via the OpenAI client can run."""
-    if _use_lm_studio_openai_host(settings):
+    if _use_ollama_openai_host(settings) or _use_lm_studio_openai_host(settings):
         return bool(effective_openai_compatible_base_url(settings))
     if (settings.openai_api_key or "").strip():
         return True
@@ -83,7 +114,7 @@ def openai_compatible_configured(settings: Settings) -> bool:
 
 
 def openai_chat_targets_local_compatible_server(settings: Settings) -> bool:
-    """True when the OpenAI SDK uses a custom base URL (LM Studio, vLLM, Azure host, etc.)."""
+    """True when the OpenAI SDK uses a custom base URL (LM Studio, Ollama, vLLM, Azure host, etc.)."""
     return bool(effective_openai_compatible_base_url(settings))
 
 
